@@ -1,6 +1,9 @@
 # Config contains credentials — never commit
 config.ini
 
+# Claude Code guidance — local only
+CLAUDE.md
+
 # Python
 __pycache__/
 *.py[cod]
