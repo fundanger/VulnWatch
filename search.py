@@ -113,7 +113,6 @@ def _parse_dt(raw: str) -> str:
             return datetime.strptime(raw, fmt).strftime("%Y-%m-%d %H:%M:%S")
         except ValueError:
             pass
-    # Last resort: isoformat parse (Python 3.7+)
     return datetime.fromisoformat(raw.rstrip("Z")).strftime("%Y-%m-%d %H:%M:%S")
 
 
@@ -126,8 +125,7 @@ def _fetch_page(keyword: str, start: int, headers: dict, retries: int = 4) -> di
             resp = requests.get(url, headers=headers, timeout=30)
             if resp.status_code in (429, 403):
                 # Rate limited — back off longer than the standard retry
-                wait = 30 * attempt
-                time.sleep(wait)
+                time.sleep(30 * attempt)
                 continue
             resp.raise_for_status()
             return resp.json()
@@ -167,8 +165,11 @@ def process_keyword(
     cfg,
     log=print,
     min_severity: str = "NONE",
-) -> list[dict]:
-    """Fetch, enrich, filter, and store CVEs for one keyword. Returns new CVE dicts."""
+) -> tuple[list[dict], list[dict]]:
+    """
+    Fetch, enrich, filter, and store CVEs for one keyword.
+    Returns (new_cves, upgraded_cves).
+    """
     kw, override = parse_keyword(keyword)
     effective_min = override or min_severity
 
@@ -179,6 +180,8 @@ def process_keyword(
     vulns = fetch_all_cves(kw, _api_headers(cfg), log=log)
 
     new_cves: list[dict] = []
+    upgraded_cves: list[dict] = []
+
     for v in vulns:
         cve = v["cve"]
         cve_id = cve["id"]
@@ -198,35 +201,46 @@ def process_keyword(
         cpe = _get_cpe(cve)
         refs = _get_refs(cve)
 
-        is_new = database.insert_cve(
+        is_new, is_upgraded = database.insert_cve(
             table, cve_id, publish_date, last_modified, description,
             severity, cvss_score, cwe, cpe, json.dumps(refs), kw,
         )
+
+        entry = {
+            "keyword":      kw,
+            "id":           cve_id,
+            "publish_date": publish_date,
+            "last_modified":last_modified,
+            "description":  description,
+            "severity":     severity,
+            "cvss_score":   cvss_score,
+            "cwe":          cwe,
+            "cpe":          cpe,
+            "refs":         refs,
+        }
+
         if is_new:
-            new_cves.append({
-                "keyword":      kw,
-                "id":           cve_id,
-                "publish_date": publish_date,
-                "last_modified":last_modified,
-                "description":  description,
-                "severity":     severity,
-                "cvss_score":   cvss_score,
-                "cwe":          cwe,
-                "cpe":          cpe,
-                "refs":         refs,
-            })
+            new_cves.append(entry)
+        elif is_upgraded:
+            upgraded_cves.append({**entry, "upgraded": True})
 
     new_cves.sort(key=lambda c: SEVERITY_ORDER.get(c["severity"], 5))
-    log(f"  {kw}: {len(new_cves)} new CVE(s) after filtering")
-    return new_cves
+    upgraded_cves.sort(key=lambda c: SEVERITY_ORDER.get(c["severity"], 5))
+    log(f"  {kw}: {len(new_cves)} new, {len(upgraded_cves)} upgraded CVE(s)")
+    return new_cves, upgraded_cves
 
 
-def _build_email_body(cves: list[dict]) -> str:
+def _build_email_body(cves: list[dict], label: str = "") -> str:
     lines = []
+    if label:
+        lines.append(label)
+        lines.append("=" * len(label))
+        lines.append("")
     for c in cves:
         score_str = f" ({c['cvss_score']:.1f})" if c.get("cvss_score") else ""
+        upgraded_tag = "  [SEVERITY UPGRADED]" if c.get("upgraded") else ""
         lines.append(f"Service: {c['keyword']}")
-        lines.append(f"{c['id']}  |  Severity: {c['severity']}{score_str}")
+        lines.append(f"{c['id']}  |  Severity: {c['severity']}{score_str}{upgraded_tag}")
         if c.get("cwe"):
             lines.append(f"CWE:         {c['cwe']}")
         if c.get("cpe"):
@@ -242,11 +256,17 @@ def _build_email_body(cves: list[dict]) -> str:
 
 # ── Dispatch helpers ──────────────────────────────────────────────────────────
 
-def _dispatch(cves: list[dict], cfg, log=print,
-              recipients: list[str] | None = None,
-              webhook_url: str = "",
-              slack_url: str = "") -> None:
-    subject = cfg["EMAIL"].get("subjectLine", "CVE Alert")
+def _dispatch(
+    cves: list[dict],
+    cfg,
+    log=print,
+    recipients: list[str] | None = None,
+    webhook_url: str = "",
+    slack_url: str = "",
+    subject_suffix: str = "",
+) -> None:
+    base_subject = cfg["EMAIL"].get("subjectLine", "CVE Alert")
+    subject = f"{base_subject}{subject_suffix}" if subject_suffix else base_subject
     body = _build_email_body(cves)
 
     sender = cfg["EMAIL"].get("senderEmail", "").strip()
@@ -269,6 +289,43 @@ def _dispatch(cves: list[dict], cfg, log=print,
         log("Slack notification sent.")
 
 
+def _dispatch_digest(profile: dict, cfg, log=print) -> None:
+    """Send accumulated digest for a profile if due."""
+    name = profile["name"]
+    schedule = profile.get("digest_schedule") or "daily"
+    if not database.digest_due(name, schedule):
+        return
+    pending = database.digest_get_pending(name)
+    if not pending:
+        return
+
+    # Reconstruct minimal CVE dicts from queued rows
+    cves = [
+        {
+            "keyword":     r["keyword"],
+            "id":          r["cve_id"],
+            "severity":    r["severity"],
+            "cvss_score":  r["cvss_score"],
+            "description": r["description"],
+            "publish_date": r["queued_at"],
+            "last_modified": r["queued_at"],
+            "refs": [],
+        }
+        for r in pending
+    ]
+
+    rcpts = [r.strip() for r in (profile.get("recipients") or "").split(",") if r.strip()]
+    _dispatch(
+        cves, cfg, log=log,
+        recipients=rcpts or None,
+        webhook_url=profile.get("webhook_url", ""),
+        slack_url=profile.get("slack_webhook", ""),
+        subject_suffix=f" — {schedule.capitalize()} Digest ({len(cves)} CVEs)",
+    )
+    database.digest_mark_sent(name)
+    log(f"Digest sent for profile '{name}' ({len(cves)} CVEs).")
+
+
 # ── Public scan API ───────────────────────────────────────────────────────────
 
 def run_once(
@@ -279,10 +336,11 @@ def run_once(
     recipients: list[str] | None = None,
     webhook_url: str = "",
     slack_url: str = "",
-) -> tuple[bool, int]:
+    digest_mode: bool = False,
+    profile_name: str = "",
+) -> tuple[bool, int, int]:
     """
-    Run one full scan. Returns (emailed, new_cve_count).
-    If keywords/min_severity/recipients are None, reads from config.
+    Run one full scan. Returns (emailed, new_cve_count, upgraded_cve_count).
     """
     cfg = _load_config()
     if keywords is None:
@@ -297,41 +355,56 @@ def run_once(
 
     if not keywords:
         log("No keywords configured.")
-        return False, 0
+        return False, 0, 0
 
     log(f"Scanning {len(keywords)} keyword(s) (min severity: {min_severity})...")
     history_id = database.history_start(keywords)
 
     all_new: list[dict] = []
+    all_upgraded: list[dict] = []
     error_msg = ""
     try:
         for kw in keywords:
             if stop_event and stop_event.is_set():
                 log("Scan stopped early.")
-                database.history_finish(history_id, len(all_new), False, "stopped")
-                return False, len(all_new)
-            all_new.extend(process_keyword(kw, cfg, log=log, min_severity=min_severity))
+                database.history_finish(history_id, len(all_new), len(all_upgraded), False, "stopped")
+                return False, len(all_new), len(all_upgraded)
+            new, upgraded = process_keyword(kw, cfg, log=log, min_severity=min_severity)
+            all_new.extend(new)
+            all_upgraded.extend(upgraded)
     except Exception as exc:
         error_msg = str(exc)
         log(f"[bold red]Error during scan:[/bold red] {exc}")
 
     emailed = False
-    if all_new:
-        log(f"Found {len(all_new)} new CVE(s) — dispatching notifications...")
+    alert_cves = all_new + all_upgraded
+
+    if digest_mode:
+        if alert_cves:
+            database.digest_enqueue(alert_cves, profile_name)
+            log(f"Queued {len(alert_cves)} CVE(s) for digest.")
+    elif alert_cves:
+        suffix = ""
+        if all_upgraded and not all_new:
+            suffix = " — Severity Upgrades"
+        elif all_upgraded:
+            suffix = f" (+{len(all_upgraded)} upgraded)"
+        log(f"Found {len(all_new)} new, {len(all_upgraded)} upgraded CVE(s) — dispatching notifications...")
         try:
-            _dispatch(all_new, cfg, log=log,
+            _dispatch(alert_cves, cfg, log=log,
                       recipients=recipients,
                       webhook_url=webhook_url,
-                      slack_url=slack_url)
+                      slack_url=slack_url,
+                      subject_suffix=suffix)
             emailed = True
         except Exception as exc:
             error_msg = str(exc)
             log(f"[bold red]Notification error:[/bold red] {exc}")
     else:
-        log("No new CVEs found.")
+        log("No new or upgraded CVEs found.")
 
-    database.history_finish(history_id, len(all_new), emailed, error_msg)
-    return emailed, len(all_new)
+    database.history_finish(history_id, len(all_new), len(all_upgraded), emailed, error_msg)
+    return emailed, len(all_new), len(all_upgraded)
 
 
 def run_profiles(log=print, stop_event: Event | None = None) -> None:
@@ -342,12 +415,15 @@ def run_profiles(log=print, stop_event: Event | None = None) -> None:
         run_once(log=log, stop_event=stop_event)
         return
 
+    cfg = _load_config()
     for p in profiles:
         if stop_event and stop_event.is_set():
             return
         log(f"[bold]Profile:[/bold] {p['name']}")
         kws = [k.strip() for k in (p.get("keywords") or "").splitlines() if k.strip()]
         rcpts = [r.strip() for r in (p.get("recipients") or "").split(",") if r.strip()]
+        digest = bool(p.get("digest_mode", 0))
+
         run_once(
             log=log,
             stop_event=stop_event,
@@ -356,7 +432,16 @@ def run_profiles(log=print, stop_event: Event | None = None) -> None:
             recipients=rcpts or None,
             webhook_url=p.get("webhook_url", ""),
             slack_url=p.get("slack_webhook", ""),
+            digest_mode=digest,
+            profile_name=p["name"],
         )
+
+        # Check if digest is due and send it
+        if digest:
+            try:
+                _dispatch_digest(p, cfg, log=log)
+            except Exception as exc:
+                log(f"[bold red]Digest error:[/bold red] {exc}")
 
 
 def timed_loop(log=print, stop_event: Event | None = None, on_sleep=None) -> None:

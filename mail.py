@@ -113,6 +113,9 @@ def _format_line(line: str) -> str:
         if len(parts) == 2:
             cve_part = parts[0].strip()
             sev_part = parts[1].strip()
+            # strip [SEVERITY UPGRADED] tag before parsing
+            upgraded = "[SEVERITY UPGRADED]" in sev_part
+            sev_part = sev_part.replace("[SEVERITY UPGRADED]", "").strip()
             sev_label = sev_part.replace("Severity:", "").strip()
             # strip score from label if present
             if "(" in sev_label:
@@ -121,12 +124,17 @@ def _format_line(line: str) -> str:
                 score_html = f' <span style="color:#a6adc8">({score})</span>'
             else:
                 score_html = ""
+            upgraded_html = (
+                ' <span style="background:#7c3aed;color:#fff;'
+                'padding:1px 6px;border-radius:4px;font-size:11px">UPGRADED</span>'
+                if upgraded else ""
+            )
             color = SEVERITY_COLORS.get(sev_label.strip(), "#6b7280")
             return (
                 f'<strong style="color:#f38ba8">{cve_part}</strong>'
                 f'&nbsp;<span style="background:{color};color:#fff;'
                 f'padding:1px 7px;border-radius:4px;font-size:11px">{sev_label.strip()}</span>'
-                f'{score_html}'
+                f'{score_html}{upgraded_html}'
             )
         return f'<strong style="color:#f38ba8">{line}</strong>'
 
