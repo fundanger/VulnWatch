@@ -9,18 +9,17 @@ CONFIG.read("config.ini")
 def create_tables(service_name):
     try:
         print("Creating table for " + str(service_name))
-        connection = mysql.connector.connect(  # initiate connection
+        connection = mysql.connector.connect(
             user=CONFIG["DATABASE"]["username"],
             password=CONFIG["DATABASE"]["password"],
             host=CONFIG["DATABASE"]["host"],
             database=CONFIG["DATABASE"]["database"],
-        )  # DB connection
+        )
         cursor = connection.cursor()
-        # print("Connected to Database!")
         tableQuery = (
             "CREATE TABLE IF NOT EXISTS "
             + service_name
-            + """(cve_id VARCHAR(255) NOT NULL PRIMARY KEY,                   
+            + """(cve_id VARCHAR(255) NOT NULL PRIMARY KEY,
                       publish_date DATE,
                       last_modified DATE,
                       description TEXT);"""
@@ -30,20 +29,17 @@ def create_tables(service_name):
     except mysql.connector.Error as error:
         print("An error occurred in process CreateTables:", error)
     finally:
-        # print("Connection Closing")
         connection.close()
 
 
-def insert_data(
-    table, CVE, publish_date, last_modified, description, email
-):  # Connects to the DB
+def insert_data(table, CVE, publish_date, last_modified, description, email):
     try:
-        connection = mysql.connector.connect(  # initiate connection
+        connection = mysql.connector.connect(
             user=CONFIG["DATABASE"]["username"],
             password=CONFIG["DATABASE"]["password"],
             host=CONFIG["DATABASE"]["host"],
             database=CONFIG["DATABASE"]["database"],
-        )  # DB connection
+        )
         cursor = connection.cursor()
         insertQuery = (
             "INSERT IGNORE INTO "
@@ -52,30 +48,18 @@ def insert_data(
             + " VALUES"
             + " (%s, %s, %s, %s);"
         )
-        value1 = CVE
-        value2 = publish_date
-        value3 = last_modified
-        value4 = description
-        cursor.execute(insertQuery, (value1, value2, value3, value4))
+        cursor.execute(insertQuery, (CVE, publish_date, last_modified, description))
         connection.commit()
-        # print("Insert query executed")
-        # print("Connected to Database!")
         if cursor.rowcount > 0:
             email += "Service: " + table
-            email += "\nCVE-" + value1 + "\n"
-            email += "publish_date: " + value2 + "\n"
-            email += "last_modified: " + value3 + "\n"
-            email += "description: " + value4 + "\n \n"
-            # print("Service_name:" + table + "\n"
-            #   "CVE-" + value1 + "\n",
-            #   "publish_date: " + value2 + "\n",
-            #   "last_modified: " + value3 + "\n",
-            #   "description: " + value4 + "\n")
+            email += "\nCVE-" + CVE + "\n"
+            email += "publish_date: " + publish_date + "\n"
+            email += "last_modified: " + last_modified + "\n"
+            email += "description: " + description + "\n \n"
         else:
             print("No entry added.")
     except mysql.connector.Error as error:
         print("An error occurred in process insertData:", error)
     finally:
-        # print("Connection Closing")
         connection.close()
         return str(email)
