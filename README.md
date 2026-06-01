@@ -1,32 +1,31 @@
-# CVE Emailer
+# CVE Emailer v2
 
-Polls the [NIST National Vulnerability Database (NVD) API](https://nvd.nist.gov/developers/vulnerabilities) for new CVEs matching a list of vendors and services, stores results in MySQL to avoid duplicates, and sends an email digest whenever new vulnerabilities are found.
+Monitors the [NIST NVD API](https://nvd.nist.gov/developers/vulnerabilities) for new CVEs matching your tech stack and sends alerts via email, Slack, or webhook. Runs as an interactive terminal UI or as a headless Windows Task Scheduler job.
 
-Built to keep a security team passively informed on CVE activity for their specific tech stack — no manual checking, no noise from CVEs you've already seen.
+Built to keep a security team passively informed — no manual checking, no noise from CVEs you've already seen.
 
 > This product uses the NVD API but is not endorsed or certified by the NVD.
 
 ---
 
-## How it works
+## Features
 
-1. Reads a list of vendor/service keywords from a text file (one per line)
-2. Queries the NVD API for each keyword on a configurable interval
-3. Checks results against a MySQL database — only new CVEs (not previously seen) are included
-4. Sends a plain-text email digest via Gmail SMTP if any new CVEs were found
-
-Each keyword gets its own table in MySQL. `INSERT IGNORE` handles deduplication — if a CVE ID already exists in the table, it's skipped silently.
+- **Terminal UI** built with [Textual](https://textual.textualize.io/) — run scans, manage keywords, browse results, all from the terminal
+- **Per-keyword severity overrides** — e.g. `Apache Knox::HIGH` ignores LOW/MEDIUM for that keyword only
+- **Email, Slack, and webhook notifications** — send to multiple destinations simultaneously
+- **Notification profiles** — route different keyword sets to different recipients or webhooks
+- **CVE browser** — search and filter collected CVEs, export to CSV or JSON
+- **Scan history** — view past scan results with timestamps and CVE counts
+- **Windows Task Scheduler integration** — run headless in the background, scheduled automatically
+- **SQLite storage** — zero server setup, everything in a single local file
 
 ---
 
 ## Requirements
 
-- Python 3.8+
-- MySQL database (local or remote)
-- Gmail account with an [App Password](https://support.google.com/accounts/answer/185833) configured (required if 2FA is enabled)
-- NIST NVD API key — free, get one at [nvd.nist.gov/developers/request-an-api-key](https://nvd.nist.gov/developers/request-an-api-key)
-
-Install Python dependencies:
+- Python 3.10+
+- Gmail account with an [App Password](https://support.google.com/accounts/answer/185833) (for email alerts)
+- NVD API key — free at [nvd.nist.gov/developers/request-an-api-key](https://nvd.nist.gov/developers/request-an-api-key) (optional but recommended for higher rate limits)
 
 ```bash
 pip install -r requirements.txt
@@ -39,93 +38,101 @@ pip install -r requirements.txt
 **1. Clone the repo**
 
 ```bash
-git clone https://github.com/fundanger/CVE-Emailer.git
-cd CVE-Emailer
+git clone https://github.com/fundanger/CVE-Emailer-v2.git
+cd CVE-Emailer-v2
 ```
 
-**2. Create your keyword list**
-
-Create a `.txt` file with one vendor/service per line. Format is `Vendor Product` with a space between them.
-
-```
-Apache Knox
-Microsoft Exchange
-Cisco IOS
-Palo Alto PAN-OS
-```
-
-**3. Set up the MySQL database**
-
-Create a database (the tool will create tables automatically):
-
-```sql
-CREATE DATABASE cve_emailer;
-```
-
-**4. Fill out `config.ini`**
-
-```ini
-[DEFAULT]
-apiKey = your_nvd_api_key_here
-txtList = keywords.txt
-checkFrequency = 3600
-
-[EMAIL]
-senderEmail = youremail@gmail.com
-senderPassword = your_app_password_here
-recipientEmail = recipient@example.com
-subjectLine = CVE Alert
-
-[DATABASE]
-username = root
-password = your_db_password
-host = 127.0.0.1
-database = cve_emailer
-```
-
-- `checkFrequency` is in **seconds** — `3600` = every hour, `86400` = once a day
-- `senderPassword` should be a [Google App Password](https://support.google.com/accounts/answer/185833), not your Gmail login password
-
-**5. Run it**
+**2. Run the app**
 
 ```bash
 python main.py
 ```
 
-The script runs continuously, checking the API on the interval set in `checkFrequency`. Keep it running in a terminal, screen session, or scheduled task.
+On first launch, a setup wizard walks you through the required configuration (sender email, app password, recipient). Everything is stored in `config.ini` (gitignored — never committed).
+
+**3. Add keywords**
+
+Open the Keywords screen (`K`) and add the vendors or products you want to monitor:
+
+```
+Apache Knox
+Microsoft Exchange
+Cisco IOS XE
+Palo Alto PAN-OS::CRITICAL
+```
+
+The `::SEVERITY` suffix overrides the global minimum severity for that keyword only.
 
 ---
 
-## Email output format
+## Configuration
 
-When new CVEs are found, you'll get one email per check cycle containing all new findings:
+All settings live in `config.ini`. The most important ones:
 
+| Setting | Description |
+|---|---|
+| `apiKey` | NVD API key (optional, raises rate limit to 50 req/30s) |
+| `checkFrequency` | Scan interval in seconds (default: 3600) |
+| `minSeverity` | Global severity floor: `NONE`, `LOW`, `MEDIUM`, `HIGH`, `CRITICAL` |
+| `senderEmail` | Gmail address to send alerts from |
+| `senderPassword` | Google App Password (not your login password) |
+| `recipientEmail` | Comma-separated list of alert recipients |
+| `slackWebhook` | Slack incoming webhook URL |
+| `webhookUrl` | Generic JSON webhook URL |
+
+---
+
+## Keyboard shortcuts
+
+| Key | Action |
+|---|---|
+| `R` | Run one scan immediately |
+| `S` | Settings |
+| `K` | Keywords |
+| `H` | Scan history |
+| `B` | CVE browser |
+| `P` | Notification profiles |
+| `Q` | Quit |
+
+---
+
+## Headless / scheduled mode
+
+Run without the TUI using Windows Task Scheduler:
+
+```bash
+python scheduler.py install   # register job (uses checkFrequency from config)
+python scheduler.py status    # check if registered
+python scheduler.py run       # run one cycle now (logs to cve_emailer.log)
+python scheduler.py remove    # unregister job
 ```
-Service: MicrosoftExchange
-CVE-20241234
-publish_date: 2024-03-15 12:00:00
-last_modified: 2024-03-16 08:30:00
-description: A remote code execution vulnerability exists in Microsoft Exchange Server...
 
-Service: CiscoIOS
-CVE-20245678
-publish_date: 2024-03-14 09:00:00
-...
-```
+You can also manage the Task Scheduler job from inside the TUI via the Scheduler button in the sidebar.
 
-If nothing new is found, no email is sent.
+---
+
+## Notification profiles
+
+Profiles let you run separate scans for different audiences — e.g. send `Apache*` CVEs to the infrastructure team and `Salesforce*` CVEs to the app team.
+
+Each profile has its own keyword list, severity floor, recipient list, and optional webhook/Slack URLs. Create and manage profiles on the Profiles screen (`P`).
+
+When any profiles exist, the scan loop runs profiles instead of the default config-based scan.
 
 ---
 
 ## Project structure
 
 ```
-CVE-Emailer/
-├── main.py         # Entry point
-├── search.py       # NVD API queries, scheduling loop, email assembly
-├── database.py     # MySQL table creation and CVE insertion
-├── mail.py         # Gmail SMTP email sending
-├── config.ini      # Configuration (not committed — add your own)
+CVE-Emailer-v2/
+├── main.py         # Entry point — calls tui.run()
+├── tui.py          # Textual TUI: all screens, setup wizard, config helpers
+├── search.py       # NVD fetch, CVE enrichment, dispatch, scan loop
+├── database.py     # SQLite backend: CVE tables, scan history, profiles
+├── mail.py         # Gmail SMTP: plain-text + styled HTML email
+├── notify.py       # Slack block-kit and generic webhook dispatch
+├── scheduler.py    # Windows Task Scheduler integration
+├── config.ini      # Credentials and settings (gitignored)
 └── requirements.txt
 ```
 
@@ -133,10 +140,10 @@ CVE-Emailer/
 
 ## Notes
 
-- The NVD API has rate limits. The tool includes a short sleep between requests per keyword to stay within limits. With an API key, the limit is 50 requests per 30 seconds.
-- Keyword formatting: spaces in keywords become `%20` in the URL query. The same string (spaces stripped) is used as the MySQL table name, so keep keywords alphanumeric.
-- Gmail SMTP requires either an App Password or "less secure app access" — App Passwords are the right way to do this.
-- `config.ini` contains credentials. Never commit it. It's in `.gitignore`.
+- `config.ini` contains credentials. It is gitignored and must never be committed.
+- CVE deduplication is handled by SQLite `INSERT OR IGNORE` on the CVE ID — already-seen CVEs are skipped silently.
+- The NVD API returns up to 2000 results per page; the app paginates automatically with a 3-second courtesy delay between pages. HTTP 429/403 rate-limit responses trigger an extended backoff before retrying.
+- Each keyword gets its own SQLite table named after the keyword (non-word characters replaced with `_`).
 
 ---
 

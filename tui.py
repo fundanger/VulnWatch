@@ -28,9 +28,10 @@ from textual.widgets import (
     Static,
     TabbedContent,
     TabPane,
+    TextArea,
 )
 
-CONFIG_PATH = Path("config.ini")
+CONFIG_PATH = Path(__file__).parent / "config.ini"
 
 # ── Config helpers ─────────────────────────────────────────────────────────────
 
@@ -45,11 +46,6 @@ FIELDS = [
     ("EMAIL",   "senderPassword", "Gmail App Password",     "xxxx xxxx xxxx xxxx",           True),
     ("EMAIL",   "recipientEmail", "Recipient email(s)",     "a@x.com, b@x.com",              False),
     ("EMAIL",   "subjectLine",    "Email subject",          "CVE Alert",                     False),
-    ("DATABASE","backend",        "DB backend",             "sqlite  or  mysql",             False),
-    ("DATABASE","username",       "DB username (MySQL)",    "root",                          False),
-    ("DATABASE","password",       "DB password (MySQL)",    "••••",                          True),
-    ("DATABASE","host",           "DB host (MySQL)",        "127.0.0.1",                     False),
-    ("DATABASE","database",       "DB name (MySQL)",        "cve_emailer",                   False),
 ]
 
 REQUIRED = [
@@ -242,7 +238,8 @@ class ProfilesScreen(Screen):
             with Horizontal(id="profiles-form-row"):
                 with Vertical(id="profiles-form"):
                     yield Input(placeholder="Profile name",      id="pf-name")
-                    yield Input(placeholder="Keywords (one per line)", id="pf-keywords")
+                    yield Label("Keywords (one per line)", id="pf-keywords-label")
+                    yield TextArea(id="pf-keywords")
                     yield Input(placeholder="Min severity: NONE/LOW/MEDIUM/HIGH/CRITICAL", id="pf-severity")
                     yield Input(placeholder="Recipients (comma-separated)", id="pf-recipients")
                     yield Input(placeholder="Webhook URL (optional)", id="pf-webhook")
@@ -282,7 +279,7 @@ class ProfilesScreen(Screen):
                 return
             database.save_profile({
                 "name":          name,
-                "keywords":      self.query_one("#pf-keywords",  Input).value.strip(),
+                "keywords":      self.query_one("#pf-keywords",  TextArea).text.strip(),
                 "min_severity":  self.query_one("#pf-severity",  Input).value.strip().upper() or "NONE",
                 "recipients":    self.query_one("#pf-recipients",Input).value.strip(),
                 "webhook_url":   self.query_one("#pf-webhook",   Input).value.strip(),
@@ -300,7 +297,7 @@ class ProfilesScreen(Screen):
             if table.cursor_row < len(profiles):
                 p = profiles[table.cursor_row]
                 self.query_one("#pf-name",       Input).value = p["name"]
-                self.query_one("#pf-keywords",   Input).value = p.get("keywords") or ""
+                self.query_one("#pf-keywords",   TextArea).load_text(p.get("keywords") or "")
                 self.query_one("#pf-severity",   Input).value = p.get("min_severity") or "NONE"
                 self.query_one("#pf-recipients", Input).value = p.get("recipients") or ""
                 self.query_one("#pf-webhook",    Input).value = p.get("webhook_url") or ""
@@ -440,7 +437,9 @@ class BrowserScreen(Screen):
         sev_sel = self.query_one("#browser-severity", Select)
         min_sev = sev_sel.value if sev_sel.value is not Select.BLANK else "NONE"
 
-        out_path = Path(f"export_{tbl}.{fmt}")
+        from datetime import datetime as _dt
+        stamp = _dt.now().strftime("%Y%m%d_%H%M%S")
+        out_path = Path(__file__).parent / f"export_{tbl}_{stamp}.{fmt}"
         if fmt == "csv":
             n = database.export_cves_csv(tbl, out_path, search=search, min_severity=str(min_sev))
         else:
@@ -758,6 +757,8 @@ class CVEEmailerApp(App):
     #profiles-form-row { height: 1fr; }
     #profiles-form { width: 1fr; margin-right: 2; }
     #profiles-form Input { margin-bottom: 1; }
+    #pf-keywords-label { color: $text-muted; margin-top: 1; margin-bottom: 0; }
+    #pf-keywords { height: 6; margin-bottom: 1; }
     #profiles-actions { width: 22; }
     #profiles-actions Button { width: 100%; margin-bottom: 1; }
 

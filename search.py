@@ -6,6 +6,7 @@ import json
 import re
 import time
 from datetime import datetime
+from pathlib import Path
 from threading import Event
 from urllib.parse import quote_plus
 
@@ -20,11 +21,13 @@ PAGE_SIZE = 2000
 
 SEVERITY_ORDER = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3, "NONE": 4, "UNKNOWN": 5}
 
+_CONFIG_PATH = Path(__file__).parent / "config.ini"
+
 
 def _load_config():
     import configparser
     cfg = configparser.ConfigParser()
-    cfg.read("config.ini")
+    cfg.read(_CONFIG_PATH)
     return cfg
 
 
@@ -96,7 +99,7 @@ def _get_cpe(cve: dict) -> str:
             for match in node.get("cpeMatch", []):
                 if match.get("vulnerable"):
                     cpes.add(match.get("criteria", ""))
-    return ", ".join(sorted(cpes)[:10])  # cap at 10
+    return ", ".join(sorted(cpes)[:10])
 
 
 def _get_refs(cve: dict) -> list[str]:
@@ -104,7 +107,14 @@ def _get_refs(cve: dict) -> list[str]:
 
 
 def _parse_dt(raw: str) -> str:
-    return datetime.strptime(raw, "%Y-%m-%dT%H:%M:%S.%f").strftime("%Y-%m-%d %H:%M:%S")
+    # NVD timestamps are usually "%Y-%m-%dT%H:%M:%S.%f" but occasionally omit fractional seconds
+    for fmt in ("%Y-%m-%dT%H:%M:%S.%f", "%Y-%m-%dT%H:%M:%S"):
+        try:
+            return datetime.strptime(raw, fmt).strftime("%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            pass
+    # Last resort: isoformat parse (Python 3.7+)
+    return datetime.fromisoformat(raw.rstrip("Z")).strftime("%Y-%m-%d %H:%M:%S")
 
 
 # ── NVD fetch with pagination & retry ────────────────────────────────────────
@@ -114,13 +124,18 @@ def _fetch_page(keyword: str, start: int, headers: dict, retries: int = 4) -> di
     for attempt in range(1, retries + 1):
         try:
             resp = requests.get(url, headers=headers, timeout=30)
+            if resp.status_code in (429, 403):
+                # Rate limited — back off longer than the standard retry
+                wait = 30 * attempt
+                time.sleep(wait)
+                continue
             resp.raise_for_status()
             return resp.json()
         except (requests.RequestException, ValueError):
             if attempt == retries:
                 raise
             time.sleep(2 ** attempt)
-    raise RuntimeError("unreachable")
+    raise RuntimeError("NVD fetch failed after all retries")
 
 
 def fetch_all_cves(keyword: str, headers: dict, log=print) -> list[dict]:
@@ -141,7 +156,7 @@ def fetch_all_cves(keyword: str, headers: dict, log=print) -> list[dict]:
 
 # ── Processing ────────────────────────────────────────────────────────────────
 
-def _passes_threshold(severity: str, cvss_score: float | None, min_severity: str) -> bool:
+def _passes_threshold(severity: str, min_severity: str) -> bool:
     rank = SEVERITY_ORDER.get(severity.upper(), 5)
     threshold = SEVERITY_ORDER.get(min_severity.upper(), 5)
     return rank <= threshold
@@ -168,21 +183,23 @@ def process_keyword(
         cve = v["cve"]
         cve_id = cve["id"]
         severity = _get_severity(cve)
-        cvss_score = _get_cvss_score(cve)
 
-        if not _passes_threshold(severity, cvss_score, effective_min):
+        if not _passes_threshold(severity, effective_min):
             continue
 
+        cvss_score = _get_cvss_score(cve)
         publish_date = _parse_dt(cve["published"])
         last_modified = _parse_dt(cve["lastModified"])
-        description = cve["descriptions"][0]["value"]
+
+        descriptions = cve.get("descriptions", [])
+        description = descriptions[0]["value"] if descriptions else "No description available."
+
         cwe = _get_cwe(cve)
         cpe = _get_cpe(cve)
         refs = _get_refs(cve)
-        numeric_id = re.sub(r"\D", "", cve_id)
 
         is_new = database.insert_cve(
-            table, numeric_id, publish_date, last_modified, description,
+            table, cve_id, publish_date, last_modified, description,
             severity, cvss_score, cwe, cpe, json.dumps(refs), kw,
         )
         if is_new:
@@ -232,16 +249,16 @@ def _dispatch(cves: list[dict], cfg, log=print,
     subject = cfg["EMAIL"].get("subjectLine", "CVE Alert")
     body = _build_email_body(cves)
 
-    rcpts = recipients or [r.strip() for r in cfg["EMAIL"]["recipientEmail"].split(",") if r.strip()]
+    sender = cfg["EMAIL"].get("senderEmail", "").strip()
+    password = cfg["EMAIL"].get("senderPassword", "").strip()
+    rcpts = recipients or [r.strip() for r in cfg["EMAIL"].get("recipientEmail", "").split(",") if r.strip()]
+
     if rcpts:
-        mail.send_email(
-            sender=cfg["EMAIL"]["senderEmail"],
-            password=cfg["EMAIL"]["senderPassword"],
-            recipients=rcpts,
-            subject=subject,
-            body=body,
-        )
-        log(f"Email sent to {', '.join(rcpts)}.")
+        if not sender or not password:
+            log("[yellow]Email skipped — sender email or password not configured.[/yellow]")
+        else:
+            mail.send_email(sender=sender, password=password, recipients=rcpts, subject=subject, body=body)
+            log(f"Email sent to {', '.join(rcpts)}.")
 
     if webhook_url:
         notify.send_webhook(webhook_url, cves, subject)
@@ -325,7 +342,6 @@ def run_profiles(log=print, stop_event: Event | None = None) -> None:
         run_once(log=log, stop_event=stop_event)
         return
 
-    cfg = _load_config()
     for p in profiles:
         if stop_event and stop_event.is_set():
             return

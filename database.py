@@ -1,39 +1,22 @@
-"""
-Database backend — SQLite (default) or MySQL.
-
-Set [DATABASE] backend = mysql in config.ini to use MySQL.
-SQLite stores data in cve_emailer.db next to the script with zero server setup.
-"""
+"""SQLite database backend for CVE Emailer."""
 
 from __future__ import annotations
 
 import csv
 import json
 import sqlite3
-import time
 from contextlib import contextmanager
+from datetime import datetime
 from pathlib import Path
 
+_DB_PATH = Path(__file__).parent / "cve_emailer.db"
 
-def _cfg():
-    import configparser
-    c = configparser.ConfigParser()
-    c.read("config.ini")
-    return c
-
-
-def _backend() -> str:
-    return _cfg().get("DATABASE", "backend", fallback="sqlite").strip().lower()
-
-
-# ── SQLite ────────────────────────────────────────────────────────────────────
-
-SQLITE_PATH = Path("cve_emailer.db")
+SEVERITY_RANK = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3, "NONE": 4, "UNKNOWN": 5}
 
 
 @contextmanager
-def _sqlite():
-    conn = sqlite3.connect(SQLITE_PATH)
+def _connect():
+    conn = sqlite3.connect(_DB_PATH)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     try:
@@ -46,56 +29,11 @@ def _sqlite():
         conn.close()
 
 
-# ── MySQL ─────────────────────────────────────────────────────────────────────
-
-def _mysql_connect(retries: int = 3, delay: float = 2.0):
-    import mysql.connector
-    cfg = _cfg()
-    kwargs = dict(
-        user=cfg["DATABASE"]["username"],
-        password=cfg["DATABASE"]["password"],
-        host=cfg["DATABASE"]["host"],
-        database=cfg["DATABASE"]["database"],
-    )
-    for attempt in range(1, retries + 1):
-        try:
-            return mysql.connector.connect(**kwargs)
-        except mysql.connector.Error:
-            if attempt == retries:
-                raise
-            time.sleep(delay * attempt)
-
-
-@contextmanager
-def _mysql():
-    conn = _mysql_connect()
-    try:
-        yield conn
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
-
-
-@contextmanager
-def _connect():
-    if _backend() == "mysql":
-        with _mysql() as conn:
-            yield conn
-    else:
-        with _sqlite() as conn:
-            yield conn
-
-
 # ── Schema bootstrap ──────────────────────────────────────────────────────────
 
 def bootstrap() -> None:
-    """Create all core tables if they don't exist. Called once at startup."""
-    if _backend() != "sqlite":
-        return  # MySQL tables created per-keyword as before
-    with _sqlite() as conn:
+    """Create system tables if they don't exist. Called once at startup."""
+    with _connect() as conn:
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS scan_history (
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -122,39 +60,21 @@ def bootstrap() -> None:
 # ── CVE tables ────────────────────────────────────────────────────────────────
 
 def create_table(service_name: str) -> None:
-    if _backend() == "mysql":
-        query = (
-            f"CREATE TABLE IF NOT EXISTS `{service_name}` ("
-            "cve_id VARCHAR(255) NOT NULL PRIMARY KEY,"
-            "publish_date DATETIME,"
-            "last_modified DATETIME,"
+    with _connect() as conn:
+        conn.execute(
+            f'CREATE TABLE IF NOT EXISTS "{service_name}" ('
+            "cve_id TEXT NOT NULL PRIMARY KEY,"
+            "publish_date TEXT,"
+            "last_modified TEXT,"
             "description TEXT,"
-            "severity VARCHAR(16),"
-            "cvss_score FLOAT,"
+            "severity TEXT,"
+            "cvss_score REAL,"
             "cwe TEXT,"
             "cpe TEXT,"
             "references_json TEXT,"
             "keyword TEXT"
             ");"
         )
-        with _connect() as conn:
-            conn.cursor().execute(query)
-    else:
-        with _sqlite() as conn:
-            conn.execute(
-                f'CREATE TABLE IF NOT EXISTS "{service_name}" ('
-                "cve_id TEXT NOT NULL PRIMARY KEY,"
-                "publish_date TEXT,"
-                "last_modified TEXT,"
-                "description TEXT,"
-                "severity TEXT,"
-                "cvss_score REAL,"
-                "cwe TEXT,"
-                "cpe TEXT,"
-                "references_json TEXT,"
-                "keyword TEXT"
-                ");"
-            )
 
 
 def insert_cve(
@@ -170,31 +90,20 @@ def insert_cve(
     references_json: str,
     keyword: str,
 ) -> bool:
-    """Returns True if the CVE was new."""
+    """Returns True if the CVE was new (not already in DB)."""
     fields = "(cve_id, publish_date, last_modified, description, severity, cvss_score, cwe, cpe, references_json, keyword)"
     vals = (cve_id, publish_date, last_modified, description, severity, cvss_score, cwe, cpe, references_json, keyword)
-
-    if _backend() == "mysql":
-        query = f"INSERT IGNORE INTO `{table}` {fields} VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s);"
-        with _connect() as conn:
-            cur = conn.cursor()
-            cur.execute(query, vals)
-            return cur.rowcount > 0
-    else:
-        query = f'INSERT OR IGNORE INTO "{table}" {fields} VALUES (?,?,?,?,?,?,?,?,?,?);'
-        with _sqlite() as conn:
-            cur = conn.execute(query, vals)
-            return cur.rowcount > 0
+    query = f'INSERT OR IGNORE INTO "{table}" {fields} VALUES (?,?,?,?,?,?,?,?,?,?);'
+    with _connect() as conn:
+        cur = conn.execute(query, vals)
+        return cur.rowcount > 0
 
 
 # ── Scan history ──────────────────────────────────────────────────────────────
 
 def history_start(keywords: list[str]) -> int:
     """Record scan start. Returns the row id."""
-    if _backend() != "sqlite":
-        return -1
-    from datetime import datetime
-    with _sqlite() as conn:
+    with _connect() as conn:
         cur = conn.execute(
             "INSERT INTO scan_history (started_at, keywords) VALUES (?, ?);",
             (datetime.now().isoformat(timespec="seconds"), ", ".join(keywords)),
@@ -203,10 +112,7 @@ def history_start(keywords: list[str]) -> int:
 
 
 def history_finish(row_id: int, new_cves: int, emailed: bool, error: str = "") -> None:
-    if _backend() != "sqlite" or row_id < 0:
-        return
-    from datetime import datetime
-    with _sqlite() as conn:
+    with _connect() as conn:
         conn.execute(
             "UPDATE scan_history SET finished_at=?, new_cves=?, emailed=?, error=? WHERE id=?;",
             (datetime.now().isoformat(timespec="seconds"), new_cves, int(emailed), error, row_id),
@@ -214,9 +120,7 @@ def history_finish(row_id: int, new_cves: int, emailed: bool, error: str = "") -
 
 
 def get_history(limit: int = 50) -> list[dict]:
-    if _backend() != "sqlite":
-        return []
-    with _sqlite() as conn:
+    with _connect() as conn:
         rows = conn.execute(
             "SELECT * FROM scan_history ORDER BY id DESC LIMIT ?;", (limit,)
         ).fetchall()
@@ -227,10 +131,8 @@ def get_history(limit: int = 50) -> list[dict]:
 
 def list_cve_tables() -> list[str]:
     """Return all CVE keyword table names (excludes system tables)."""
-    if _backend() != "sqlite":
-        return []
     system = {"scan_history", "notification_profiles"}
-    with _sqlite() as conn:
+    with _connect() as conn:
         rows = conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name;"
         ).fetchall()
@@ -244,21 +146,19 @@ def query_cves(
     limit: int = 200,
     offset: int = 0,
 ) -> list[dict]:
-    SEVERITY_RANK = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3, "NONE": 4, "UNKNOWN": 5}
     min_rank = SEVERITY_RANK.get(min_severity.upper(), 5)
 
-    if _backend() != "sqlite":
-        return []
-    with _sqlite() as conn:
+    with _connect() as conn:
+        conn.create_function("SEVERITY_RANK", 1,
+            lambda s: SEVERITY_RANK.get((s or "UNKNOWN").upper(), 5))
+
         where_parts = [f"SEVERITY_RANK(severity) <= {min_rank}"]
         params: list = []
         if search:
             where_parts.append("(cve_id LIKE ? OR description LIKE ?)")
             params += [f"%{search}%", f"%{search}%"]
-        where = "WHERE " + " AND ".join(where_parts) if where_parts else ""
+        where = "WHERE " + " AND ".join(where_parts)
 
-        conn.create_function("SEVERITY_RANK", 1,
-            lambda s: SEVERITY_RANK.get((s or "UNKNOWN").upper(), 5))
         rows = conn.execute(
             f'SELECT * FROM "{table}" {where} ORDER BY SEVERITY_RANK(severity), publish_date DESC LIMIT ? OFFSET ?;',
             params + [limit, offset],
@@ -287,17 +187,13 @@ def export_cves_json(table: str, path: Path, **query_kwargs) -> int:
 # ── Notification profiles ─────────────────────────────────────────────────────
 
 def get_profiles() -> list[dict]:
-    if _backend() != "sqlite":
-        return []
-    with _sqlite() as conn:
+    with _connect() as conn:
         rows = conn.execute("SELECT * FROM notification_profiles ORDER BY name;").fetchall()
         return [dict(r) for r in rows]
 
 
 def save_profile(profile: dict) -> None:
-    if _backend() != "sqlite":
-        return
-    with _sqlite() as conn:
+    with _connect() as conn:
         conn.execute(
             "INSERT INTO notification_profiles (name, keywords, min_severity, recipients, webhook_url, slack_webhook)"
             " VALUES (:name, :keywords, :min_severity, :recipients, :webhook_url, :slack_webhook)"
@@ -312,7 +208,5 @@ def save_profile(profile: dict) -> None:
 
 
 def delete_profile(name: str) -> None:
-    if _backend() != "sqlite":
-        return
-    with _sqlite() as conn:
+    with _connect() as conn:
         conn.execute("DELETE FROM notification_profiles WHERE name=?;", (name,))

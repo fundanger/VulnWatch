@@ -28,7 +28,7 @@ def install(interval_minutes: int = 60) -> str:
     """Register a repeating Task Scheduler job."""
     import configparser
     cfg = configparser.ConfigParser()
-    cfg.read("config.ini")
+    cfg.read(Path(__file__).parent / "config.ini")
     freq_sec = int(cfg["DEFAULT"].get("checkFrequency", "3600"))
     interval_minutes = max(1, freq_sec // 60)
 
@@ -66,7 +66,7 @@ def run_headless() -> None:
     import logging
     from pathlib import Path as P
     logging.basicConfig(
-        filename=str(P("cve_emailer.log")),
+        filename=str(P(__file__).parent / "cve_emailer.log"),
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(message)s",
     )
