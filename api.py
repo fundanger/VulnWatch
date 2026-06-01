@@ -60,6 +60,11 @@ def serve_dashboard():
     return send_from_directory(_DASHBOARD_DIR, "index.html")
 
 
+@app.route("/docs")
+def serve_docs():
+    return send_from_directory(_DASHBOARD_DIR, "docs.html")
+
+
 @app.route("/dashboard/<path:filename>")
 def serve_static(filename):
     return send_from_directory(_DASHBOARD_DIR, filename)

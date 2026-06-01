@@ -1,0 +1,778 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CVE Emailer — Documentation</title>
+  <link rel="stylesheet" href="style.css" />
+  <style>
+    /* ── Docs-specific styles ── */
+    .docs-layout {
+      display: flex;
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 2rem;
+      gap: 2.5rem;
+      align-items: flex-start;
+    }
+
+    /* Sidebar TOC */
+    .docs-toc {
+      width: 220px;
+      flex-shrink: 0;
+      position: sticky;
+      top: 72px;
+    }
+    .docs-toc-title {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      color: var(--muted);
+      margin-bottom: .75rem;
+      padding-left: .5rem;
+    }
+    .docs-toc a {
+      display: block;
+      padding: .35rem .5rem;
+      border-radius: 5px;
+      color: var(--muted);
+      text-decoration: none;
+      font-size: 13px;
+      transition: color .15s, background .15s;
+    }
+    .docs-toc a:hover { color: var(--text); background: var(--surface2); }
+    .docs-toc a.active { color: var(--accent); background: var(--surface2); }
+    .docs-toc a.sub { padding-left: 1.25rem; font-size: 12px; }
+
+    /* Main content */
+    .docs-content {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .docs-section {
+      margin-bottom: 3.5rem;
+    }
+
+    h1.docs-h1 {
+      font-size: 28px;
+      font-weight: 700;
+      margin-bottom: .5rem;
+    }
+    .docs-subtitle {
+      color: var(--muted);
+      font-size: 15px;
+      margin-bottom: 2rem;
+    }
+
+    h2.docs-h2 {
+      font-size: 18px;
+      font-weight: 700;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: .5rem;
+      margin-bottom: 1.25rem;
+      scroll-margin-top: 72px;
+    }
+    h3.docs-h3 {
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--text);
+      margin: 1.25rem 0 .5rem;
+      scroll-margin-top: 72px;
+    }
+
+    p { color: var(--text); line-height: 1.7; margin-bottom: .85rem; font-size: 14px; }
+
+    .docs-content ul, .docs-content ol {
+      padding-left: 1.5rem;
+      margin-bottom: 1rem;
+    }
+    .docs-content li { color: var(--text); font-size: 14px; line-height: 1.7; margin-bottom: .25rem; }
+
+    /* Code blocks */
+    pre {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 1rem 1.25rem;
+      overflow-x: auto;
+      margin: .75rem 0 1.25rem;
+      font-size: 13px;
+      line-height: 1.6;
+    }
+    code {
+      font-family: "JetBrains Mono", "Fira Code", Consolas, monospace;
+      color: #a5f3fc;
+    }
+    pre code { color: var(--text); }
+    .kw  { color: #c084fc; }   /* keywords */
+    .cm  { color: #6b7280; font-style: italic; } /* comments */
+    .st  { color: #86efac; }   /* strings */
+    .nu  { color: #fb923c; }   /* numbers */
+
+    /* Inline badges / labels */
+    .tag {
+      display: inline-block;
+      padding: 1px 8px;
+      border-radius: 4px;
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: .3px;
+      vertical-align: middle;
+      margin-right: 4px;
+    }
+    .tag-get    { background: #1d4ed8; color: #fff; }
+    .tag-post   { background: #15803d; color: #fff; }
+    .tag-delete { background: #991b1b; color: #fff; }
+    .tag-auth   { background: #78350f; color: #fde68a; }
+    .tag-opt    { background: #374151; color: var(--muted); }
+
+    /* Info / warning callouts */
+    .callout {
+      border-left: 3px solid var(--accent);
+      background: var(--surface);
+      border-radius: 0 var(--radius) var(--radius) 0;
+      padding: .75rem 1rem;
+      margin: 1rem 0;
+      font-size: 13px;
+      line-height: 1.6;
+    }
+    .callout.warn  { border-color: var(--medium); }
+    .callout.tip   { border-color: var(--success); }
+    .callout.note  { border-color: var(--accent); }
+
+    /* Definition tables */
+    .def-table { width: 100%; border-collapse: collapse; margin-bottom: 1.25rem; font-size: 13px; }
+    .def-table th {
+      text-align: left;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: .8px;
+      color: var(--muted);
+      padding: .5rem .75rem;
+      border-bottom: 1px solid var(--border);
+      background: var(--surface2);
+    }
+    .def-table td {
+      padding: .5rem .75rem;
+      border-bottom: 1px solid var(--border);
+      vertical-align: top;
+    }
+    .def-table code { color: #93c5fd; font-size: 12px; }
+    .def-table .req { color: var(--critical); font-size: 11px; }
+    .def-table .opt { color: var(--muted); font-size: 11px; }
+
+    /* Architecture diagram */
+    .arch-diagram {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 1.5rem;
+      font-family: "JetBrains Mono", Consolas, monospace;
+      font-size: 12px;
+      line-height: 1.8;
+      overflow-x: auto;
+      color: var(--muted);
+      margin-bottom: 1.25rem;
+    }
+    .arch-diagram .hl { color: var(--text); font-weight: 600; }
+    .arch-diagram .arrow { color: var(--accent); }
+
+    @media (max-width: 900px) {
+      .docs-layout { flex-direction: column; padding: 1rem; }
+      .docs-toc { width: 100%; position: static; }
+    }
+  </style>
+</head>
+<body>
+  <nav class="nav">
+    <div class="nav-brand">CVE Emailer</div>
+    <div class="nav-links">
+      <a href="index.html" class="nav-link">Overview</a>
+      <a href="index.html#browse" class="nav-link">Browse CVEs</a>
+      <a href="index.html#history" class="nav-link">Scan History</a>
+      <a href="index.html#profiles" class="nav-link">Profiles</a>
+      <a href="docs.html" class="nav-link active">Docs</a>
+    </div>
+    <div class="nav-status">
+      <span id="health-dot" class="health-dot"></span>
+      <span id="health-text">Connecting…</span>
+    </div>
+  </nav>
+
+  <div class="docs-layout">
+
+    <!-- ── Sidebar TOC ── -->
+    <nav class="docs-toc" id="toc">
+      <div class="docs-toc-title">Contents</div>
+      <a href="#intro">Introduction</a>
+      <a href="#quickstart">Quick Start</a>
+      <a href="#architecture">Architecture</a>
+      <a href="#configuration">Configuration</a>
+      <a href="#env-vars" class="sub">Environment Variables</a>
+      <a href="#config-ini" class="sub">config.ini</a>
+      <a href="#keywords">Keywords &amp; Severity</a>
+      <a href="#profiles">Notification Profiles</a>
+      <a href="#scheduler">Scheduler</a>
+      <a href="#docker">Docker</a>
+      <a href="#api">REST API</a>
+      <a href="#api-auth" class="sub">Authentication</a>
+      <a href="#api-endpoints" class="sub">Endpoints</a>
+      <a href="#integrations">Integrations</a>
+      <a href="#int-email" class="sub">Email</a>
+      <a href="#int-slack" class="sub">Slack</a>
+      <a href="#int-webhook" class="sub">Webhook</a>
+      <a href="#int-jira" class="sub">Jira</a>
+      <a href="#int-snow" class="sub">ServiceNow</a>
+      <a href="#enrichment">CVE Enrichment</a>
+      <a href="#database">Database</a>
+      <a href="#tui">Terminal UI</a>
+    </nav>
+
+    <!-- ── Main content ── -->
+    <main class="docs-content">
+
+      <!-- INTRO -->
+      <div class="docs-section" id="intro">
+        <h1 class="docs-h1">CVE Emailer v2</h1>
+        <p class="docs-subtitle">Automated CVE monitoring, enrichment, and multi-channel alerting</p>
+        <p>
+          CVE Emailer continuously queries the <strong>NIST NVD API</strong> for CVEs matching your
+          keywords, enriches each result with <strong>EPSS exploit-probability scores</strong> and
+          <strong>CISA KEV</strong> (Known Exploited Vulnerabilities) flags, stores them in a local
+          SQLite or Postgres database, and dispatches alerts via email, Slack, webhooks, Jira, or
+          ServiceNow.
+        </p>
+        <p>
+          It ships with a <strong>full-screen Terminal UI</strong> for interactive use and a
+          <strong>Flask REST API + web dashboard</strong> for production deployment.
+        </p>
+        <div class="callout tip">
+          New to the tool? Jump to <a href="#quickstart">Quick Start</a> to be up and running in
+          under 5 minutes.
+        </div>
+      </div>
+
+      <!-- QUICK START -->
+      <div class="docs-section" id="quickstart">
+        <h2 class="docs-h2">Quick Start</h2>
+
+        <h3 class="docs-h3">Option A — Interactive TUI</h3>
+        <pre><code><span class="cm"># 1. Install dependencies</span>
+pip install -r requirements.txt
+
+<span class="cm"># 2. Launch the terminal UI (setup wizard runs automatically on first start)</span>
+python main.py</code></pre>
+        <p>
+          The setup wizard prompts for your email credentials, NVD API key, and initial keywords.
+          All settings are stored in <code>config.ini</code> in the same directory.
+        </p>
+
+        <h3 class="docs-h3">Option B — Docker (recommended for production)</h3>
+        <pre><code><span class="cm"># 1. Copy the example env file and fill in your values</span>
+cp .env.example .env
+
+<span class="cm"># 2. Start all services (Postgres + API server + headless scanner)</span>
+docker compose up -d
+
+<span class="cm"># 3. Open the dashboard</span>
+<span class="cm"># http://localhost:5000</span></code></pre>
+
+        <h3 class="docs-h3">Option C — Headless / scheduled</h3>
+        <pre><code><span class="cm"># Install a background job for this OS (cron / launchd / Task Scheduler)</span>
+python scheduler.py install
+
+<span class="cm"># Run a single scan cycle manually</span>
+python scheduler.py run
+
+<span class="cm"># Check job status</span>
+python scheduler.py status
+
+<span class="cm"># Remove the job</span>
+python scheduler.py remove</code></pre>
+      </div>
+
+      <!-- ARCHITECTURE -->
+      <div class="docs-section" id="architecture">
+        <h2 class="docs-h2">Architecture</h2>
+        <div class="arch-diagram">
+<span class="hl">NVD API</span>  <span class="arrow">──────►</span>  <span class="hl">search.py</span>  <span class="arrow">──────►</span>  <span class="hl">database.py</span>  (SQLite / Postgres)
+                         <span class="arrow">│</span>
+              <span class="hl">epss.py</span> <span class="arrow">◄─┤</span>  EPSS + CISA KEV enrichment
+                         <span class="arrow">│</span>
+                         <span class="arrow">▼</span>
+              <span class="hl">mail.py</span>       email alerts
+              <span class="hl">notify.py</span>     Slack / webhook
+              <span class="hl">integrations.py</span>  Jira / ServiceNow tickets
+
+<span class="hl">tui.py</span>        terminal UI (interactive)
+<span class="hl">api.py</span>        Flask REST API + web dashboard
+<span class="hl">scheduler.py</span>  cross-platform background job installer
+<span class="hl">logger.py</span>     structured JSON logging (SIEM-compatible)
+        </div>
+        <p>
+          Each scan cycle calls <code>search.run_once()</code>, which reloads <code>config.ini</code>
+          fresh so settings changes take effect without a restart. Keywords are processed in parallel;
+          NVD results are paginated (2 000 CVEs/page). New and severity-upgraded CVEs are enriched,
+          written to the database, and dispatched.
+        </p>
+        <p>
+          In <strong>digest mode</strong>, CVEs are queued in the <code>digest_queue</code> table
+          and batched into a single email on your chosen schedule (hourly / daily / weekly).
+        </p>
+      </div>
+
+      <!-- CONFIGURATION -->
+      <div class="docs-section" id="configuration">
+        <h2 class="docs-h2">Configuration</h2>
+
+        <h3 class="docs-h3" id="env-vars">Environment Variables</h3>
+        <p>
+          All sensitive values should be set as environment variables rather than stored in
+          <code>config.ini</code>. Environment variables always take precedence over the ini file.
+        </p>
+        <table class="def-table">
+          <thead>
+            <tr><th>Variable</th><th>Description</th><th></th></tr>
+          </thead>
+          <tbody>
+            <tr><td><code>DATABASE_URL</code></td><td>SQLAlchemy DSN. Defaults to <code>sqlite:///cve_emailer.db</code>. Use <code>postgresql+psycopg2://user:pass@host/db</code> for Postgres.</td><td class="opt">optional</td></tr>
+            <tr><td><code>API_SECRET</code></td><td>Bearer token for write endpoints (<code>POST /api/scan</code>, profile mutation). If unset, write endpoints are open.</td><td class="opt">optional</td></tr>
+            <tr><td><code>CVE_SENDER_EMAIL</code></td><td>Gmail address used to send alert emails.</td><td class="opt">optional</td></tr>
+            <tr><td><code>CVE_SENDER_PASSWORD</code></td><td>Gmail App Password (not your account password).</td><td class="opt">optional</td></tr>
+            <tr><td><code>CVE_RECIPIENT_EMAIL</code></td><td>Comma-separated recipient addresses.</td><td class="opt">optional</td></tr>
+            <tr><td><code>NVD_API_KEY</code></td><td>NIST NVD API key. Without it requests are rate-limited to 5 req/30s.</td><td class="opt">optional</td></tr>
+            <tr><td><code>CVE_SLACK_WEBHOOK</code></td><td>Slack incoming webhook URL.</td><td class="opt">optional</td></tr>
+            <tr><td><code>CVE_WEBHOOK_URL</code></td><td>Generic JSON webhook URL.</td><td class="opt">optional</td></tr>
+            <tr><td><code>JIRA_URL</code></td><td>Jira base URL e.g. <code>https://myorg.atlassian.net</code></td><td class="opt">optional</td></tr>
+            <tr><td><code>JIRA_USER</code></td><td>Jira account email.</td><td class="opt">optional</td></tr>
+            <tr><td><code>JIRA_TOKEN</code></td><td>Jira API token.</td><td class="opt">optional</td></tr>
+            <tr><td><code>JIRA_PROJECT_KEY</code></td><td>Jira project key e.g. <code>SEC</code>. Defaults to <code>SEC</code>.</td><td class="opt">optional</td></tr>
+            <tr><td><code>JIRA_ISSUE_TYPE</code></td><td>Issue type name. Defaults to <code>Bug</code>.</td><td class="opt">optional</td></tr>
+            <tr><td><code>SNOW_INSTANCE</code></td><td>ServiceNow instance hostname e.g. <code>myorg.service-now.com</code></td><td class="opt">optional</td></tr>
+            <tr><td><code>SNOW_USER</code></td><td>ServiceNow username.</td><td class="opt">optional</td></tr>
+            <tr><td><code>SNOW_PASSWORD</code></td><td>ServiceNow password.</td><td class="opt">optional</td></tr>
+            <tr><td><code>SNOW_CATEGORY</code></td><td>Incident category. Defaults to <code>Security</code>.</td><td class="opt">optional</td></tr>
+            <tr><td><code>SCAN_INTERVAL</code></td><td>Seconds between headless scanner cycles. Defaults to <code>3600</code>.</td><td class="opt">optional</td></tr>
+          </tbody>
+        </table>
+
+        <h3 class="docs-h3" id="config-ini">config.ini</h3>
+        <p>
+          Non-secret settings are stored in <code>config.ini</code> in the project root. The file is
+          created by the setup wizard on first run and is gitignored. All modules resolve it relative
+          to their own file path, not the working directory.
+        </p>
+        <pre><code>[DEFAULT]
+apiKey          = YOUR_NVD_API_KEY
+keywords        = Apache Knox
+                  log4j
+                  OpenSSL
+checkFrequency  = 3600
+minSeverity     = HIGH
+webhookUrl      =
+slackWebhook    =
+
+[EMAIL]
+senderEmail     = you@gmail.com
+senderPassword  = xxxx xxxx xxxx xxxx
+recipientEmail  = team@example.com
+smtpServer      = smtp.gmail.com
+smtpPort        = 587</code></pre>
+        <div class="callout note">
+          Any field can be overridden by its corresponding environment variable (see table above).
+          The TUI marks overridden fields as read-only.
+        </div>
+      </div>
+
+      <!-- KEYWORDS -->
+      <div class="docs-section" id="keywords">
+        <h2 class="docs-h2">Keywords &amp; Severity Overrides</h2>
+        <p>
+          Keywords are stored as a newline-separated list under <code>[DEFAULT] keywords</code>.
+          Each keyword is used as an NVD full-text search term. Results are stored in a dedicated
+          SQLite/Postgres table named after the keyword (non-word characters replaced with
+          <code>_</code>).
+        </p>
+        <p>
+          You can append a severity override using the <code>::SEVERITY</code> syntax to set a
+          different minimum alert threshold per keyword:
+        </p>
+        <pre><code>keywords =
+    Apache Knox
+    log4j::CRITICAL
+    OpenSSL::MEDIUM
+    VMware ESXi</code></pre>
+        <p>
+          In this example, <code>log4j</code> only alerts on CRITICAL CVEs while
+          <code>OpenSSL</code> alerts on MEDIUM and above. Keywords without a suffix use the global
+          <code>minSeverity</code> setting.
+        </p>
+        <p>
+          Valid severity levels (ascending): <code>NONE</code> → <code>LOW</code> →
+          <code>MEDIUM</code> → <code>HIGH</code> → <code>CRITICAL</code>
+        </p>
+      </div>
+
+      <!-- PROFILES -->
+      <div class="docs-section" id="profiles">
+        <h2 class="docs-h2">Notification Profiles</h2>
+        <p>
+          Profiles let you run isolated scans with different keywords, severity thresholds, and
+          recipient lists. When one or more profiles exist, the scheduler runs
+          <code>run_profiles()</code> instead of <code>run_once()</code>.
+        </p>
+        <p>Profiles are managed via the TUI (<kbd>p</kbd>) or the REST API.</p>
+        <table class="def-table">
+          <thead><tr><th>Field</th><th>Description</th></tr></thead>
+          <tbody>
+            <tr><td><code>name</code></td><td>Unique profile identifier.</td></tr>
+            <tr><td><code>keywords</code></td><td>Newline-separated keywords (overrides global list).</td></tr>
+            <tr><td><code>min_severity</code></td><td>Minimum severity to alert on.</td></tr>
+            <tr><td><code>recipients</code></td><td>Comma-separated email addresses for this profile.</td></tr>
+            <tr><td><code>webhook_url</code></td><td>Webhook URL for this profile (optional).</td></tr>
+            <tr><td><code>slack_webhook</code></td><td>Slack webhook for this profile (optional).</td></tr>
+            <tr><td><code>digest_mode</code></td><td><code>0</code> = immediate alerts, <code>1</code> = batched digest.</td></tr>
+            <tr><td><code>digest_schedule</code></td><td><code>hourly</code> / <code>daily</code> / <code>weekly</code>.</td></tr>
+          </tbody>
+        </table>
+        <h3 class="docs-h3">Digest Mode</h3>
+        <p>
+          When digest mode is enabled, found CVEs are queued in the <code>digest_queue</code> table
+          instead of dispatched immediately. After each scan cycle, the scheduler checks whether the
+          configured interval has elapsed since the last digest was sent. If so, it batches all
+          queued CVEs into a single email and marks them sent.
+        </p>
+      </div>
+
+      <!-- SCHEDULER -->
+      <div class="docs-section" id="scheduler">
+        <h2 class="docs-h2">Scheduler</h2>
+        <p>
+          <code>scheduler.py</code> installs a native background job that runs
+          <code>scheduler.py run</code> on your configured <code>checkFrequency</code> interval.
+        </p>
+        <table class="def-table">
+          <thead><tr><th>Platform</th><th>Mechanism</th><th>Log location</th></tr></thead>
+          <tbody>
+            <tr><td>Windows</td><td>Task Scheduler (<code>schtasks</code>)</td><td><code>cve_emailer.log</code> in script dir</td></tr>
+            <tr><td>macOS</td><td>launchd user agent plist at <code>~/Library/LaunchAgents/</code></td><td>same</td></tr>
+            <tr><td>Linux</td><td>systemd user service + timer at <code>~/.config/systemd/user/</code></td><td>same</td></tr>
+          </tbody>
+        </table>
+        <pre><code>python scheduler.py install   <span class="cm"># register the background job</span>
+python scheduler.py run       <span class="cm"># run one scan cycle immediately</span>
+python scheduler.py status    <span class="cm"># check if the job is registered</span>
+python scheduler.py remove    <span class="cm"># unregister the job</span></code></pre>
+      </div>
+
+      <!-- DOCKER -->
+      <div class="docs-section" id="docker">
+        <h2 class="docs-h2">Docker</h2>
+        <p>
+          The included <code>docker-compose.yml</code> starts three services:
+        </p>
+        <ul>
+          <li><strong>db</strong> — Postgres 16</li>
+          <li><strong>api</strong> — Flask API server + web dashboard (port 5000)</li>
+          <li><strong>scanner</strong> — headless scan loop running every <code>SCAN_INTERVAL</code> seconds</li>
+        </ul>
+        <pre><code><span class="cm"># Copy and fill in secrets</span>
+cp .env.example .env
+$EDITOR .env
+
+<span class="cm"># Build and start</span>
+docker compose up -d
+
+<span class="cm"># View logs</span>
+docker compose logs -f scanner
+
+<span class="cm"># Trigger an immediate scan via API</span>
+curl -X POST http://localhost:5000/api/scan \
+  -H "Authorization: Bearer $API_SECRET"</code></pre>
+        <div class="callout warn">
+          Never commit <code>.env</code> or <code>config.ini</code> — both are gitignored and
+          excluded from the Docker image via <code>.dockerignore</code>.
+        </div>
+      </div>
+
+      <!-- REST API -->
+      <div class="docs-section" id="api">
+        <h2 class="docs-h2">REST API</h2>
+        <p>
+          Start the API server with <code>python api.py</code> (default <code>127.0.0.1:5000</code>).
+          The web dashboard is served from <code>/</code>.
+        </p>
+        <pre><code>python api.py                    <span class="cm"># default host/port</span>
+python api.py --host 0.0.0.0     <span class="cm"># bind all interfaces</span>
+python api.py --port 8080        <span class="cm"># custom port</span></code></pre>
+
+        <h3 class="docs-h3" id="api-auth">Authentication</h3>
+        <p>
+          Set <code>API_SECRET</code> in your environment to require a Bearer token on all write
+          endpoints. Read endpoints are always public.
+        </p>
+        <pre><code>Authorization: Bearer &lt;API_SECRET&gt;</code></pre>
+
+        <h3 class="docs-h3" id="api-endpoints">Endpoints</h3>
+
+        <p><span class="tag tag-get">GET</span> <code>/health</code></p>
+        <p>Returns <code>{"status":"ok","ts":"..."}</code> or 500 on DB error. Used by the dashboard health indicator.</p>
+
+        <p><span class="tag tag-get">GET</span> <code>/metrics</code></p>
+        <p>Returns CVE counts as JSON (default) or Prometheus text format (<code>?format=prometheus</code>).</p>
+
+        <p><span class="tag tag-get">GET</span> <code>/api/dashboard</code></p>
+        <p>Totals by severity, per-keyword breakdown, CISA KEV count, and 10 most recent scans.</p>
+
+        <p><span class="tag tag-get">GET</span> <code>/api/history?limit=100</code></p>
+        <p>Scan history rows. Max 500 rows per request.</p>
+
+        <p><span class="tag tag-get">GET</span> <code>/api/tables</code></p>
+        <p>List of CVE table names (one per keyword).</p>
+
+        <p><span class="tag tag-get">GET</span> <code>/api/cves</code></p>
+        <table class="def-table">
+          <thead><tr><th>Parameter</th><th>Description</th><th></th></tr></thead>
+          <tbody>
+            <tr><td><code>table</code></td><td>Keyword table name (required).</td><td class="req">required</td></tr>
+            <tr><td><code>search</code></td><td>Text search across CVE ID and description.</td><td class="opt">optional</td></tr>
+            <tr><td><code>min_severity</code></td><td><code>NONE</code> / <code>LOW</code> / <code>MEDIUM</code> / <code>HIGH</code> / <code>CRITICAL</code></td><td class="opt">optional</td></tr>
+            <tr><td><code>date_from</code></td><td>Published on or after (ISO date, e.g. <code>2024-01-01</code>).</td><td class="opt">optional</td></tr>
+            <tr><td><code>date_to</code></td><td>Published on or before.</td><td class="opt">optional</td></tr>
+            <tr><td><code>limit</code></td><td>Max rows (default 200, max 1000).</td><td class="opt">optional</td></tr>
+            <tr><td><code>offset</code></td><td>Pagination offset.</td><td class="opt">optional</td></tr>
+          </tbody>
+        </table>
+
+        <p><span class="tag tag-get">GET</span> <code>/api/cve/&lt;cve_id&gt;?table=&lt;name&gt;</code></p>
+        <p>Full detail for a single CVE including description, CWE, CPE, references, EPSS score, and KEV flag.</p>
+
+        <p><span class="tag tag-get">GET</span> <code>/api/profiles</code></p>
+        <p>List all notification profiles.</p>
+
+        <p><span class="tag tag-post">POST</span> <span class="tag tag-auth">Auth</span> <code>/api/profiles</code></p>
+        <p>Create or update a profile. Body: JSON with fields matching the profile schema above.</p>
+
+        <p><span class="tag tag-delete">DELETE</span> <span class="tag tag-auth">Auth</span> <code>/api/profiles/&lt;name&gt;</code></p>
+        <p>Delete a profile by name.</p>
+
+        <p><span class="tag tag-post">POST</span> <span class="tag tag-auth">Auth</span> <code>/api/scan</code></p>
+        <p>Trigger an immediate scan. Returns 409 if a scan is already running.</p>
+
+        <p><span class="tag tag-get">GET</span> <code>/api/scan/status</code></p>
+        <p>Returns <code>{"running": bool, "queued": int}</code>.</p>
+      </div>
+
+      <!-- INTEGRATIONS -->
+      <div class="docs-section" id="integrations">
+        <h2 class="docs-h2">Integrations</h2>
+
+        <h3 class="docs-h3" id="int-email">Email (Gmail)</h3>
+        <p>
+          Alerts are sent via SMTP (default: <code>smtp.gmail.com:587</code> with STARTTLS).
+          Generate a <strong>Gmail App Password</strong> at
+          <code>myaccount.google.com → Security → 2-Step Verification → App passwords</code> —
+          your account password will not work.
+        </p>
+
+        <h3 class="docs-h3" id="int-slack">Slack</h3>
+        <p>
+          Create an <strong>Incoming Webhook</strong> in your Slack workspace and set
+          <code>CVE_SLACK_WEBHOOK</code> (or <code>slackWebhook</code> in config.ini).
+          Each alert posts a plain-text message with CVE ID, severity, CVSS score, and description.
+        </p>
+
+        <h3 class="docs-h3" id="int-webhook">Generic Webhook</h3>
+        <p>
+          Set <code>CVE_WEBHOOK_URL</code> to POST a JSON payload for each alert batch to any HTTP
+          endpoint (e.g. Zapier, n8n, SIEM ingest). Payload structure:
+        </p>
+        <pre><code>{
+  <span class="st">"cves"</span>: [
+    {
+      <span class="st">"cve_id"</span>:      <span class="st">"CVE-2024-12345"</span>,
+      <span class="st">"severity"</span>:    <span class="st">"CRITICAL"</span>,
+      <span class="st">"cvss_score"</span>:  <span class="nu">9.8</span>,
+      <span class="st">"epss_score"</span>:  <span class="nu">0.94</span>,
+      <span class="st">"kev"</span>:         <span class="kw">true</span>,
+      <span class="st">"description"</span>: <span class="st">"..."</span>
+    }
+  ]
+}</code></pre>
+
+        <h3 class="docs-h3" id="int-jira">Jira</h3>
+        <p>
+          Automatically creates Jira issues for <strong>CRITICAL and HIGH</strong> CVEs.
+          Requires a Jira API token (not your Atlassian password).
+        </p>
+        <table class="def-table">
+          <thead><tr><th>Variable</th><th>Description</th></tr></thead>
+          <tbody>
+            <tr><td><code>JIRA_URL</code></td><td><code>https://myorg.atlassian.net</code></td></tr>
+            <tr><td><code>JIRA_USER</code></td><td>Atlassian account email.</td></tr>
+            <tr><td><code>JIRA_TOKEN</code></td><td>API token from <code>id.atlassian.com/manage-profile/security/api-tokens</code>.</td></tr>
+            <tr><td><code>JIRA_PROJECT_KEY</code></td><td>Target project key (default: <code>SEC</code>).</td></tr>
+            <tr><td><code>JIRA_ISSUE_TYPE</code></td><td>Issue type (default: <code>Bug</code>).</td></tr>
+          </tbody>
+        </table>
+
+        <h3 class="docs-h3" id="int-snow">ServiceNow</h3>
+        <p>
+          Creates incidents via the ServiceNow Table API for CRITICAL and HIGH CVEs.
+        </p>
+        <table class="def-table">
+          <thead><tr><th>Variable</th><th>Description</th></tr></thead>
+          <tbody>
+            <tr><td><code>SNOW_INSTANCE</code></td><td><code>myorg.service-now.com</code></td></tr>
+            <tr><td><code>SNOW_USER</code></td><td>ServiceNow username.</td></tr>
+            <tr><td><code>SNOW_PASSWORD</code></td><td>ServiceNow password.</td></tr>
+            <tr><td><code>SNOW_CATEGORY</code></td><td>Incident category (default: <code>Security</code>).</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- ENRICHMENT -->
+      <div class="docs-section" id="enrichment">
+        <h2 class="docs-h2">CVE Enrichment</h2>
+        <p>Every CVE is enriched before being written to the database:</p>
+        <ul>
+          <li>
+            <strong>EPSS</strong> (Exploit Prediction Scoring System) — probability (0–1) that a
+            CVE will be exploited in the wild within the next 30 days, sourced from
+            <code>api.first.org</code>. Batched 30 IDs per request.
+          </li>
+          <li>
+            <strong>CISA KEV</strong> — the CISA Known Exploited Vulnerabilities catalog
+            (<code>cisa.gov</code>). Cached in memory for 1 hour. CVEs in this list are flagged
+            with a KEV badge in the dashboard and alerts.
+          </li>
+          <li>
+            <strong>CVSS score and vector</strong> — sourced directly from NVD.
+          </li>
+          <li>
+            <strong>CWE / CPE</strong> — weakness category and platform affected, from NVD.
+          </li>
+          <li>
+            <strong>References</strong> — advisory URLs from the NVD record, stored as JSON.
+          </li>
+        </ul>
+        <p>
+          A CVE is re-alerted if its severity category improves (e.g. HIGH → CRITICAL) or its
+          CVSS score increases by ≥ 1.0 since the last alert. The previous alerted severity and
+          score are tracked in the database.
+        </p>
+      </div>
+
+      <!-- DATABASE -->
+      <div class="docs-section" id="database">
+        <h2 class="docs-h2">Database</h2>
+        <p>
+          CVE Emailer uses <strong>SQLAlchemy Core</strong> and supports both SQLite (default) and
+          PostgreSQL. The database is resolved from the <code>DATABASE_URL</code> environment
+          variable; if unset it defaults to <code>sqlite:///cve_emailer.db</code> in the script
+          directory.
+        </p>
+
+        <h3 class="docs-h3">System tables</h3>
+        <table class="def-table">
+          <thead><tr><th>Table</th><th>Purpose</th></tr></thead>
+          <tbody>
+            <tr><td><code>scan_history</code></td><td>One row per scan cycle: timestamps, new/updated CVE counts, error.</td></tr>
+            <tr><td><code>notification_profiles</code></td><td>Named alert profiles with keywords, severity, recipients, digest settings.</td></tr>
+            <tr><td><code>digest_queue</code></td><td>Pending CVEs for digest-mode profiles; <code>sent_at</code> written when dispatched.</td></tr>
+          </tbody>
+        </table>
+
+        <h3 class="docs-h3">CVE tables</h3>
+        <p>
+          Each keyword gets its own table named after the keyword (non-word characters replaced with
+          <code>_</code>). The primary key is the full CVE ID string (e.g. <code>CVE-2024-12345</code>).
+          Table names are double-quoted in all queries to support keywords with spaces or hyphens.
+        </p>
+        <p>
+          New columns are added via <code>ALTER TABLE ... ADD COLUMN</code> inside try/except blocks,
+          so upgrading an existing database is safe — just restart the app.
+        </p>
+      </div>
+
+      <!-- TUI -->
+      <div class="docs-section" id="tui">
+        <h2 class="docs-h2">Terminal UI</h2>
+        <p>
+          Launch with <code>python main.py</code>. The TUI is built with
+          <a href="https://textual.textualize.io" target="_blank" rel="noopener">Textual</a>.
+        </p>
+
+        <h3 class="docs-h3">Keyboard shortcuts</h3>
+        <table class="def-table">
+          <thead><tr><th>Key</th><th>Action</th></tr></thead>
+          <tbody>
+            <tr><td><kbd>r</kbd></td><td>Run Once — execute a single scan cycle immediately.</td></tr>
+            <tr><td><kbd>s</kbd></td><td>Start / Stop the continuous scan loop.</td></tr>
+            <tr><td><kbd>k</kbd></td><td>Open Keywords screen.</td></tr>
+            <tr><td><kbd>d</kbd></td><td>Open Dashboard screen (CVE counts by severity).</td></tr>
+            <tr><td><kbd>h</kbd></td><td>Open Scan History screen.</td></tr>
+            <tr><td><kbd>b</kbd></td><td>Open Browser — search CVEs by keyword, text, severity, date.</td></tr>
+            <tr><td><kbd>p</kbd></td><td>Open Notification Profiles screen.</td></tr>
+            <tr><td><kbd>q</kbd></td><td>Quit.</td></tr>
+            <tr><td><kbd>Esc</kbd></td><td>Go back / close the current screen.</td></tr>
+          </tbody>
+        </table>
+
+        <h3 class="docs-h3">Screens</h3>
+        <ul>
+          <li><strong>MainScreen</strong> — log view, Run Once / Start Loop / Stop controls, sidebar navigation.</li>
+          <li><strong>SettingsScreen</strong> — edit config fields, send a test email. Fields backed by env vars are shown read-only.</li>
+          <li><strong>KeywordsScreen</strong> — add, remove, and save keywords (including per-keyword severity overrides).</li>
+          <li><strong>ProfilesScreen</strong> — create, edit, and delete notification profiles.</li>
+          <li><strong>DashboardScreen</strong> — CVE count totals by severity and per-keyword breakdown.</li>
+          <li><strong>HistoryScreen</strong> — scan history table with new and upgraded counts per run.</li>
+          <li><strong>BrowserScreen</strong> — search CVEs; Enter opens CVEDetailScreen.</li>
+          <li><strong>CVEDetailScreen</strong> — full CVE detail with clickable reference links.</li>
+          <li><strong>SchedulerScreen</strong> — install, remove, and check the background scheduler job.</li>
+          <li><strong>SetupWizard</strong> — auto-launched on first run if required config fields are missing.</li>
+        </ul>
+      </div>
+
+    </main>
+  </div>
+
+  <script>
+    // Health check
+    async function checkHealth() {
+      const dot  = document.getElementById("health-dot");
+      const text = document.getElementById("health-text");
+      try {
+        const r = await fetch("/health");
+        const j = await r.json();
+        if (j.status === "ok") {
+          dot.className = "health-dot ok";
+          text.textContent = "Connected";
+        } else { throw new Error(); }
+      } catch {
+        dot.className = "health-dot err";
+        text.textContent = "API unreachable";
+      }
+    }
+    setInterval(checkHealth, 30_000);
+    checkHealth();
+
+    // TOC highlight on scroll
+    const tocLinks = document.querySelectorAll(".docs-toc a[href^='#']");
+    const headings = Array.from(document.querySelectorAll("h2[id], h3[id]"));
+
+    function updateToc() {
+      const scrollY = window.scrollY + 80;
+      let active = headings[0];
+      for (const h of headings) {
+        if (h.offsetTop <= scrollY) active = h;
+      }
+      tocLinks.forEach(a => a.classList.toggle("active", a.getAttribute("href") === `#${active?.id}`));
+    }
+
+    window.addEventListener("scroll", updateToc, { passive: true });
+    updateToc();
+  </script>
+</body>
+</html>
