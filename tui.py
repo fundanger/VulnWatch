@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import configparser
 import json
+import os
 import platform
 import threading
 import time
@@ -53,6 +54,17 @@ REQUIRED = [
     ("EMAIL", "recipientEmail"),
 ]
 
+# Environment variables that shadow config.ini fields.
+# If set, the field is read-only in the settings screen.
+ENV_OVERRIDES: dict[tuple[str, str], str] = {
+    ("EMAIL", "senderEmail"):    "CVE_SENDER_EMAIL",
+    ("EMAIL", "senderPassword"): "CVE_SENDER_PASSWORD",
+    ("EMAIL", "recipientEmail"): "CVE_RECIPIENT_EMAIL",
+    ("DEFAULT", "apiKey"):       "NVD_API_KEY",
+    ("DEFAULT", "webhookUrl"):   "CVE_WEBHOOK_URL",
+    ("DEFAULT", "slackWebhook"): "CVE_SLACK_WEBHOOK",
+}
+
 SEVERITY_OPTS = ["NONE", "LOW", "MEDIUM", "HIGH", "CRITICAL"]
 
 SEVERITY_COLORS = {
@@ -81,9 +93,18 @@ def save_config(values: dict[tuple[str, str], str]) -> None:
         cfg.write(f)
 
 
+def _get_field_value(section: str, key: str) -> str:
+    """Return the effective value for a config field: env var takes precedence."""
+    env_key = ENV_OVERRIDES.get((section, key))
+    if env_key:
+        val = os.environ.get(env_key, "").strip()
+        if val:
+            return val
+    return load_config().get(section, key, fallback="").strip()
+
+
 def _needs_setup() -> bool:
-    cfg = load_config()
-    return any(not cfg.get(s, k, fallback="").strip() for s, k in REQUIRED)
+    return any(not _get_field_value(s, k) for s, k in REQUIRED)
 
 
 def load_keywords() -> list[str]:
@@ -105,22 +126,28 @@ class SettingsScreen(Screen):
     BINDINGS = [Binding("escape", "app.pop_screen", "Back")]
 
     def compose(self) -> ComposeResult:
-        cfg = load_config()
         yield Header(show_clock=True)
         yield Label("Settings", id="settings-title")
         with ScrollableContainer(id="settings-form"):
             yield Static(
                 "[bold yellow]Warning:[/bold yellow] Credentials are stored in plain text "
-                "in config.ini — keep that file private and out of version control.",
+                "in config.ini — keep that file private and out of version control. "
+                "Set environment variables to override sensitive fields at runtime.",
                 id="security-warning",
             )
             for section, key, label, placeholder, is_password in FIELDS:
-                current = cfg.get(section, key, fallback="").strip()
-                yield Label(label)
+                env_key = ENV_OVERRIDES.get((section, key))
+                env_val = os.environ.get(env_key, "").strip() if env_key else ""
+                effective = env_val or _get_field_value(section, key)
+                if env_val:
+                    yield Label(f"{label}  [dim](overridden by ${env_key})[/dim]")
+                else:
+                    yield Label(label)
                 yield Input(
-                    value=current,
+                    value=effective,
                     placeholder=placeholder,
                     password=is_password,
+                    disabled=bool(env_val),
                     id=f"input-{section}-{key}",
                 )
             with Horizontal(id="settings-buttons"):
@@ -137,15 +164,18 @@ class SettingsScreen(Screen):
     def _save(self) -> None:
         values = {}
         for section, key, *_ in FIELDS:
+            env_key = ENV_OVERRIDES.get((section, key))
+            if env_key and os.environ.get(env_key, "").strip():
+                continue  # skip fields backed by env vars
             widget = self.query_one(f"#input-{section}-{key}", Input)
             values[(section, key)] = widget.value.strip()
         save_config(values)
         self.notify("Settings saved.", severity="information")
 
     def _test_email(self) -> None:
-        sender = self.query_one("#input-EMAIL-senderEmail", Input).value.strip()
-        password = self.query_one("#input-EMAIL-senderPassword", Input).value.strip()
-        recipient_raw = self.query_one("#input-EMAIL-recipientEmail", Input).value.strip()
+        sender = _get_field_value("EMAIL", "senderEmail")
+        password = _get_field_value("EMAIL", "senderPassword")
+        recipient_raw = _get_field_value("EMAIL", "recipientEmail")
         recipients = [r.strip() for r in recipient_raw.split(",") if r.strip()]
         if not sender or not password or not recipients:
             self.notify("Fill in sender email, password, and recipient first.", severity="warning")

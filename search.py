@@ -291,9 +291,11 @@ def _dispatch(
     subject = f"{base_subject}{subject_suffix}" if subject_suffix else base_subject
     body = _build_email_body(cves)
 
-    sender = cfg["EMAIL"].get("senderEmail", "").strip()
-    password = cfg["EMAIL"].get("senderPassword", "").strip()
-    rcpts = recipients or [r.strip() for r in cfg["EMAIL"].get("recipientEmail", "").split(",") if r.strip()]
+    import os as _os
+    sender   = _os.environ.get("CVE_SENDER_EMAIL", "").strip() or cfg["EMAIL"].get("senderEmail", "").strip()
+    password = _os.environ.get("CVE_SENDER_PASSWORD", "").strip() or cfg["EMAIL"].get("senderPassword", "").strip()
+    rcpt_raw = _os.environ.get("CVE_RECIPIENT_EMAIL", "").strip() or cfg["EMAIL"].get("recipientEmail", "").strip()
+    rcpts = recipients or [r.strip() for r in rcpt_raw.split(",") if r.strip()]
 
     if rcpts:
         if not sender or not password:

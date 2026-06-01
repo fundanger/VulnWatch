@@ -20,10 +20,15 @@ from datetime import datetime
 from functools import wraps
 from pathlib import Path
 
+from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.jobstores.memory import MemoryJobStore
 from flask import Flask, jsonify, request, send_from_directory, abort
 from flask_cors import CORS
 
 import database
+
+_scheduler = BackgroundScheduler(jobstores={"default": MemoryJobStore()})
+_scheduler.start()
 
 _HERE = Path(__file__).parent
 _DASHBOARD_DIR = _HERE / "dashboard"
@@ -177,19 +182,33 @@ def api_delete_profile(name: str):
 @app.route("/api/scan", methods=["POST"])
 @_require_auth
 def api_trigger_scan():
-    """Trigger a one-shot scan in the background. Returns immediately."""
-    import threading
-    import search
+    """
+    Trigger a one-shot scan via APScheduler. Returns immediately.
+    Rejects the request if a scan is already queued or running.
+    """
+    import search, logger as _log_mod
+
+    existing = _scheduler.get_jobs()
+    if existing:
+        return jsonify({"ok": False, "message": "A scan is already queued or running."}), 409
 
     def _run():
-        import logger
-        logger.setup()
+        _log_mod.setup()
         database.bootstrap()
-        search.run_once(log=lambda m: None)
+        try:
+            search.run_once(log=lambda m: None)
+        except Exception as exc:
+            import logging
+            logging.getLogger("cve_emailer.api").error("Triggered scan failed: %s", exc)
 
-    t = threading.Thread(target=_run, daemon=True)
-    t.start()
-    return jsonify({"ok": True, "message": "Scan started in background."})
+    _scheduler.add_job(_run, id="triggered_scan", replace_existing=True)
+    return jsonify({"ok": True, "message": "Scan queued."})
+
+
+@app.route("/api/scan/status")
+def api_scan_status():
+    jobs = _scheduler.get_jobs()
+    return jsonify({"running": bool(jobs), "queued": len(jobs)})
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────

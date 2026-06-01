@@ -1,0 +1,27 @@
+# Secrets and local state — never bake these into the image
+config.ini
+cve_emailer.db
+*.log
+*.log.*
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Dev tooling
+.git/
+.gitignore
+.dockerignore
+*.md
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
