@@ -1,20 +1,29 @@
 import smtplib
-from email.message import EmailMessage
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 
 
-def create_email(sender, recipient, subject, message):
-    msg = EmailMessage()
-    msg.set_content(message)
-
+def send_email(sender: str, password: str, recipient: str, subject: str, body: str) -> None:
+    msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
     msg["From"] = sender
     msg["To"] = recipient
-    return msg
+    msg.attach(MIMEText(body, "plain"))
+    msg.attach(MIMEText(_to_html(body), "html"))
+
+    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+        server.login(sender, password)
+        server.send_message(msg)
 
 
-def send_email(email_username, email_password, msg):
-    # Send the message via our own SMTP server.
-    server = smtplib.SMTP_SSL("smtp.gmail.com", 465)
-    server.login(email_username, email_password)
-    server.send_message(msg)
-    server.quit()
+def _to_html(plain: str) -> str:
+    rows = []
+    for line in plain.splitlines():
+        line = line.strip()
+        if line.startswith("CVE-"):
+            rows.append(f"<h3>{line}</h3>")
+        elif line.startswith("Service:"):
+            rows.append(f"<h2>{line}</h2>")
+        elif line:
+            rows.append(f"<p>{line}</p>")
+    return "<html><body>" + "\n".join(rows) + "</body></html>"

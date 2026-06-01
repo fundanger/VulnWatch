@@ -1,9 +1,8 @@
 import configparser
-import json
 import re
 import time
 from datetime import datetime
-from email.mime.text import MIMEText
+from urllib.parse import quote_plus
 
 import requests
 
@@ -13,100 +12,90 @@ import mail
 CONFIG = configparser.ConfigParser()
 CONFIG.read("config.ini")
 
-
-def get_search_result(api_url):
-    headers = {"apiKey": CONFIG["DEFAULT"]["apiKey"]}
-    resp = requests.get(api_url, headers=headers)
-    return resp.json()
+NVD_BASE = "https://services.nvd.nist.gov/rest/json/cves/2.0"
 
 
-def get_result_count(json_file):
-    result_count = json_file["totalResults"]
-    print("There are " + str(result_count) + " results.")
-    return result_count
+def _api_headers() -> dict:
+    key = CONFIG["DEFAULT"].get("apiKey", "").strip()
+    return {"apiKey": key} if key else {}
 
 
-def get_id_nums(result_count, json_file):
-    email_lines = []
-    for i in range(result_count):
-        email_lines.append(json_file["vulnerabilities"][i]["cve"]["id"])
-        email_lines.append("Creation Date: " + json_file["vulnerabilities"][i]["cve"]["published"])
-        email_lines.append("Last Modified: " + json_file["vulnerabilities"][i]["cve"]["lastModified"])
-        email_lines.append(json_file["vulnerabilities"][i]["cve"]["descriptions"][0]["value"])
-        email_lines.append("\n")
-    return email_lines
+def _keyword_url(keyword: str) -> str:
+    return f"{NVD_BASE}?keywordSearch={quote_plus(keyword.strip())}"
 
 
-def create_entries(json_file, result_count, formatted_line, email):
-    try:
-        for i in range(result_count):
-            cve_id = json_file["vulnerabilities"][i]["cve"]["id"]
-            cve_id = re.sub(r"\D", "", cve_id)
-            publish_date = json_file["vulnerabilities"][i]["cve"]["published"]
-            datetime_object = datetime.strptime(publish_date, "%Y-%m-%dT%H:%M:%S.%f")
-            publish_date = datetime_object.strftime("%Y-%m-%d %H:%M:%S")
-            last_modified = json_file["vulnerabilities"][i]["cve"]["lastModified"]
-            datetime_object = datetime.strptime(last_modified, "%Y-%m-%dT%H:%M:%S.%f")
-            last_modified = datetime_object.strftime("%Y-%m-%d %H:%M:%S")
-            description = json_file["vulnerabilities"][i]["cve"]["descriptions"][0]["value"]
-            email = database.insert_data(formatted_line, cve_id, publish_date, last_modified, description, email)
-    except FileNotFoundError:
-        print("There was a problem opening the file, exiting.")
-        exit(0)
-    finally:
-        return email
+def fetch_cves(keyword: str) -> list[dict]:
+    url = _keyword_url(keyword)
+    resp = requests.get(url, headers=_api_headers(), timeout=30)
+    resp.raise_for_status()
+    return resp.json().get("vulnerabilities", [])
 
 
-def format_json(json_file):
-    return json.dumps(json_file, sort_keys=True, indent=4)
+def _parse_dt(raw: str) -> str:
+    return datetime.strptime(raw, "%Y-%m-%dT%H:%M:%S.%f").strftime("%Y-%m-%d %H:%M:%S")
 
 
-def timed_search():
-    startTime = int(datetime.now().timestamp())
-    print(startTime)
+def process_keyword(keyword: str, log=print) -> str:
+    """Fetch CVEs for one keyword, insert new ones into DB, return email fragment."""
+    table = re.sub(r"\W+", "_", keyword.strip())
+    database.create_table(table)
+    time.sleep(3)  # NVD rate-limit courtesy delay
 
+    vulns = fetch_cves(keyword)
+    log(f"  {keyword.strip()}: {len(vulns)} result(s) from NVD")
+
+    fragment = ""
+    for v in vulns:
+        cve = v["cve"]
+        cve_id = cve["id"]
+        publish_date = _parse_dt(cve["published"])
+        last_modified = _parse_dt(cve["lastModified"])
+        description = cve["descriptions"][0]["value"]
+        numeric_id = re.sub(r"\D", "", cve_id)
+
+        is_new = database.insert_cve(table, numeric_id, publish_date, last_modified, description)
+        if is_new:
+            fragment += (
+                f"Service: {keyword.strip()}\n"
+                f"{cve_id}\n"
+                f"Published:  {publish_date}\n"
+                f"Modified:   {last_modified}\n"
+                f"Description: {description}\n\n"
+            )
+    return fragment
+
+
+def run_once(log=print) -> bool:
+    """Run one full scan cycle. Returns True if any email was sent."""
+    keyword_file = CONFIG["DEFAULT"]["txtList"].strip()
+    with open(keyword_file) as f:
+        keywords = [ln.strip() for ln in f if ln.strip()]
+
+    log(f"Scanning {len(keywords)} keyword(s)...")
+    body = ""
+    for kw in keywords:
+        body += process_keyword(kw, log=log)
+
+    if body:
+        log("New CVEs found — sending email...")
+        mail.send_email(
+            sender=CONFIG["EMAIL"]["senderEmail"],
+            password=CONFIG["EMAIL"]["senderPassword"],
+            recipient=CONFIG["EMAIL"]["recipientEmail"],
+            subject=CONFIG["EMAIL"]["subjectLine"],
+            body=body,
+        )
+        log("Email sent.")
+        return True
+
+    log("No new CVEs found.")
+    return False
+
+
+def timed_loop(log=print) -> None:
+    interval = int(CONFIG["DEFAULT"]["checkFrequency"])
+    log(f"Starting — will check every {interval}s.")
     while True:
-        if int(datetime.now().timestamp() - startTime) >= int(CONFIG["DEFAULT"]["checkFrequency"]):
-            file = CONFIG["DEFAULT"]["txtList"]
-            message = ""
-            message_length = 0
-            try:
-                with open(file, "r") as file:
-                    for line in file:
-                        url = make_keyword_url(line)
-                        formatted_line = line.replace(" ", "")
-                        database.create_tables(formatted_line)
-                        time.sleep(3)
-                        json_file = get_search_result(url)
-                        result_count = get_result_count(json_file)
-                        message = create_entries(json_file, result_count, formatted_line, str(message))
-                        message_length += len(message)
-
-                    if message_length > 0:
-                        message_formatted = MIMEText("".join(str(message)))
-                        email = mail.create_email(
-                            CONFIG["EMAIL"]["senderEmail"],
-                            CONFIG["EMAIL"]["recipientEmail"],
-                            CONFIG["EMAIL"]["subjectLine"],
-                            message_formatted,
-                        )
-                        mail.send_email(
-                            CONFIG["EMAIL"]["senderEmail"],
-                            CONFIG["EMAIL"]["senderPassword"],
-                            email,
-                        )
-                    else:
-                        print("No new CVEs found.")
-
-                    print(url)
-            except FileNotFoundError:
-                print("There was a problem opening the file, exiting")
-                exit(0)
-            finally:
-                file.close()
-                startTime = int(datetime.now().timestamp())
-
-
-def make_keyword_url(keywords):
-    url = "https://services.nvd.nist.gov/rest/json/cves/2.0?keywordSearch=" + keywords
-    return url.replace(" ", "%20")
+        run_once(log=log)
+        log(f"Sleeping {interval}s until next check...")
+        time.sleep(interval)

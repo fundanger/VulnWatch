@@ -1,18 +1,7 @@
-# Script that searches the NIST National Vulnerability Database for the given Vendors/Services
-# and returns new CVEs for those services(if any) in the format of an email every X amount of hours
-# This product uses the NVD API but is not endorsed or certified by the NVD
-import search
+"""CVE Emailer v2 — entry point"""
+# This product uses the NVD API but is not endorsed or certified by the NVD.
 
+from tui import run
 
-def start():
-    print("CVE Emailer Started.")
-    print("This product uses the NVD API but is not endorsed or certified by the NVD.")
-    try:
-        search.timed_search()
-    except Exception as e:
-        print(e)
-        print("Please check the Config.ini file")
-        print("and ensure it is properly filled out")
-
-
-start()
+if __name__ == "__main__":
+    run()
