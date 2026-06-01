@@ -1,0 +1,50 @@
+version: "3.9"
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER:     cveemailer
+      POSTGRES_PASSWORD: cveemailer
+      POSTGRES_DB:       cveemailer
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cveemailer"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "5000:5000"
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://cveemailer:cveemailer@db:5432/cveemailer
+      # API_SECRET: changeme   # Uncomment to require Bearer token on write endpoints
+    volumes:
+      - ./config.ini:/app/config.ini:ro
+      - ./cve_emailer.log:/app/cve_emailer.log
+
+  # Optional: headless scanner running on its own schedule inside Docker
+  scanner:
+    build: .
+    restart: unless-stopped
+    command: >
+      sh -c "while true; do python scheduler.py run; sleep 3600; done"
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://cveemailer:cveemailer@db:5432/cveemailer
+    volumes:
+      - ./config.ini:/app/config.ini:ro
+      - ./cve_emailer.log:/app/cve_emailer.log
+
+volumes:
+  pgdata:

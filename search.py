@@ -13,6 +13,9 @@ from urllib.parse import quote_plus
 import requests
 
 import database
+import epss as epss_mod
+import integrations
+import logger as _logger
 import mail
 import notify
 
@@ -165,6 +168,7 @@ def process_keyword(
     cfg,
     log=print,
     min_severity: str = "NONE",
+    enrich_epss: bool = True,
 ) -> tuple[list[dict], list[dict]]:
     """
     Fetch, enrich, filter, and store CVEs for one keyword.
@@ -179,45 +183,61 @@ def process_keyword(
 
     vulns = fetch_all_cves(kw, _api_headers(cfg), log=log)
 
-    new_cves: list[dict] = []
-    upgraded_cves: list[dict] = []
-
+    # Build candidate list before DB writes so we can batch-fetch EPSS
+    candidates: list[dict] = []
     for v in vulns:
         cve = v["cve"]
-        cve_id = cve["id"]
         severity = _get_severity(cve)
-
         if not _passes_threshold(severity, effective_min):
             continue
-
         cvss_score = _get_cvss_score(cve)
         publish_date = _parse_dt(cve["published"])
         last_modified = _parse_dt(cve["lastModified"])
-
         descriptions = cve.get("descriptions", [])
         description = descriptions[0]["value"] if descriptions else "No description available."
+        candidates.append({
+            "keyword":       kw,
+            "id":            cve["id"],
+            "publish_date":  publish_date,
+            "last_modified": last_modified,
+            "description":   description,
+            "severity":      severity,
+            "cvss_score":    cvss_score,
+            "cwe":           _get_cwe(cve),
+            "cpe":           _get_cpe(cve),
+            "refs":          _get_refs(cve),
+            "epss_score":    None,
+            "epss_percentile": None,
+            "kev":           False,
+        })
 
-        cwe = _get_cwe(cve)
-        cpe = _get_cpe(cve)
-        refs = _get_refs(cve)
+    # Batch EPSS + KEV enrichment
+    if enrich_epss and candidates:
+        try:
+            epss_mod.enrich_cves(candidates, log=log)
+        except Exception as exc:
+            log(f"  [yellow]EPSS enrichment failed: {exc}[/yellow]")
 
+    new_cves: list[dict] = []
+    upgraded_cves: list[dict] = []
+
+    for entry in candidates:
         is_new, is_upgraded = database.insert_cve(
-            table, cve_id, publish_date, last_modified, description,
-            severity, cvss_score, cwe, cpe, json.dumps(refs), kw,
+            table,
+            entry["id"],
+            entry["publish_date"],
+            entry["last_modified"],
+            entry["description"],
+            entry["severity"],
+            entry["cvss_score"],
+            entry["cwe"],
+            entry["cpe"],
+            json.dumps(entry["refs"]),
+            kw,
+            epss_score=entry.get("epss_score"),
+            epss_percentile=entry.get("epss_percentile"),
+            kev=entry.get("kev", False),
         )
-
-        entry = {
-            "keyword":      kw,
-            "id":           cve_id,
-            "publish_date": publish_date,
-            "last_modified":last_modified,
-            "description":  description,
-            "severity":     severity,
-            "cvss_score":   cvss_score,
-            "cwe":          cwe,
-            "cpe":          cpe,
-            "refs":         refs,
-        }
 
         if is_new:
             new_cves.append(entry)
@@ -227,6 +247,8 @@ def process_keyword(
     new_cves.sort(key=lambda c: SEVERITY_ORDER.get(c["severity"], 5))
     upgraded_cves.sort(key=lambda c: SEVERITY_ORDER.get(c["severity"], 5))
     log(f"  {kw}: {len(new_cves)} new, {len(upgraded_cves)} upgraded CVE(s)")
+
+    _logger.event("keyword_processed", keyword=kw, new=len(new_cves), upgraded=len(upgraded_cves))
     return new_cves, upgraded_cves
 
 
@@ -400,10 +422,23 @@ def run_once(
         except Exception as exc:
             error_msg = str(exc)
             log(f"[bold red]Notification error:[/bold red] {exc}")
+
+        # Create Jira / ServiceNow tickets for critical/high CVEs
+        try:
+            integrations.create_tickets(alert_cves, log=log)
+        except Exception as exc:
+            log(f"[yellow]Ticket creation error:[/yellow] {exc}")
     else:
         log("No new or upgraded CVEs found.")
 
     database.history_finish(history_id, len(all_new), len(all_upgraded), emailed, error_msg)
+    _logger.event(
+        "scan_complete",
+        new=len(all_new),
+        upgraded=len(all_upgraded),
+        emailed=emailed,
+        error=error_msg or None,
+    )
     return emailed, len(all_new), len(all_upgraded)
 
 

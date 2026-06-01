@@ -1,32 +1,78 @@
-"""SQLite database backend for CVE Emailer."""
+"""
+Database backend for CVE Emailer.
+
+Defaults to SQLite.  Set DATABASE_URL to a Postgres connection string to use
+PostgreSQL instead (requires psycopg2-binary):
+
+    export DATABASE_URL="postgresql://user:pass@localhost:5432/cveemailer"
+"""
 
 from __future__ import annotations
 
 import csv
 import json
+import os
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 
 _DB_PATH = Path(__file__).parent / "cve_emailer.db"
+_DATABASE_URL = os.environ.get("DATABASE_URL", "")
+_USE_POSTGRES = bool(_DATABASE_URL)
 
 SEVERITY_RANK = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3, "NONE": 4, "UNKNOWN": 5}
 
 
 @contextmanager
 def _connect():
-    conn = sqlite3.connect(_DB_PATH)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    try:
-        yield conn
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
+    if _USE_POSTGRES:
+        import psycopg2
+        import psycopg2.extras
+
+        class _PGConn:
+            """Thin wrapper making psycopg2 behave like sqlite3 for our query patterns."""
+            def __init__(self, c):
+                self._c = c
+            def execute(self, sql, params=()):
+                # Postgres uses %s placeholders; SQLite uses ?
+                sql = sql.replace("?", "%s")
+                cur = self._c.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+                cur.execute(sql, params)
+                return cur
+            def executescript(self, sql):
+                cur = self._c.cursor()
+                for stmt in sql.split(";"):
+                    stmt = stmt.strip()
+                    if stmt:
+                        cur.execute(stmt)
+            def commit(self):   self._c.commit()
+            def rollback(self): self._c.rollback()
+            def close(self):    self._c.close()
+            def create_function(self, *a, **kw): pass  # no-op; Postgres uses SQL functions
+
+        raw = psycopg2.connect(_DATABASE_URL)
+        wrapped = _PGConn(raw)
+        try:
+            yield wrapped
+            wrapped.commit()
+        except Exception:
+            wrapped.rollback()
+            raise
+        finally:
+            wrapped.close()
+    else:
+        conn = sqlite3.connect(_DB_PATH)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")
+        try:
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
 
 
 # ── Schema bootstrap ──────────────────────────────────────────────────────────
@@ -106,11 +152,20 @@ def create_table(service_name: str) -> None:
             "references_json TEXT,"
             "keyword TEXT,"
             "alerted_severity TEXT,"
-            "alerted_score REAL"
+            "alerted_score REAL,"
+            "epss_score REAL,"
+            "epss_percentile REAL,"
+            "kev INTEGER DEFAULT 0"
             ");"
         )
-        # Migrate: add alert tracking columns to existing tables
-        for col, typedef in [("alerted_severity", "TEXT DEFAULT NULL"), ("alerted_score", "REAL DEFAULT NULL")]:
+        # Migrate: add columns to existing tables
+        for col, typedef in [
+            ("alerted_severity", "TEXT DEFAULT NULL"),
+            ("alerted_score", "REAL DEFAULT NULL"),
+            ("epss_score", "REAL DEFAULT NULL"),
+            ("epss_percentile", "REAL DEFAULT NULL"),
+            ("kev", "INTEGER DEFAULT 0"),
+        ]:
             try:
                 conn.execute(f'ALTER TABLE "{service_name}" ADD COLUMN {col} {typedef}')
             except Exception:
@@ -129,15 +184,26 @@ def insert_cve(
     cpe: str,
     references_json: str,
     keyword: str,
+    epss_score: float | None = None,
+    epss_percentile: float | None = None,
+    kev: bool = False,
 ) -> tuple[bool, bool]:
     """
     Returns (is_new, is_upgraded).
     is_new: CVE was not in DB before.
     is_upgraded: CVE existed but severity/score increased since last alert.
     """
-    fields = "(cve_id, publish_date, last_modified, description, severity, cvss_score, cwe, cpe, references_json, keyword, alerted_severity, alerted_score)"
-    vals = (cve_id, publish_date, last_modified, description, severity, cvss_score, cwe, cpe, references_json, keyword, severity, cvss_score)
-    query = f'INSERT OR IGNORE INTO "{table}" {fields} VALUES (?,?,?,?,?,?,?,?,?,?,?,?);'
+    fields = (
+        "(cve_id, publish_date, last_modified, description, severity, cvss_score, "
+        "cwe, cpe, references_json, keyword, alerted_severity, alerted_score, "
+        "epss_score, epss_percentile, kev)"
+    )
+    vals = (
+        cve_id, publish_date, last_modified, description, severity, cvss_score,
+        cwe, cpe, references_json, keyword, severity, cvss_score,
+        epss_score, epss_percentile, int(kev),
+    )
+    query = f'INSERT OR IGNORE INTO "{table}" {fields} VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?);'
 
     with _connect() as conn:
         cur = conn.execute(query, vals)
@@ -161,14 +227,17 @@ def insert_cve(
         upgraded = (current_rank < alerted_rank) or (current_score >= alerted_score + 1.0)
         if upgraded:
             conn.execute(
-                f'UPDATE "{table}" SET severity=?, cvss_score=?, last_modified=?, alerted_severity=?, alerted_score=? WHERE cve_id=?',
-                (severity, cvss_score, last_modified, severity, cvss_score, cve_id)
+                f'UPDATE "{table}" SET severity=?, cvss_score=?, last_modified=?, '
+                f'alerted_severity=?, alerted_score=?, epss_score=?, epss_percentile=?, kev=? WHERE cve_id=?',
+                (severity, cvss_score, last_modified, severity, cvss_score,
+                 epss_score, epss_percentile, int(kev), cve_id)
             )
         else:
             # Still update metadata silently
             conn.execute(
-                f'UPDATE "{table}" SET severity=?, cvss_score=?, last_modified=? WHERE cve_id=?',
-                (severity, cvss_score, last_modified, cve_id)
+                f'UPDATE "{table}" SET severity=?, cvss_score=?, last_modified=?, '
+                f'epss_score=?, epss_percentile=?, kev=? WHERE cve_id=?',
+                (severity, cvss_score, last_modified, epss_score, epss_percentile, int(kev), cve_id)
             )
         return False, upgraded
 
@@ -204,7 +273,7 @@ def get_history(limit: int = 50) -> list[dict]:
 
 def list_cve_tables() -> list[str]:
     """Return all CVE keyword table names (excludes system tables)."""
-    system = {"scan_history", "notification_profiles", "digest_queue"}
+    system = {"scan_history", "notification_profiles", "digest_queue", "sqlite_sequence"}
     with _connect() as conn:
         rows = conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name;"
@@ -276,14 +345,16 @@ def export_cves_json(table: str, path: Path, **query_kwargs) -> int:
 # ── Dashboard stats ───────────────────────────────────────────────────────────
 
 def get_dashboard_stats() -> dict:
-    """Return per-table severity counts and recent scan summary."""
+    """Return per-table severity counts, EPSS/KEV stats, and recent scan summary."""
     tables = list_cve_tables()
     severity_totals = {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0, "NONE": 0, "UNKNOWN": 0}
     per_keyword: list[dict] = []
+    kev_total = 0
 
     with _connect() as conn:
         for tbl in tables:
             counts = {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0, "NONE": 0, "UNKNOWN": 0}
+            kev_count = 0
             try:
                 rows = conn.execute(
                     f'SELECT severity, COUNT(*) as n FROM "{tbl}" GROUP BY severity'
@@ -293,9 +364,14 @@ def get_dashboard_stats() -> dict:
                     n = r["n"]
                     counts[sev] = counts.get(sev, 0) + n
                     severity_totals[sev] = severity_totals.get(sev, 0) + n
+                kev_row = conn.execute(
+                    f'SELECT COUNT(*) as n FROM "{tbl}" WHERE kev=1'
+                ).fetchone()
+                kev_count = kev_row["n"] if kev_row else 0
+                kev_total += kev_count
             except Exception:
                 pass
-            per_keyword.append({"keyword": tbl, **counts})
+            per_keyword.append({"keyword": tbl, "kev": kev_count, **counts})
 
         recent = conn.execute(
             "SELECT * FROM scan_history ORDER BY id DESC LIMIT 5"
@@ -307,6 +383,30 @@ def get_dashboard_stats() -> dict:
         "recent_scans": [dict(r) for r in recent],
         "total_keywords": len(tables),
         "total_cves": sum(severity_totals.values()),
+        "kev_total": kev_total,
+    }
+
+
+def get_metrics() -> dict:
+    """Prometheus-style metrics dict for /metrics endpoint."""
+    stats = get_dashboard_stats()
+    with _connect() as conn:
+        scan_row = conn.execute(
+            "SELECT COUNT(*) as n FROM scan_history"
+        ).fetchone()
+        error_row = conn.execute(
+            "SELECT COUNT(*) as n FROM scan_history WHERE error != '' AND error IS NOT NULL"
+        ).fetchone()
+    return {
+        "cve_total":               stats["total_cves"],
+        "cve_critical":            stats["totals"].get("CRITICAL", 0),
+        "cve_high":                stats["totals"].get("HIGH", 0),
+        "cve_medium":              stats["totals"].get("MEDIUM", 0),
+        "cve_low":                 stats["totals"].get("LOW", 0),
+        "cve_kev":                 stats["kev_total"],
+        "keyword_count":           stats["total_keywords"],
+        "scan_total":              scan_row["n"] if scan_row else 0,
+        "scan_errors":             error_row["n"] if error_row else 0,
     }
 
 

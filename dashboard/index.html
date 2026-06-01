@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CVE Emailer — Dashboard</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <nav class="nav">
+    <div class="nav-brand">CVE Emailer</div>
+    <div class="nav-links">
+      <a href="#overview" class="nav-link active" data-section="overview">Overview</a>
+      <a href="#browse" class="nav-link" data-section="browse">Browse CVEs</a>
+      <a href="#history" class="nav-link" data-section="history">Scan History</a>
+      <a href="#profiles" class="nav-link" data-section="profiles">Profiles</a>
+    </div>
+    <div class="nav-status">
+      <span id="health-dot" class="health-dot"></span>
+      <span id="health-text">Connecting…</span>
+    </div>
+  </nav>
+
+  <!-- OVERVIEW -->
+  <section id="section-overview" class="section active">
+    <div class="container">
+      <h1 class="page-title">Security Overview</h1>
+
+      <div class="stat-grid">
+        <div class="stat-card">
+          <div class="stat-label">Total CVEs</div>
+          <div class="stat-value" id="stat-total">—</div>
+        </div>
+        <div class="stat-card critical">
+          <div class="stat-label">Critical</div>
+          <div class="stat-value" id="stat-critical">—</div>
+        </div>
+        <div class="stat-card high">
+          <div class="stat-label">High</div>
+          <div class="stat-value" id="stat-high">—</div>
+        </div>
+        <div class="stat-card medium">
+          <div class="stat-label">Medium</div>
+          <div class="stat-value" id="stat-medium">—</div>
+        </div>
+        <div class="stat-card low">
+          <div class="stat-label">Low</div>
+          <div class="stat-value" id="stat-low">—</div>
+        </div>
+        <div class="stat-card kev">
+          <div class="stat-label">CISA KEV</div>
+          <div class="stat-value" id="stat-kev">—</div>
+          <div class="stat-sub">Actively exploited</div>
+        </div>
+      </div>
+
+      <div class="panel-row">
+        <div class="panel" style="flex:2">
+          <div class="panel-header">
+            <h2>Per-Keyword Breakdown</h2>
+            <button class="btn-sm" id="btn-refresh-dashboard">↻ Refresh</button>
+          </div>
+          <div class="table-wrap">
+            <table id="keyword-table">
+              <thead>
+                <tr>
+                  <th>Keyword</th>
+                  <th class="num critical-col">CRIT</th>
+                  <th class="num high-col">HIGH</th>
+                  <th class="num medium-col">MED</th>
+                  <th class="num low-col">LOW</th>
+                  <th class="num">KEV</th>
+                  <th class="num">Total</th>
+                </tr>
+              </thead>
+              <tbody id="keyword-tbody"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="panel" style="flex:1">
+          <div class="panel-header"><h2>Recent Scans</h2></div>
+          <ul id="recent-scans" class="scan-list"></ul>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- BROWSE -->
+  <section id="section-browse" class="section">
+    <div class="container">
+      <h1 class="page-title">Browse CVEs</h1>
+
+      <div class="filter-bar">
+        <select id="br-table" class="input-sm">
+          <option value="">Select keyword…</option>
+        </select>
+        <input id="br-search" class="input-sm" placeholder="Search CVE ID or description…" />
+        <select id="br-severity" class="input-sm">
+          <option value="NONE">All severities</option>
+          <option value="LOW">LOW+</option>
+          <option value="MEDIUM">MEDIUM+</option>
+          <option value="HIGH">HIGH+</option>
+          <option value="CRITICAL">CRITICAL only</option>
+        </select>
+        <input id="br-date-from" class="input-sm" type="date" title="Published from" />
+        <input id="br-date-to" class="input-sm" type="date" title="Published to" />
+        <button class="btn-primary" id="btn-browse-search">Search</button>
+        <button class="btn-sm" id="btn-browse-export">Export CSV</button>
+      </div>
+
+      <div class="table-wrap">
+        <table id="browse-table">
+          <thead>
+            <tr>
+              <th>CVE ID</th>
+              <th>Severity</th>
+              <th>CVSS</th>
+              <th>EPSS</th>
+              <th>KEV</th>
+              <th>Keyword</th>
+              <th>Published</th>
+              <th>Description</th>
+            </tr>
+          </thead>
+          <tbody id="browse-tbody"></tbody>
+        </table>
+      </div>
+      <div id="browse-status" class="status-bar"></div>
+
+      <!-- Detail panel -->
+      <div id="detail-overlay" class="detail-overlay hidden">
+        <div class="detail-panel">
+          <button class="detail-close" id="btn-detail-close">✕</button>
+          <div id="detail-content"></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- HISTORY -->
+  <section id="section-history" class="section">
+    <div class="container">
+      <h1 class="page-title">Scan History</h1>
+      <div class="table-wrap">
+        <table id="history-table">
+          <thead>
+            <tr>
+              <th>Started</th>
+              <th>Finished</th>
+              <th>Keywords</th>
+              <th class="num">New</th>
+              <th class="num">Upgraded</th>
+              <th>Emailed</th>
+              <th>Error</th>
+            </tr>
+          </thead>
+          <tbody id="history-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- PROFILES -->
+  <section id="section-profiles" class="section">
+    <div class="container">
+      <h1 class="page-title">Notification Profiles</h1>
+      <div class="table-wrap" style="margin-bottom:2rem">
+        <table id="profiles-table">
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>Min Severity</th>
+              <th>Recipients</th>
+              <th>Digest</th>
+              <th>Webhook</th>
+            </tr>
+          </thead>
+          <tbody id="profiles-tbody"></tbody>
+        </table>
+      </div>
+      <p class="muted">Manage profiles via the TUI or config API.</p>
+    </div>
+  </section>
+
+  <script src="app.js"></script>
+</body>
+</html>
