@@ -162,6 +162,24 @@ def _collect_os() -> list[Software]:
         elif distro_id:
             results.append(Software(distro_id, distro_ver or None, "os", "HIGH", "/etc/os-release"))
 
+        # Proxmox VE -- detected via pveversion binary or /etc/pve/.version
+        pve_ver: Optional[str] = None
+        if _which("pveversion"):
+            raw = _run("pveversion")
+            # output: "pve-manager/8.2.4/..."
+            m = re.search(r'pve-manager/(\S+)', raw)
+            pve_ver = m.group(1).split("/")[0] if m else _ver(raw)
+        if pve_ver is None and os.path.exists("/etc/pve/.version"):
+            try:
+                pve_ver = open("/etc/pve/.version").read().strip() or None
+            except OSError:
+                pass
+        if pve_ver is not None or _which("pveversion") or os.path.isdir("/etc/pve"):
+            results.append(Software(
+                "Proxmox VE", pve_ver, "os", "CRITICAL", "pveversion",
+                "cpe:2.3:a:proxmox:virtual_environment:*:*:*:*:*:*:*:*",
+            ))
+
     elif system == "Darwin":
         ver = platform.mac_ver()[0]
         results.append(Software(
@@ -932,6 +950,10 @@ _SYSTEMD_SERVICE_MAP: dict[str, tuple[str, str, str, str]] = {
     "cups":             ("CUPS",                "network", "HIGH",     "cpe:2.3:a:apple:cups:*:*:*:*:*:*:*:*"),
     "ntpd":             ("NTP",                 "network", "HIGH",     "cpe:2.3:a:ntp:ntp:*:*:*:*:*:*:*:*"),
     "chronyd":          ("Chrony",              "network", "HIGH",     "cpe:2.3:a:tuxfamily:chrony:*:*:*:*:*:*:*:*"),
+    "pveproxy":         ("Proxmox VE",          "os",      "CRITICAL", "cpe:2.3:a:proxmox:virtual_environment:*:*:*:*:*:*:*:*"),
+    "pvedaemon":        ("Proxmox VE",          "os",      "CRITICAL", "cpe:2.3:a:proxmox:virtual_environment:*:*:*:*:*:*:*:*"),
+    "pve-cluster":      ("Proxmox VE",          "os",      "CRITICAL", "cpe:2.3:a:proxmox:virtual_environment:*:*:*:*:*:*:*:*"),
+    "corosync":         ("Corosync",            "network", "HIGH",     "cpe:2.3:a:corosync:corosync:*:*:*:*:*:*:*:*"),
 }
 
 

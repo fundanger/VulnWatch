@@ -119,6 +119,21 @@ collect_os() {
         esac
     fi
 
+    # Proxmox VE
+    if _cmd pveversion || [[ -d /etc/pve ]]; then
+        local pve_ver=""
+        if _cmd pveversion; then
+            local pve_raw
+            pve_raw=$(_run pveversion)
+            # output: "pve-manager/8.2.4/..."
+            pve_ver=$(echo "$pve_raw" | grep -oP 'pve-manager/\K[^/\s]+' | head -1 || true)
+            [[ -z "$pve_ver" ]] && pve_ver=$(_ver "$pve_raw")
+        fi
+        [[ -z "$pve_ver" && -f /etc/pve/.version ]] && pve_ver=$(cat /etc/pve/.version 2>/dev/null || true)
+        _add "Proxmox VE" "$pve_ver" "os" "CRITICAL" \
+            "cpe:2.3:a:proxmox:virtual_environment:*:*:*:*:*:*:*:*" "pveversion"
+    fi
+
     # macOS
     if [[ "$(uname -s)" == "Darwin" ]]; then
         local mac_ver
@@ -1172,6 +1187,10 @@ collect_systemd_services() {
         [ntpd]="NTP:network:HIGH:cpe:2.3:a:ntp:ntp:*:*:*:*:*:*:*:*"
         [chronyd]="Chrony:network:HIGH:cpe:2.3:a:tuxfamily:chrony:*:*:*:*:*:*:*:*"
         [etcd]="etcd:tool:HIGH:cpe:2.3:a:etcd:etcd:*:*:*:*:*:*:*:*"
+        [pveproxy]="Proxmox VE:os:CRITICAL:cpe:2.3:a:proxmox:virtual_environment:*:*:*:*:*:*:*:*"
+        [pvedaemon]="Proxmox VE:os:CRITICAL:cpe:2.3:a:proxmox:virtual_environment:*:*:*:*:*:*:*:*"
+        [pve-cluster]="Proxmox VE:os:CRITICAL:cpe:2.3:a:proxmox:virtual_environment:*:*:*:*:*:*:*:*"
+        [corosync]="Corosync:network:HIGH:cpe:2.3:a:corosync:corosync:*:*:*:*:*:*:*:*"
     )
 
     local raw
