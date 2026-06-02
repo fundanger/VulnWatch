@@ -134,6 +134,8 @@
               </label>
               <button class="btn-sm" id="btn-export-all" title="Export all CVEs to CSV">⬇ Export</button>
               <button class="btn-sm" id="btn-report-html" title="Download HTML security report">📄 Report</button>
+              <button class="btn-sm" id="btn-quick-test-notify" title="Send a test notification to verify channels">🔔 Test Alert</button>
+              <span id="quick-test-notify-msg" class="form-msg" style="font-size:.8rem"></span>
               <span id="scan-status-text" class="scan-status-text"></span>
               <button class="btn-primary" id="btn-trigger-scan">▶ Run Scan</button>
             </div>
@@ -165,6 +167,21 @@
               <div class="stat-label">CISA KEV</div>
               <div class="stat-value" id="stat-kev">—</div>
               <div class="stat-sub">Actively exploited</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-label">Keywords</div>
+              <div class="stat-value" id="stat-keywords">—</div>
+              <div class="stat-sub">Monitored products</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-label">Assets</div>
+              <div class="stat-value" id="stat-assets">—</div>
+              <div class="stat-sub">Tracked hosts</div>
+            </div>
+            <div class="stat-card high" id="stat-card-overdue" style="cursor:pointer" title="Click to view overdue items">
+              <div class="stat-label">Open Triage</div>
+              <div class="stat-value" id="stat-open-triage">—</div>
+              <div class="stat-sub"><span id="stat-overdue-sub" style="color:var(--critical)"></span></div>
             </div>
           </div>
 
@@ -298,6 +315,15 @@
                 </div>
               </div>
               <div id="mttr-states" style="margin-top:.75rem;display:flex;gap:.5rem;flex-wrap:wrap"></div>
+              <div id="sla-bar-wrap" style="margin-top:1rem;display:none">
+                <div style="display:flex;justify-content:space-between;font-size:.75rem;color:var(--subtle);margin-bottom:.3rem">
+                  <span>SLA health</span>
+                  <span id="sla-bar-label"></span>
+                </div>
+                <div style="height:8px;border-radius:4px;background:var(--surface3);overflow:hidden">
+                  <div id="sla-bar-fill" style="height:100%;border-radius:4px;transition:width .4s ease"></div>
+                </div>
+              </div>
             </div>
 
             <!-- Schedule -->
@@ -823,6 +849,24 @@
             <div>
               <h1 class="page-title">Digest Queue</h1>
               <p class="page-subtitle">CVEs waiting to be sent in the next digest batch, grouped by profile</p>
+            </div>
+          </div>
+          <!-- Digest schedule preview -->
+          <div class="panel" id="digest-preview-panel" style="margin-bottom:1.25rem;display:none">
+            <div class="panel-header"><h2>Schedule Preview</h2></div>
+            <div class="table-wrap">
+              <table id="digest-preview-table">
+                <thead>
+                  <tr>
+                    <th>Profile</th>
+                    <th>Schedule</th>
+                    <th class="num">Pending</th>
+                    <th>Last sent</th>
+                    <th>Next fire</th>
+                  </tr>
+                </thead>
+                <tbody id="digest-preview-tbody"></tbody>
+              </table>
             </div>
           </div>
           <div id="digest-groups"></div>

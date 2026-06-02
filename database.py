@@ -462,6 +462,16 @@ def get_dashboard_stats() -> dict:
             text("SELECT * FROM scan_history ORDER BY id DESC LIMIT 5")
         ).fetchall()
 
+    with _connect() as conn2:
+        asset_count = conn2.execute(text("SELECT COUNT(*) FROM assets")).fetchone()[0]
+        open_triage = conn2.execute(
+            text("SELECT COUNT(*) FROM cve_triage WHERE status NOT IN ('closed','wont_fix','false_positive')")
+        ).fetchone()[0]
+        overdue_count = conn2.execute(
+            text("SELECT COUNT(*) FROM cve_triage WHERE due_date != '' AND due_date < date('now') "
+                 "AND status NOT IN ('closed','wont_fix','false_positive')")
+        ).fetchone()[0]
+
     return {
         "totals":          severity_totals,
         "per_keyword":     per_keyword,
@@ -469,6 +479,9 @@ def get_dashboard_stats() -> dict:
         "total_keywords":  len(tables),
         "total_cves":      sum(severity_totals.values()),
         "kev_total":       kev_total,
+        "asset_count":     asset_count,
+        "open_triage":     open_triage,
+        "overdue_count":   overdue_count,
     }
 
 
@@ -644,6 +657,45 @@ def get_digest_queue_all() -> list[dict]:
             "SELECT * FROM digest_queue WHERE sent=0 ORDER BY profile_name, queued_at DESC"
         )).fetchall()
         return [_row_to_dict(r) for r in rows]
+
+
+def get_digest_preview() -> list[dict]:
+    """Return per-profile digest status: pending count, last sent, next fire time."""
+    with _connect() as conn:
+        profiles = conn.execute(
+            text("SELECT name, digest_mode, digest_schedule FROM notification_profiles WHERE digest_mode=1")
+        ).fetchall()
+        result = []
+        intervals = {"hourly": 3600, "daily": 86400, "weekly": 604800}
+        for p in profiles:
+            name, _, schedule = p[0], p[1], p[2] or "daily"
+            pending = conn.execute(
+                text("SELECT COUNT(*) FROM digest_queue WHERE sent=0 AND profile_name=:pn"),
+                {"pn": name},
+            ).fetchone()[0]
+            last_row = conn.execute(
+                text("SELECT MAX(sent_at) FROM digest_queue WHERE sent=1 AND profile_name=:pn"),
+                {"pn": name},
+            ).fetchone()
+            last_sent = last_row[0] if last_row else None
+            next_fire = None
+            if last_sent:
+                try:
+                    from datetime import datetime as _dt
+                    last_dt = _dt.fromisoformat(last_sent)
+                    interval = intervals.get(schedule, 86400)
+                    next_dt  = last_dt.fromtimestamp(last_dt.timestamp() + interval)
+                    next_fire = next_dt.isoformat()
+                except Exception:
+                    pass
+            result.append({
+                "profile": name,
+                "schedule": schedule,
+                "pending": pending,
+                "last_sent": last_sent,
+                "next_fire": next_fire,
+            })
+        return result
 
 
 def digest_send_now(profile_name: str) -> int:

@@ -384,6 +384,11 @@ def api_digest_queue():
     return jsonify(database.get_digest_queue_all())
 
 
+@app.route("/api/digest/preview")
+def api_digest_preview():
+    return jsonify(database.get_digest_preview())
+
+
 @app.route("/api/digest/send", methods=["POST"])
 @_require_auth
 def api_digest_send():

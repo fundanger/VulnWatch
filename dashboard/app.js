@@ -49,6 +49,7 @@ navLinks.forEach(l => l.addEventListener("click", e => {
   const sec = l.dataset.section;
   showSection(sec);
   _sectionLoader(sec);
+  localStorage.setItem("cve-last-section", sec);
 }));
 
 sidebarLinks.forEach(l => l.addEventListener("click", e => {
@@ -57,7 +58,17 @@ sidebarLinks.forEach(l => l.addEventListener("click", e => {
   const sec = l.dataset.section;
   showSection(sec);
   _sectionLoader(sec);
+  localStorage.setItem("cve-last-section", sec);
 }));
+
+// Restore last section on load
+(function () {
+  const last = localStorage.getItem("cve-last-section");
+  if (last && last !== "overview") {
+    showSection(last);
+    _sectionLoader(last);
+  }
+})();
 
 // ── Health check ─────────────────────────────────────────────────────────────
 
@@ -161,12 +172,17 @@ async function loadDashboard() {
     const r = await fetch(`${API}/api/dashboard`);
     const d = await r.json();
 
-    _setStatVal("stat-total",    d.total_cves ?? "—");
-    _setStatVal("stat-critical", d.totals?.CRITICAL ?? 0);
-    _setStatVal("stat-high",     d.totals?.HIGH ?? 0);
-    _setStatVal("stat-medium",   d.totals?.MEDIUM ?? 0);
-    _setStatVal("stat-low",      d.totals?.LOW ?? 0);
-    _setStatVal("stat-kev",      d.kev_total ?? "—");
+    _setStatVal("stat-total",      d.total_cves    ?? "—");
+    _setStatVal("stat-critical",   d.totals?.CRITICAL ?? 0);
+    _setStatVal("stat-high",       d.totals?.HIGH     ?? 0);
+    _setStatVal("stat-medium",     d.totals?.MEDIUM   ?? 0);
+    _setStatVal("stat-low",        d.totals?.LOW      ?? 0);
+    _setStatVal("stat-kev",        d.kev_total        ?? "—");
+    _setStatVal("stat-keywords",   d.total_keywords   ?? "—");
+    _setStatVal("stat-assets",     d.asset_count      ?? "—");
+    _setStatVal("stat-open-triage", d.open_triage     ?? "—");
+    const overdueSub = document.getElementById("stat-overdue-sub");
+    if (overdueSub) overdueSub.textContent = d.overdue_count > 0 ? `${d.overdue_count} overdue` : "";
 
     const tbody = document.getElementById("keyword-tbody");
     tbody.innerHTML = "";
@@ -206,6 +222,7 @@ async function loadDashboard() {
 }
 
 document.getElementById("btn-refresh-dashboard").addEventListener("click", () => { loadDashboard(); loadTopCves(); loadTrend(); });
+document.getElementById("stat-card-overdue").addEventListener("click", () => { showSection("triage"); _sectionLoader("triage"); });
 
 // ── Browse CVEs ───────────────────────────────────────────────────────────────
 
@@ -360,6 +377,21 @@ async function openDetail(row) {
   _loadCvssVector(row);
 
   document.getElementById("detail-overlay").classList.remove("hidden");
+
+  // Wire collapsible headers — inject chevron once, then toggle on click
+  document.querySelectorAll(".detail-block").forEach(block => {
+    const hdr = block.querySelector(".detail-block-header");
+    if (!hdr || hdr.dataset.colWired) return;
+    hdr.dataset.colWired = "1";
+    if (!hdr.querySelector(".detail-block-chevron")) {
+      hdr.insertAdjacentHTML("beforeend", `<span class="detail-block-chevron">▼</span>`);
+    }
+    hdr.addEventListener("click", e => {
+      // Don't collapse when clicking buttons inside the header
+      if (e.target.closest("button")) return;
+      block.classList.toggle("collapsed");
+    });
+  });
 }
 
 function closeDetailOverlay() {
@@ -1096,6 +1128,30 @@ async function loadProfiles() {
 
 async function loadDigestQueue() {
   try {
+    // Schedule preview
+    const previewData = await (await fetch(`${API}/api/digest/preview`)).json();
+    const previewPanel = document.getElementById("digest-preview-panel");
+    const previewTbody = document.getElementById("digest-preview-tbody");
+    if (previewData.length) {
+      previewPanel.style.display = "";
+      previewTbody.innerHTML = "";
+      previewData.forEach(p => {
+        const fmt = s => s ? new Date(s).toLocaleString() : "—";
+        const nextLabel = p.next_fire ? fmt(p.next_fire) : (p.last_sent ? "—" : "Next scan");
+        previewTbody.insertAdjacentHTML("beforeend", `
+          <tr>
+            <td><strong>${escHtml(p.profile)}</strong></td>
+            <td>${escHtml(p.schedule)}</td>
+            <td class="num">${p.pending}</td>
+            <td><small class="muted">${fmt(p.last_sent)}</small></td>
+            <td><small>${escHtml(nextLabel)}</small></td>
+          </tr>
+        `);
+      });
+    } else {
+      previewPanel.style.display = "none";
+    }
+
     const r = await fetch(`${API}/api/digest`);
     const rows = await r.json();
     const container = document.getElementById("digest-groups");
@@ -1185,6 +1241,33 @@ async function _testNotify(channel) {
 document.getElementById("btn-test-email").addEventListener("click",   () => _testNotify("email"));
 document.getElementById("btn-test-slack").addEventListener("click",   () => _testNotify("slack"));
 document.getElementById("btn-test-webhook").addEventListener("click", () => _testNotify("webhook"));
+
+document.getElementById("btn-quick-test-notify").addEventListener("click", async () => {
+  const btn = document.getElementById("btn-quick-test-notify");
+  const msg = document.getElementById("quick-test-notify-msg");
+  btn.disabled = true;
+  msg.textContent = "Sending…"; msg.className = "form-msg";
+  // Try each configured channel; first one that responds ok wins
+  for (const ch of ["email", "slack", "webhook"]) {
+    try {
+      const r = await fetch(`${API}/api/notify/test`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-CSRF-Token": _csrfToken() },
+        body: JSON.stringify({ channel: ch }),
+      });
+      const j = await r.json();
+      if (j.ok) {
+        msg.textContent = `Test sent via ${ch}`; msg.className = "form-msg ok";
+        btn.disabled = false;
+        setTimeout(() => { msg.textContent = ""; }, 4000);
+        return;
+      }
+    } catch {}
+  }
+  msg.textContent = "No channels configured"; msg.className = "form-msg err";
+  btn.disabled = false;
+  setTimeout(() => { msg.textContent = ""; }, 4000);
+});
 
 // ── Saved searches ────────────────────────────────────────────────────────────
 
@@ -2608,9 +2691,17 @@ document.getElementById("btn-asset-delete").addEventListener("click", async () =
         body: JSON.stringify({ DEFAULT__keywords: merged.join("\n") }),
       });
 
-      msg.textContent = `Imported ${keywords.length} keyword${keywords.length !== 1 ? "s" : ""}${assetName ? `, asset "${assetName}" saved` : ""}.`;
+      msg.textContent = `Imported ${keywords.length} keyword${keywords.length !== 1 ? "s" : ""}${assetName ? `, asset "${assetName}" saved` : ""}. Triggering scan…`;
       msg.className   = "form-msg ok";
       textarea.value  = "";
+
+      // Auto-trigger a scan so new keywords are picked up immediately
+      try {
+        await fetch(`${API}/api/scan`, { method: "POST", headers: { "X-CSRF-Token": _csrfToken() } });
+        msg.textContent = msg.textContent.replace("Triggering scan…", "Scan started.");
+      } catch {
+        msg.textContent = msg.textContent.replace("Triggering scan…", "");
+      }
     } catch (e) {
       msg.textContent = `Import failed: ${e.message}`;
       msg.className   = "form-msg err";
@@ -3055,6 +3146,22 @@ async function loadMttr() {
       statesEl.insertAdjacentHTML("beforeend",
         `<span class="triage-badge triage-${escHtml(state)}" style="padding:.3rem .7rem;font-size:12px">${_triageLabel(state)}: ${cnt}</span>`);
     });
+
+    // SLA health bar
+    const open    = d.open    ?? 0;
+    const overdue = d.overdue ?? 0;
+    const barWrap = document.getElementById("sla-bar-wrap");
+    if (open > 0) {
+      const pct       = Math.round(((open - overdue) / open) * 100);
+      const fill      = document.getElementById("sla-bar-fill");
+      const label     = document.getElementById("sla-bar-label");
+      fill.style.width      = `${pct}%`;
+      fill.style.background = pct >= 80 ? "var(--success, #22c55e)" : pct >= 50 ? "var(--warning, #f59e0b)" : "var(--critical)";
+      label.textContent     = overdue > 0 ? `${overdue} overdue / ${open} open` : `${open} open — all on time`;
+      barWrap.style.display = "";
+    } else {
+      barWrap.style.display = "none";
+    }
   } catch (e) { console.error("loadMttr:", e); }
 }
 

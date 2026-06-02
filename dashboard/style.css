@@ -764,8 +764,19 @@ input:disabled, .textarea-sm:disabled {
   padding: .6rem .9rem;
   border-bottom: 1px solid var(--border);
   background: var(--surface3);
-  cursor: default;
+  cursor: pointer;
+  user-select: none;
 }
+.detail-block-header:hover { background: var(--surface2); }
+.detail-block.collapsed .detail-block-body { display: none; }
+.detail-block.collapsed .detail-block-header { border-bottom: none; }
+.detail-block-chevron {
+  font-size: 10px;
+  color: var(--subtle);
+  margin-left: auto;
+  transition: transform .2s;
+}
+.detail-block.collapsed .detail-block-chevron { transform: rotate(-90deg); }
 .detail-block-icon {
   font-size: 13px;
   flex-shrink: 0;
