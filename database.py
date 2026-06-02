@@ -1570,6 +1570,505 @@ def escalation_log_insert(cve_id: str, assignee: str, due_date: str,
                 rcpt=assignee, ok=int(success), err=error))
 
 
+# ── Threat intelligence: CISA KEV + in-the-wild ──────────────────────────────
+
+def bootstrap_threat_intel() -> None:
+    """Create threat_intel table storing per-CVE in-the-wild exploitation data."""
+    engine = _get_engine()
+    with engine.connect() as conn:
+        trans = conn.begin()
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS threat_intel (
+                cve_id          TEXT NOT NULL PRIMARY KEY,
+                in_wild         INTEGER DEFAULT 0,
+                threat_actors   TEXT DEFAULT '',
+                malware_families TEXT DEFAULT '',
+                campaigns       TEXT DEFAULT '',
+                source          TEXT DEFAULT '',
+                first_seen      TEXT DEFAULT '',
+                updated_at      TEXT NOT NULL
+            )
+        """ if _IS_SQLITE else """
+            CREATE TABLE IF NOT EXISTS threat_intel (
+                cve_id          TEXT NOT NULL PRIMARY KEY,
+                in_wild         INTEGER DEFAULT 0,
+                threat_actors   TEXT DEFAULT '',
+                malware_families TEXT DEFAULT '',
+                campaigns       TEXT DEFAULT '',
+                source          TEXT DEFAULT '',
+                first_seen      TEXT DEFAULT '',
+                updated_at      TEXT NOT NULL
+            )
+        """))
+        trans.commit()
+
+
+def threat_intel_upsert(cve_id: str, in_wild: bool = False,
+                        threat_actors: list | None = None,
+                        malware_families: list | None = None,
+                        campaigns: list | None = None,
+                        source: str = "", first_seen: str = "") -> None:
+    now = datetime.now().isoformat(timespec="seconds")
+    with _connect() as conn:
+        if _IS_SQLITE:
+            conn.execute(text(
+                "INSERT INTO threat_intel (cve_id, in_wild, threat_actors, malware_families, campaigns, source, first_seen, updated_at) "
+                "VALUES (:cid, :iw, :ta, :mf, :cp, :src, :fs, :now) "
+                "ON CONFLICT(cve_id) DO UPDATE SET in_wild=excluded.in_wild, threat_actors=excluded.threat_actors, "
+                "malware_families=excluded.malware_families, campaigns=excluded.campaigns, "
+                "source=excluded.source, first_seen=excluded.first_seen, updated_at=excluded.updated_at"
+            ), {"cid": cve_id, "iw": int(in_wild),
+                "ta": json.dumps(threat_actors or []),
+                "mf": json.dumps(malware_families or []),
+                "cp": json.dumps(campaigns or []),
+                "src": source, "fs": first_seen, "now": now})
+        else:
+            conn.execute(text(
+                "INSERT INTO threat_intel (cve_id, in_wild, threat_actors, malware_families, campaigns, source, first_seen, updated_at) "
+                "VALUES (:cid, :iw, :ta, :mf, :cp, :src, :fs, :now) "
+                "ON CONFLICT(cve_id) DO UPDATE SET in_wild=EXCLUDED.in_wild, threat_actors=EXCLUDED.threat_actors, "
+                "malware_families=EXCLUDED.malware_families, campaigns=EXCLUDED.campaigns, "
+                "source=EXCLUDED.source, first_seen=EXCLUDED.first_seen, updated_at=EXCLUDED.updated_at"
+            ), {"cid": cve_id, "iw": int(in_wild),
+                "ta": json.dumps(threat_actors or []),
+                "mf": json.dumps(malware_families or []),
+                "cp": json.dumps(campaigns or []),
+                "src": source, "fs": first_seen, "now": now})
+
+
+def _parse_threat_intel(d: dict) -> dict:
+    for field in ("threat_actors", "malware_families", "campaigns"):
+        try:
+            d[field] = json.loads(d.get(field) or "[]")
+        except Exception:
+            d[field] = []
+    return d
+
+
+def threat_intel_get(cve_id: str) -> dict | None:
+    with _connect() as conn:
+        row = conn.execute(text(
+            "SELECT * FROM threat_intel WHERE cve_id=:cid"
+        ), {"cid": cve_id}).fetchone()
+        if not row:
+            return None
+        return _parse_threat_intel(_row_to_dict(row))
+
+
+def threat_intel_get_all(in_wild_only: bool = False) -> list[dict]:
+    with _connect() as conn:
+        if in_wild_only:
+            rows = conn.execute(text(
+                "SELECT * FROM threat_intel WHERE in_wild=1 ORDER BY updated_at DESC"
+            )).fetchall()
+        else:
+            rows = conn.execute(text(
+                "SELECT * FROM threat_intel ORDER BY updated_at DESC"
+            )).fetchall()
+        return [_parse_threat_intel(_row_to_dict(r)) for r in rows]
+
+
+# ── Risk scoring ──────────────────────────────────────────────────────────────
+
+def compute_risk_score(cve_id: str, table: str = "") -> dict:
+    """
+    Composite risk score (0–100) combining:
+      - Base CVSS (0–10) × 5           → max 50 pts
+      - EPSS probability × 20          → max 20 pts
+      - KEV / in-the-wild × 15         → max 15 pts (KEV=12, in_wild=10, both=15)
+      - Exploit available × 8          → max 8 pts
+      - Asset criticality × 7          → max 7 pts (production = 7, staging = 4, other = 1)
+    Returns dict with score (int), factors (dict), label (str).
+    """
+    factors: dict = {"cvss": 0, "epss": 0, "threat": 0, "exploit": 0, "asset": 0}
+    row = None
+
+    if table:
+        row = get_cve(table, cve_id)
+    else:
+        tables = list_cve_tables()
+        with _connect() as conn:
+            for tbl in tables:
+                r = conn.execute(text(
+                    f'SELECT * FROM "{tbl}" WHERE cve_id=:cid'
+                ), {"cid": cve_id}).fetchone()
+                if r:
+                    row = _row_to_dict(r)
+                    break
+
+    if row:
+        cvss = row.get("cvss_score") or 0.0
+        factors["cvss"] = min(50, round(cvss * 5, 1))
+        epss = row.get("epss_score") or 0.0
+        factors["epss"] = min(20, round(epss * 20, 1))
+        kev = bool(row.get("kev"))
+    else:
+        kev = False
+
+    # Threat intel
+    ti = threat_intel_get(cve_id)
+    in_wild = bool(ti and ti.get("in_wild"))
+    if kev and in_wild:
+        factors["threat"] = 15
+    elif kev:
+        factors["threat"] = 12
+    elif in_wild:
+        factors["threat"] = 10
+
+    # Exploit intel
+    ei = exploit_get(cve_id)
+    if ei and ei.get("has_exploit"):
+        factors["exploit"] = 8
+
+    # Asset criticality — highest-criticality asset affected
+    asset_score = 0
+    if row and row.get("cpe"):
+        matched = assets_match_cve(row["cpe"])
+        for a in matched:
+            env = (a.get("environment") or "").lower()
+            if env == "production":
+                asset_score = max(asset_score, 7)
+            elif env in ("staging", "dmz"):
+                asset_score = max(asset_score, 4)
+            else:
+                asset_score = max(asset_score, 1)
+    factors["asset"] = asset_score
+
+    total = round(sum(factors.values()))
+    total = min(100, total)
+
+    if total >= 80:
+        label = "CRITICAL RISK"
+    elif total >= 60:
+        label = "HIGH RISK"
+    elif total >= 40:
+        label = "MEDIUM RISK"
+    elif total >= 20:
+        label = "LOW RISK"
+    else:
+        label = "MINIMAL RISK"
+
+    return {"cve_id": cve_id, "score": total, "label": label, "factors": factors}
+
+
+# ── CVE comments / audit log ──────────────────────────────────────────────────
+
+def bootstrap_comments() -> None:
+    engine = _get_engine()
+    with engine.connect() as conn:
+        trans = conn.begin()
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS cve_comments (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                cve_id     TEXT NOT NULL,
+                author     TEXT DEFAULT '',
+                body       TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+        """ if _IS_SQLITE else """
+            CREATE TABLE IF NOT EXISTS cve_comments (
+                id         SERIAL PRIMARY KEY,
+                cve_id     TEXT NOT NULL,
+                author     TEXT DEFAULT '',
+                body       TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+        """))
+        trans.commit()
+
+
+def comment_add(cve_id: str, body: str, author: str = "") -> int:
+    now = datetime.now().isoformat(timespec="seconds")
+    with _connect() as conn:
+        result = conn.execute(text(
+            "INSERT INTO cve_comments (cve_id, author, body, created_at) VALUES (:cid, :au, :body, :now)"
+        ), {"cid": cve_id, "au": author, "body": body, "now": now})
+        if _IS_SQLITE:
+            return result.lastrowid
+        return conn.execute(text("SELECT lastval()")).fetchone()[0]
+
+
+def comment_delete(comment_id: int) -> None:
+    with _connect() as conn:
+        conn.execute(text("DELETE FROM cve_comments WHERE id=:id"), {"id": comment_id})
+
+
+def comments_get(cve_id: str) -> list[dict]:
+    with _connect() as conn:
+        rows = conn.execute(text(
+            "SELECT * FROM cve_comments WHERE cve_id=:cid ORDER BY created_at"
+        ), {"cid": cve_id}).fetchall()
+        return [_row_to_dict(r) for r in rows]
+
+
+# ── Audit log ─────────────────────────────────────────────────────────────────
+
+def bootstrap_audit_log() -> None:
+    engine = _get_engine()
+    with engine.connect() as conn:
+        trans = conn.begin()
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS audit_log (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts         TEXT NOT NULL,
+                actor      TEXT DEFAULT '',
+                action     TEXT NOT NULL,
+                target_id  TEXT DEFAULT '',
+                detail     TEXT DEFAULT ''
+            )
+        """ if _IS_SQLITE else """
+            CREATE TABLE IF NOT EXISTS audit_log (
+                id         SERIAL PRIMARY KEY,
+                ts         TEXT NOT NULL,
+                actor      TEXT DEFAULT '',
+                action     TEXT NOT NULL,
+                target_id  TEXT DEFAULT '',
+                detail     TEXT DEFAULT ''
+            )
+        """))
+        trans.commit()
+
+
+def audit_log_insert(action: str, target_id: str = "", detail: str = "", actor: str = "") -> None:
+    now = datetime.now().isoformat(timespec="seconds")
+    with _connect() as conn:
+        conn.execute(text(
+            "INSERT INTO audit_log (ts, actor, action, target_id, detail) VALUES (:ts, :ac, :act, :tid, :det)"
+        ), {"ts": now, "ac": actor, "act": action, "tid": target_id, "det": detail})
+
+
+def audit_log_get(limit: int = 200, target_id: str = "") -> list[dict]:
+    with _connect() as conn:
+        if target_id:
+            rows = conn.execute(text(
+                "SELECT * FROM audit_log WHERE target_id=:tid ORDER BY id DESC LIMIT :lim"
+            ), {"tid": target_id, "lim": limit}).fetchall()
+        else:
+            rows = conn.execute(text(
+                "SELECT * FROM audit_log ORDER BY id DESC LIMIT :lim"
+            ), {"lim": limit}).fetchall()
+        return [_row_to_dict(r) for r in rows]
+
+
+# ── Lifecycle / MTTR ──────────────────────────────────────────────────────────
+
+def get_mttr_stats() -> dict:
+    """
+    Mean Time To Remediate — average days from triage created_at to
+    status entering a terminal state (closed/mitigated).
+    Also returns open count, overdue count, and per-severity averages.
+    """
+    terminal = ("closed", "mitigated", "wont_fix", "false_positive")
+    today = datetime.now().isoformat()[:10]
+    with _connect() as conn:
+        all_rows = conn.execute(text(
+            "SELECT cve_id, status, created_at, updated_at, due_date FROM cve_triage"
+        )).fetchall()
+
+    durations = []
+    open_count = 0
+    overdue_count = 0
+
+    for row in all_rows:
+        d = _row_to_dict(row)
+        if d["status"] in terminal and d["created_at"] and d["updated_at"]:
+            try:
+                start = datetime.fromisoformat(d["created_at"][:19])
+                end   = datetime.fromisoformat(d["updated_at"][:19])
+                days  = max(0, (end - start).days)
+                durations.append(days)
+            except Exception:
+                pass
+        elif d["status"] not in terminal:
+            open_count += 1
+            if d.get("due_date") and d["due_date"] < today:
+                overdue_count += 1
+
+    mttr = round(sum(durations) / len(durations), 1) if durations else None
+
+    # Time-in-state distribution
+    state_counts = {}
+    for row in all_rows:
+        d = _row_to_dict(row)
+        state_counts[d["status"]] = state_counts.get(d["status"], 0) + 1
+
+    return {
+        "mttr_days":     mttr,
+        "remediated":    len(durations),
+        "open":          open_count,
+        "overdue":       overdue_count,
+        "state_counts":  state_counts,
+    }
+
+
+# ── Notification routing rules ────────────────────────────────────────────────
+
+def bootstrap_routing_rules() -> None:
+    engine = _get_engine()
+    with engine.connect() as conn:
+        trans = conn.begin()
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS routing_rules (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                name         TEXT NOT NULL,
+                min_severity TEXT DEFAULT 'CRITICAL',
+                tag_filter   TEXT DEFAULT '',
+                channel      TEXT NOT NULL,
+                destination  TEXT NOT NULL,
+                active       INTEGER DEFAULT 1,
+                created_at   TEXT NOT NULL
+            )
+        """ if _IS_SQLITE else """
+            CREATE TABLE IF NOT EXISTS routing_rules (
+                id           SERIAL PRIMARY KEY,
+                name         TEXT NOT NULL,
+                min_severity TEXT DEFAULT 'CRITICAL',
+                tag_filter   TEXT DEFAULT '',
+                channel      TEXT NOT NULL,
+                destination  TEXT NOT NULL,
+                active       INTEGER DEFAULT 1,
+                created_at   TEXT NOT NULL
+            )
+        """))
+        trans.commit()
+
+
+def routing_rule_save(name: str, min_severity: str, tag_filter: str,
+                      channel: str, destination: str, rule_id: int | None = None) -> int:
+    now = datetime.now().isoformat(timespec="seconds")
+    with _connect() as conn:
+        if rule_id:
+            conn.execute(text(
+                "UPDATE routing_rules SET name=:name, min_severity=:ms, tag_filter=:tf, "
+                "channel=:ch, destination=:dest WHERE id=:id"
+            ), {"name": name, "ms": min_severity, "tf": tag_filter,
+                "ch": channel, "dest": destination, "id": rule_id})
+            return rule_id
+        result = conn.execute(text(
+            "INSERT INTO routing_rules (name, min_severity, tag_filter, channel, destination, created_at) "
+            "VALUES (:name, :ms, :tf, :ch, :dest, :now)"
+        ), {"name": name, "ms": min_severity, "tf": tag_filter,
+            "ch": channel, "dest": destination, "now": now})
+        if _IS_SQLITE:
+            return result.lastrowid
+        return conn.execute(text("SELECT lastval()")).fetchone()[0]
+
+
+def routing_rule_delete(rule_id: int) -> None:
+    with _connect() as conn:
+        conn.execute(text("DELETE FROM routing_rules WHERE id=:id"), {"id": rule_id})
+
+
+def routing_rules_get() -> list[dict]:
+    with _connect() as conn:
+        rows = conn.execute(text(
+            "SELECT * FROM routing_rules WHERE active=1 ORDER BY id"
+        )).fetchall()
+        return [_row_to_dict(r) for r in rows]
+
+
+# ── Alert deduplication ───────────────────────────────────────────────────────
+
+def bootstrap_alert_dedup() -> None:
+    engine = _get_engine()
+    with engine.connect() as conn:
+        trans = conn.begin()
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS alert_dedup (
+                cve_id     TEXT NOT NULL,
+                channel    TEXT NOT NULL,
+                alerted_at TEXT NOT NULL,
+                PRIMARY KEY (cve_id, channel)
+            )
+        """))
+        trans.commit()
+
+
+def alert_dedup_check(cve_id: str, channel: str, cooldown_hours: int = 24) -> bool:
+    """Return True if alert was already sent within cooldown_hours and should be suppressed."""
+    from datetime import timedelta
+    cutoff = (datetime.now() - timedelta(hours=cooldown_hours)).isoformat(timespec="seconds")
+    with _connect() as conn:
+        row = conn.execute(text(
+            "SELECT alerted_at FROM alert_dedup WHERE cve_id=:cid AND channel=:ch AND alerted_at > :cutoff"
+        ), {"cid": cve_id, "ch": channel, "cutoff": cutoff}).fetchone()
+        return row is not None
+
+
+def alert_dedup_record(cve_id: str, channel: str) -> None:
+    now = datetime.now().isoformat(timespec="seconds")
+    with _connect() as conn:
+        if _IS_SQLITE:
+            conn.execute(text(
+                "INSERT INTO alert_dedup (cve_id, channel, alerted_at) VALUES (:cid, :ch, :now) "
+                "ON CONFLICT(cve_id, channel) DO UPDATE SET alerted_at=excluded.alerted_at"
+            ), {"cid": cve_id, "ch": channel, "now": now})
+        else:
+            conn.execute(text(
+                "INSERT INTO alert_dedup (cve_id, channel, alerted_at) VALUES (:cid, :ch, :now) "
+                "ON CONFLICT(cve_id, channel) DO UPDATE SET alerted_at=EXCLUDED.alerted_at"
+            ), {"cid": cve_id, "ch": channel, "now": now})
+
+
+# ── Compliance mapping ────────────────────────────────────────────────────────
+# Static CWE → control framework mapping (NIST 800-53, CIS Controls v8, ISO 27001)
+
+_COMPLIANCE_MAP: dict[str, dict] = {
+    "CWE-78":  {"nist": ["SI-10", "SI-3"],        "cis": ["8.2", "8.5"],      "iso": ["A.12.6.1"]},
+    "CWE-79":  {"nist": ["SI-10", "SC-28"],        "cis": ["4.1"],             "iso": ["A.12.6.1"]},
+    "CWE-89":  {"nist": ["SI-10", "AC-3"],         "cis": ["4.1", "4.2"],      "iso": ["A.12.6.1", "A.9.4.1"]},
+    "CWE-94":  {"nist": ["SI-3", "SI-10"],         "cis": ["10.1"],            "iso": ["A.12.6.1"]},
+    "CWE-119": {"nist": ["SI-10", "SI-16"],        "cis": ["10.2"],            "iso": ["A.12.6.1"]},
+    "CWE-120": {"nist": ["SI-16"],                 "cis": ["10.2"],            "iso": ["A.12.6.1"]},
+    "CWE-200": {"nist": ["AC-3", "AC-6", "SC-28"], "cis": ["3.1", "3.2"],      "iso": ["A.9.4.1", "A.10.1.1"]},
+    "CWE-269": {"nist": ["AC-6", "AC-2"],          "cis": ["5.1", "5.4"],      "iso": ["A.9.2.3"]},
+    "CWE-276": {"nist": ["AC-6", "CM-6"],          "cis": ["5.1"],             "iso": ["A.9.4.1"]},
+    "CWE-284": {"nist": ["AC-3", "AC-6"],          "cis": ["5.1", "5.2"],      "iso": ["A.9.4.1"]},
+    "CWE-285": {"nist": ["AC-3"],                  "cis": ["5.3"],             "iso": ["A.9.4.1"]},
+    "CWE-287": {"nist": ["IA-2", "IA-5"],          "cis": ["6.1", "6.3"],      "iso": ["A.9.4.2"]},
+    "CWE-295": {"nist": ["SC-17", "SI-7"],         "cis": ["12.1"],            "iso": ["A.10.1.1"]},
+    "CWE-306": {"nist": ["IA-2", "AC-3"],          "cis": ["6.1"],             "iso": ["A.9.4.2"]},
+    "CWE-311": {"nist": ["SC-28", "SC-8"],         "cis": ["3.1", "12.4"],     "iso": ["A.10.1.1"]},
+    "CWE-312": {"nist": ["SC-28"],                 "cis": ["3.1"],             "iso": ["A.10.1.1"]},
+    "CWE-319": {"nist": ["SC-8"],                  "cis": ["12.4"],            "iso": ["A.10.1.1"]},
+    "CWE-326": {"nist": ["SC-13"],                 "cis": ["12.4"],            "iso": ["A.10.1.1"]},
+    "CWE-327": {"nist": ["SC-13"],                 "cis": ["12.4"],            "iso": ["A.10.1.1"]},
+    "CWE-330": {"nist": ["SC-13"],                 "cis": ["12.4"],            "iso": ["A.10.1.1"]},
+    "CWE-352": {"nist": ["SC-23", "SI-10"],        "cis": ["4.1"],             "iso": ["A.12.6.1"]},
+    "CWE-362": {"nist": ["SI-16", "SC-39"],        "cis": ["10.2"],            "iso": ["A.12.6.1"]},
+    "CWE-400": {"nist": ["SC-5", "SI-17"],         "cis": ["12.1"],            "iso": ["A.12.6.1"]},
+    "CWE-416": {"nist": ["SI-16"],                 "cis": ["10.2"],            "iso": ["A.12.6.1"]},
+    "CWE-434": {"nist": ["SI-3", "CM-7"],          "cis": ["10.1"],            "iso": ["A.12.6.1"]},
+    "CWE-476": {"nist": ["SI-16"],                 "cis": ["10.2"],            "iso": ["A.12.6.1"]},
+    "CWE-502": {"nist": ["SI-10", "CM-7"],         "cis": ["4.1"],             "iso": ["A.12.6.1"]},
+    "CWE-601": {"nist": ["SI-10"],                 "cis": ["4.1"],             "iso": ["A.12.6.1"]},
+    "CWE-611": {"nist": ["SI-10", "CM-7"],         "cis": ["4.1"],             "iso": ["A.12.6.1"]},
+    "CWE-639": {"nist": ["AC-3"],                  "cis": ["5.3"],             "iso": ["A.9.4.1"]},
+    "CWE-732": {"nist": ["AC-6", "CM-6"],          "cis": ["5.1"],             "iso": ["A.9.4.1"]},
+    "CWE-787": {"nist": ["SI-16"],                 "cis": ["10.2"],            "iso": ["A.12.6.1"]},
+    "CWE-798": {"nist": ["IA-5", "SC-28"],         "cis": ["6.3"],             "iso": ["A.9.4.3"]},
+    "CWE-918": {"nist": ["SC-7", "AC-4"],          "cis": ["12.2"],            "iso": ["A.13.1.3"]},
+}
+
+
+def get_compliance_mapping(cwe_str: str) -> dict:
+    """Return NIST 800-53, CIS Controls v8, and ISO 27001 controls for the given CWE(s)."""
+    cwes = [c.strip() for c in cwe_str.split(",") if c.strip()]
+    nist: set[str] = set()
+    cis:  set[str] = set()
+    iso:  set[str] = set()
+    for cwe in cwes:
+        mapping = _COMPLIANCE_MAP.get(cwe, {})
+        nist.update(mapping.get("nist", []))
+        cis.update(mapping.get("cis", []))
+        iso.update(mapping.get("iso", []))
+    return {
+        "nist_800_53": sorted(nist),
+        "cis_v8":      sorted(cis),
+        "iso_27001":   sorted(iso),
+    }
+
+
 # ── Scan health stats ─────────────────────────────────────────────────────────
 
 def get_scan_health(limit: int = 20) -> dict:

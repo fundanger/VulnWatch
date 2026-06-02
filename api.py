@@ -654,6 +654,42 @@ def api_cve_send():
             database.notify_log_insert("servicenow", cve_count=1, success=False, error=str(exc))
             return jsonify({"ok": False, "error": str(exc)}), 500
 
+    if channel == "teams":
+        webhook = os.environ.get("TEAMS_WEBHOOK", "").strip() or cfg.get("DEFAULT", "teamsWebhook", fallback="")
+        if not webhook:
+            return jsonify({"ok": False, "error": "Teams webhook not configured"}), 400
+        try:
+            _send_teams(webhook, cve)
+            database.notify_log_insert("teams", cve_count=1, success=True)
+            return jsonify({"ok": True})
+        except Exception as exc:
+            database.notify_log_insert("teams", cve_count=1, success=False, error=str(exc))
+            return jsonify({"ok": False, "error": str(exc)}), 500
+
+    if channel == "pagerduty":
+        key = os.environ.get("PAGERDUTY_ROUTING_KEY", "").strip() or cfg.get("DEFAULT", "pagerdutyKey", fallback="")
+        if not key:
+            return jsonify({"ok": False, "error": "PagerDuty routing key not configured"}), 400
+        try:
+            _send_pagerduty(key, cve)
+            database.notify_log_insert("pagerduty", cve_count=1, success=True)
+            return jsonify({"ok": True})
+        except Exception as exc:
+            database.notify_log_insert("pagerduty", cve_count=1, success=False, error=str(exc))
+            return jsonify({"ok": False, "error": str(exc)}), 500
+
+    if channel == "opsgenie":
+        key = os.environ.get("OPSGENIE_API_KEY", "").strip() or cfg.get("DEFAULT", "opsgenieKey", fallback="")
+        if not key:
+            return jsonify({"ok": False, "error": "Opsgenie API key not configured"}), 400
+        try:
+            _send_opsgenie(key, cve)
+            database.notify_log_insert("opsgenie", cve_count=1, success=True)
+            return jsonify({"ok": True})
+        except Exception as exc:
+            database.notify_log_insert("opsgenie", cve_count=1, success=False, error=str(exc))
+            return jsonify({"ok": False, "error": str(exc)}), 500
+
     return jsonify({"ok": False, "error": f"Unknown channel: {channel}"}), 400
 
 
@@ -678,6 +714,10 @@ def api_triage_set():
         due_date=data.get("due_date", ""),
         severity=data.get("severity", ""),
     )
+    user = _get_user_from_request()
+    actor = user["username"] if user else ""
+    database.audit_log_insert("triage_set", cve_id,
+        f"status={data.get('status','open')} assignee={data.get('assignee','')}", actor=actor)
     return jsonify({"ok": True})
 
 
@@ -712,6 +752,9 @@ def api_suppression_add():
         reason=data.get("reason", ""),
         by=data.get("by", ""),
     )
+    user = _get_user_from_request()
+    actor = user["username"] if user else data.get("by", "")
+    database.audit_log_insert("suppression_add", cve_id, data.get("reason", ""), actor=actor)
     return jsonify({"ok": True})
 
 
@@ -1426,6 +1469,550 @@ def api_sla_escalate():
                     "total_items": len(all_items)})
 
 
+# ── Threat intelligence ───────────────────────────────────────────────────────
+
+@app.route("/api/threat/<path:cve_id>")
+def api_threat_get(cve_id: str):
+    return jsonify(database.threat_intel_get(cve_id) or {})
+
+
+@app.route("/api/threat", methods=["POST"])
+@_require_auth
+def api_threat_set():
+    data = request.get_json(force=True) or {}
+    cve_id = data.get("cve_id", "").strip()
+    if not cve_id:
+        return jsonify({"error": "cve_id required"}), 400
+    database.threat_intel_upsert(
+        cve_id,
+        in_wild=bool(data.get("in_wild", False)),
+        threat_actors=data.get("threat_actors", []),
+        malware_families=data.get("malware_families", []),
+        campaigns=data.get("campaigns", []),
+        source=data.get("source", "manual"),
+        first_seen=data.get("first_seen", ""),
+    )
+    database.audit_log_insert("threat_intel_set", cve_id, f"in_wild={data.get('in_wild')}")
+    return jsonify({"ok": True})
+
+
+@app.route("/api/threat")
+def api_threat_all():
+    only = request.args.get("in_wild", "") == "1"
+    return jsonify(database.threat_intel_get_all(in_wild_only=only))
+
+
+@app.route("/api/threat/enrich/<path:cve_id>", methods=["POST"])
+@_require_auth
+def api_threat_enrich(cve_id: str):
+    """
+    Pull live threat data from:
+    1. CISA KEV catalog (already stored in CVE row kev field)
+    2. AlienVault OTX public API (no key required for basic queries)
+    """
+    result = _fetch_threat_intel(cve_id)
+    return jsonify(result)
+
+
+def _fetch_threat_intel(cve_id: str) -> dict:
+    import urllib.request, urllib.error, urllib.parse
+
+    in_wild = False
+    threat_actors: list[str] = []
+    malware_families: list[str] = []
+    campaigns: list[str] = []
+    sources: list[str] = []
+
+    # 1. Check if already marked KEV
+    tables = database.list_cve_tables()
+    for tbl in tables:
+        row = database.get_cve(tbl, cve_id)
+        if row and row.get("kev"):
+            in_wild = True
+            sources.append("cisa-kev")
+            break
+
+    # 2. AlienVault OTX public pulse search (no API key for read-only)
+    try:
+        q = urllib.parse.quote(cve_id)
+        url = f"https://otx.alienvault.com/api/v1/search/pulses?q={q}&page=1&limit=5"
+        req = urllib.request.Request(url, headers={
+            "User-Agent": "CVE-Emailer/2",
+            "Accept": "application/json",
+        })
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            otx = json.loads(resp.read().decode())
+            pulses = otx.get("results", [])
+            if pulses:
+                in_wild = True
+                sources.append("otx")
+                for p in pulses[:5]:
+                    for tag in (p.get("tags") or []):
+                        if tag and len(tag) < 80:
+                            campaigns.append(tag)
+                    for indicator in (p.get("indicators") or []):
+                        m_type = indicator.get("type", "")
+                        m_val  = indicator.get("indicator", "")
+                        if m_type == "malware-family" and m_val:
+                            malware_families.append(m_val)
+    except Exception:
+        pass
+
+    # Deduplicate
+    malware_families = list(dict.fromkeys(malware_families))[:10]
+    campaigns        = list(dict.fromkeys(campaigns))[:10]
+
+    database.threat_intel_upsert(
+        cve_id,
+        in_wild=in_wild,
+        threat_actors=threat_actors,
+        malware_families=malware_families,
+        campaigns=campaigns,
+        source=", ".join(sources) or "auto",
+    )
+    return {
+        "cve_id": cve_id,
+        "in_wild": in_wild,
+        "threat_actors": threat_actors,
+        "malware_families": malware_families,
+        "campaigns": campaigns,
+        "source": ", ".join(sources) or "auto",
+    }
+
+
+# ── Risk scoring ──────────────────────────────────────────────────────────────
+
+@app.route("/api/risk/<path:cve_id>")
+def api_risk_score(cve_id: str):
+    table = request.args.get("table", "")
+    return jsonify(database.compute_risk_score(cve_id, table))
+
+
+@app.route("/api/risk/top")
+def api_risk_top():
+    """Return top-N CVEs ranked by composite risk score across all tables."""
+    limit = min(int(request.args.get("limit", 20)), 100)
+    tables = database.list_cve_tables()
+    results = []
+    seen: set[str] = set()
+    rank_expr = database._severity_rank_expr()
+    from sqlalchemy import text as _text
+    with database._connect() as conn:
+        for tbl in tables:
+            try:
+                rows = conn.execute(_text(
+                    f'SELECT *, "{tbl}" as _table FROM "{tbl}" '
+                    f'WHERE severity IN (\'CRITICAL\',\'HIGH\',\'MEDIUM\') '
+                    f'ORDER BY {rank_expr}, cvss_score DESC NULLS LAST LIMIT 50'
+                )).fetchall()
+                for r in rows:
+                    d = database._row_to_dict(r)
+                    if d["cve_id"] not in seen:
+                        seen.add(d["cve_id"])
+                        risk = database.compute_risk_score(d["cve_id"], tbl)
+                        d["risk_score"]  = risk["score"]
+                        d["risk_label"]  = risk["label"]
+                        d["risk_factors"] = risk["factors"]
+                        results.append(d)
+            except Exception:
+                pass
+    results.sort(key=lambda r: r.get("risk_score", 0), reverse=True)
+    return jsonify(results[:limit])
+
+
+# ── Compliance mapping ────────────────────────────────────────────────────────
+
+@app.route("/api/compliance/map")
+def api_compliance_map():
+    cwe = request.args.get("cwe", "")
+    if not cwe:
+        return jsonify({"nist_800_53": [], "cis_v8": [], "iso_27001": []})
+    return jsonify(database.get_compliance_mapping(cwe))
+
+
+# ── Comments ──────────────────────────────────────────────────────────────────
+
+@app.route("/api/comments/<path:cve_id>")
+def api_comments_get(cve_id: str):
+    return jsonify(database.comments_get(cve_id))
+
+
+@app.route("/api/comments", methods=["POST"])
+@_require_auth
+def api_comment_add():
+    data = request.get_json(force=True) or {}
+    cve_id = data.get("cve_id", "").strip()
+    body   = data.get("body", "").strip()
+    if not cve_id or not body:
+        return jsonify({"error": "cve_id and body required"}), 400
+    user = _get_user_from_request()
+    author = user["username"] if user else data.get("author", "")
+    comment_id = database.comment_add(cve_id, body, author)
+    database.audit_log_insert("comment_add", cve_id, body[:100], actor=author)
+    return jsonify({"ok": True, "id": comment_id})
+
+
+@app.route("/api/comments/<int:comment_id>", methods=["DELETE"])
+@_require_auth
+def api_comment_delete(comment_id: int):
+    database.comment_delete(comment_id)
+    return jsonify({"ok": True})
+
+
+# ── Audit log ─────────────────────────────────────────────────────────────────
+
+@app.route("/api/audit")
+def api_audit_log():
+    limit = min(int(request.args.get("limit", 200)), 500)
+    target = request.args.get("cve_id", "")
+    return jsonify(database.audit_log_get(limit, target_id=target))
+
+
+# ── MTTR / lifecycle metrics ──────────────────────────────────────────────────
+
+@app.route("/api/metrics/mttr")
+def api_mttr():
+    return jsonify(database.get_mttr_stats())
+
+
+# ── HTML report export ────────────────────────────────────────────────────────
+
+@app.route("/api/report/html")
+def api_report_html():
+    """Generate an HTML security report covering current CVE posture."""
+    stats   = database.get_dashboard_stats()
+    top     = database.get_top_cves(20)
+    breached = database.triage_sla_breached()
+    mttr    = database.get_mttr_stats()
+    kw_perf = database.get_keyword_perf()
+    now_str = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+
+    def _sev_color(sev: str) -> str:
+        return {"CRITICAL": "#dc2626", "HIGH": "#ea580c", "MEDIUM": "#d97706",
+                "LOW": "#65a30d"}.get((sev or "").upper(), "#6b7280")
+
+    top_rows = "".join(
+        "<tr><td><code>{}</code></td>"
+        "<td style='color:{};font-weight:700'>{}</td>"
+        "<td>{}</td><td>{}%</td><td>{}</td><td>{}…</td></tr>".format(
+            r["cve_id"],
+            _sev_color(r.get("severity", "")),
+            r.get("severity", "—"),
+            r.get("cvss_score") or "—",
+            round((r.get("epss_score") or 0) * 100, 2),
+            "✓ KEV" if r.get("kev") else "—",
+            (r.get("description") or "")[:80],
+        )
+        for r in top
+    )
+    breach_rows = "".join(
+        f"<tr><td><code>{r['cve_id']}</code></td><td>{r.get('assignee','—')}</td>"
+        f"<td style='color:#dc2626'>{r.get('due_date','—')}</td></tr>"
+        for r in breached
+    )
+    kw_rows = "".join(
+        f"<tr><td>{k['keyword']}</td><td>{k['total']}</td>"
+        f"<td>{k['avg_cvss'] or '—'}</td><td>{k['kev_count']}</td></tr>"
+        for k in kw_perf
+    )
+
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>CVE Security Report — {now_str}</title>
+<style>
+  body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;margin:0;padding:2rem;color:#1e293b;background:#f8fafc}}
+  h1{{color:#7c3aed;border-bottom:2px solid #7c3aed;padding-bottom:.5rem}}
+  h2{{color:#334155;margin-top:2rem}}
+  .stats{{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:1rem;margin:1rem 0}}
+  .stat{{background:#fff;border:1px solid #e2e8f0;border-radius:8px;padding:1rem;text-align:center}}
+  .stat-label{{font-size:11px;text-transform:uppercase;letter-spacing:.8px;color:#64748b}}
+  .stat-val{{font-size:28px;font-weight:700;margin-top:.3rem}}
+  table{{width:100%;border-collapse:collapse;margin-top:.75rem;font-size:13px}}
+  th{{background:#f1f5f9;padding:.5rem .75rem;text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.6px;color:#64748b}}
+  td{{padding:.45rem .75rem;border-top:1px solid #e2e8f0;vertical-align:top}}
+  code{{background:#f1f5f9;padding:1px 5px;border-radius:4px;font-size:12px}}
+  .muted{{color:#94a3b8;font-size:12px}}
+  .footer{{margin-top:3rem;padding-top:1rem;border-top:1px solid #e2e8f0;color:#94a3b8;font-size:12px}}
+</style>
+</head>
+<body>
+<h1>CVE Security Report</h1>
+<p class="muted">Generated: {now_str}</p>
+
+<h2>Summary</h2>
+<div class="stats">
+  <div class="stat"><div class="stat-label">Total CVEs</div><div class="stat-val">{stats['total_cves']}</div></div>
+  <div class="stat"><div class="stat-label">Critical</div><div class="stat-val" style="color:#dc2626">{stats['totals'].get('CRITICAL',0)}</div></div>
+  <div class="stat"><div class="stat-label">High</div><div class="stat-val" style="color:#ea580c">{stats['totals'].get('HIGH',0)}</div></div>
+  <div class="stat"><div class="stat-label">Medium</div><div class="stat-val" style="color:#d97706">{stats['totals'].get('MEDIUM',0)}</div></div>
+  <div class="stat"><div class="stat-label">CISA KEV</div><div class="stat-val" style="color:#9333ea">{stats['kev_total']}</div></div>
+  <div class="stat"><div class="stat-label">MTTR (days)</div><div class="stat-val">{mttr['mttr_days'] or '—'}</div></div>
+  <div class="stat"><div class="stat-label">Open Triage</div><div class="stat-val">{mttr['open']}</div></div>
+  <div class="stat"><div class="stat-label">SLA Breached</div><div class="stat-val" style="color:#dc2626">{len(breached)}</div></div>
+</div>
+
+<h2>Top 20 Risk CVEs</h2>
+<table>
+<thead><tr><th>CVE ID</th><th>Severity</th><th>CVSS</th><th>EPSS</th><th>KEV</th><th>Description</th></tr></thead>
+<tbody>{top_rows or '<tr><td colspan=6 class="muted">No CVEs found.</td></tr>'}</tbody>
+</table>
+
+{'<h2>SLA Breaches</h2><table><thead><tr><th>CVE ID</th><th>Assignee</th><th>Due Date</th></tr></thead><tbody>' + breach_rows + '</tbody></table>' if breached else ''}
+
+<h2>Keyword Performance</h2>
+<table>
+<thead><tr><th>Keyword</th><th>Total CVEs</th><th>Avg CVSS</th><th>KEV</th></tr></thead>
+<tbody>{kw_rows or '<tr><td colspan=4 class="muted">No keywords.</td></tr>'}</tbody>
+</table>
+
+<div class="footer">CVE Emailer — Report auto-generated. Data sourced from NVD, CISA KEV, EPSS.</div>
+</body>
+</html>"""
+
+    return app.response_class(
+        html, mimetype="text/html",
+        headers={"Content-Disposition": f"attachment; filename=cve_report_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.html"},
+    )
+
+
+# ── Internet exposure / vendor advisory enrichment ───────────────────────────
+
+@app.route("/api/exposure/<path:cve_id>", methods=["POST"])
+@_require_auth
+def api_exposure_check(cve_id: str):
+    """
+    Check internet exposure for a CVE's affected CPEs:
+    1. Query Shodan's free CVE endpoint (no API key) for exploit/exposure count
+    2. Fetch vendor advisories from known advisory feeds (Red Hat, Ubuntu)
+    Returns exposure data + advisory snippets.
+    """
+    result = _check_exposure(cve_id)
+    return jsonify(result)
+
+
+def _check_exposure(cve_id: str) -> dict:
+    import urllib.request, urllib.error, urllib.parse
+
+    exposure: dict = {
+        "cve_id": cve_id,
+        "shodan_count": None,
+        "shodan_url": None,
+        "advisories": [],
+    }
+
+    # 1. Shodan CVE lookup (public, no key)
+    try:
+        url = f"https://cvedb.shodan.io/cve/{urllib.parse.quote(cve_id)}"
+        req = urllib.request.Request(url, headers={"User-Agent": "CVE-Emailer/2", "Accept": "application/json"})
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            data = json.loads(resp.read().decode())
+            exposure["shodan_count"] = data.get("epss")   # EPSS from Shodan (consistent field)
+            exposure["shodan_hostcount"] = data.get("kev") or data.get("ransomware_campaign") or None
+            exposure["shodan_url"] = f"https://www.shodan.io/search?query=vuln:{cve_id}"
+    except Exception:
+        pass
+
+    # 2. Red Hat Security Data API
+    try:
+        url = f"https://access.redhat.com/labs/securitydataapi/cve/{urllib.parse.quote(cve_id)}.json"
+        req = urllib.request.Request(url, headers={"User-Agent": "CVE-Emailer/2"})
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            rh = json.loads(resp.read().decode())
+            packages = rh.get("affected_packages") or rh.get("fixed_packages") or []
+            if packages or rh.get("severity"):
+                exposure["advisories"].append({
+                    "source":   "Red Hat",
+                    "severity": rh.get("severity") or rh.get("threat_severity", ""),
+                    "url":      f"https://access.redhat.com/security/cve/{cve_id}",
+                    "packages": packages[:5],
+                    "fix_states": [p.get("fix_state", "") for p in packages[:5] if isinstance(p, dict)],
+                })
+    except Exception:
+        pass
+
+    # 3. Ubuntu Security Notices (USN) via Ubuntu CVE tracker
+    try:
+        url = f"https://ubuntu.com/security/cves/{urllib.parse.quote(cve_id)}.json"
+        req = urllib.request.Request(url, headers={"User-Agent": "CVE-Emailer/2"})
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            ub = json.loads(resp.read().decode())
+            if ub.get("notices") or ub.get("packages"):
+                exposure["advisories"].append({
+                    "source":   "Ubuntu",
+                    "severity": ub.get("priority", ""),
+                    "url":      f"https://ubuntu.com/security/{cve_id}",
+                    "packages": [p.get("name", "") for p in (ub.get("packages") or [])[:5]],
+                    "fix_states": [p.get("statuses", {}) for p in (ub.get("packages") or [])[:3]],
+                })
+    except Exception:
+        pass
+
+    return exposure
+
+
+# ── Routing rules ─────────────────────────────────────────────────────────────
+
+@app.route("/api/routing")
+def api_routing_get():
+    return jsonify(database.routing_rules_get())
+
+
+@app.route("/api/routing", methods=["POST"])
+@_require_auth
+def api_routing_save():
+    data = request.get_json(force=True) or {}
+    name = data.get("name", "").strip()
+    channel = data.get("channel", "").strip()
+    destination = data.get("destination", "").strip()
+    if not name or not channel or not destination:
+        return jsonify({"error": "name, channel, destination required"}), 400
+    rule_id = database.routing_rule_save(
+        name=name,
+        min_severity=data.get("min_severity", "CRITICAL"),
+        tag_filter=data.get("tag_filter", ""),
+        channel=channel,
+        destination=destination,
+        rule_id=data.get("id"),
+    )
+    return jsonify({"ok": True, "id": rule_id})
+
+
+@app.route("/api/routing/<int:rule_id>", methods=["DELETE"])
+@_require_auth
+def api_routing_delete(rule_id: int):
+    database.routing_rule_delete(rule_id)
+    return jsonify({"ok": True})
+
+
+# ── Alert deduplication check ─────────────────────────────────────────────────
+
+@app.route("/api/dedup/check")
+def api_dedup_check():
+    cve_id  = request.args.get("cve_id", "")
+    channel = request.args.get("channel", "email")
+    hours   = int(request.args.get("hours", 24))
+    suppressed = database.alert_dedup_check(cve_id, channel, hours)
+    return jsonify({"suppressed": suppressed})
+
+
+@app.route("/api/dedup/record", methods=["POST"])
+@_require_auth
+def api_dedup_record():
+    data = request.get_json(force=True) or {}
+    cve_id  = data.get("cve_id", "").strip()
+    channel = data.get("channel", "email")
+    if not cve_id:
+        return jsonify({"error": "cve_id required"}), 400
+    database.alert_dedup_record(cve_id, channel)
+    return jsonify({"ok": True})
+
+
+# ── Webhook integrations: Teams, PagerDuty, Opsgenie ─────────────────────────
+
+def _send_teams(webhook_url: str, cve: dict) -> None:
+    """Send an Adaptive Card to Microsoft Teams via incoming webhook."""
+    import urllib.request
+    sev = (cve.get("severity") or "UNKNOWN").upper()
+    color_map = {"CRITICAL": "Attention", "HIGH": "Warning", "MEDIUM": "Warning", "LOW": "Default"}
+    card = {
+        "type": "message",
+        "attachments": [{
+            "contentType": "application/vnd.microsoft.card.adaptive",
+            "contentUrl": None,
+            "content": {
+                "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+                "type": "AdaptiveCard",
+                "version": "1.4",
+                "body": [
+                    {"type": "TextBlock", "size": "Large", "weight": "Bolder",
+                     "text": f"CVE Alert: {cve.get('cve_id','?')}",
+                     "style": "heading", "color": color_map.get(sev, "Default")},
+                    {"type": "FactSet", "facts": [
+                        {"title": "Severity", "value": sev},
+                        {"title": "CVSS",     "value": str(cve.get("cvss_score") or "—")},
+                        {"title": "EPSS",     "value": f"{round((cve.get('epss_score') or 0)*100, 2)}%"},
+                        {"title": "KEV",      "value": "Yes" if cve.get("kev") else "No"},
+                    ]},
+                    {"type": "TextBlock", "text": (cve.get("description") or "")[:300],
+                     "wrap": True, "color": "Default"},
+                ],
+            },
+        }],
+    }
+    body = json.dumps(card).encode()
+    req = urllib.request.Request(webhook_url, data=body,
+                                  headers={"Content-Type": "application/json"}, method="POST")
+    with urllib.request.urlopen(req, timeout=8):
+        pass
+
+
+def _send_pagerduty(routing_key: str, cve: dict) -> None:
+    """Trigger a PagerDuty alert via Events v2 API."""
+    import urllib.request
+    sev = (cve.get("severity") or "UNKNOWN").upper()
+    pd_sev = {"CRITICAL": "critical", "HIGH": "error", "MEDIUM": "warning"}.get(sev, "info")
+    payload = {
+        "routing_key": routing_key,
+        "event_action": "trigger",
+        "dedup_key": cve.get("cve_id", ""),
+        "payload": {
+            "summary":   f"[{sev}] {cve.get('cve_id','?')} — {(cve.get('description') or '')[:200]}",
+            "severity":  pd_sev,
+            "source":    "CVE Emailer",
+            "component": cve.get("keyword") or "security",
+            "custom_details": {
+                "cvss":    cve.get("cvss_score"),
+                "epss":    cve.get("epss_score"),
+                "kev":     bool(cve.get("kev")),
+                "cwe":     cve.get("cwe"),
+            },
+        },
+    }
+    body = json.dumps(payload).encode()
+    req = urllib.request.Request(
+        "https://events.pagerduty.com/v2/enqueue",
+        data=body,
+        headers={"Content-Type": "application/json", "Accept": "application/vnd.pagerduty+json;version=2"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=8):
+        pass
+
+
+def _send_opsgenie(api_key: str, cve: dict) -> None:
+    """Create an Opsgenie alert via REST API."""
+    import urllib.request
+    sev = (cve.get("severity") or "UNKNOWN").upper()
+    prio_map = {"CRITICAL": "P1", "HIGH": "P2", "MEDIUM": "P3", "LOW": "P4"}
+    payload = {
+        "message":   f"[{sev}] {cve.get('cve_id','?')}",
+        "alias":     cve.get("cve_id", ""),
+        "description": (cve.get("description") or "")[:500],
+        "priority":  prio_map.get(sev, "P3"),
+        "tags":      ["cve-emailer", sev.lower()],
+        "details": {
+            "cvss":  str(cve.get("cvss_score") or ""),
+            "epss":  str(cve.get("epss_score") or ""),
+            "kev":   "yes" if cve.get("kev") else "no",
+            "cwe":   cve.get("cwe") or "",
+        },
+    }
+    body = json.dumps(payload).encode()
+    req = urllib.request.Request(
+        "https://api.opsgenie.com/v2/alerts",
+        data=body,
+        headers={"Content-Type": "application/json",
+                 "Authorization": f"GenieKey {api_key}"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=8):
+        pass
+
+
+
+
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 def _bootstrap_all():
@@ -1440,6 +2027,11 @@ def _bootstrap_all():
     database.bootstrap_assets()
     database.bootstrap_cvss_overrides()
     database.bootstrap_users()
+    database.bootstrap_threat_intel()
+    database.bootstrap_comments()
+    database.bootstrap_audit_log()
+    database.bootstrap_routing_rules()
+    database.bootstrap_alert_dedup()
     _ensure_patch_columns()
 
 

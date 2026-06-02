@@ -1035,3 +1035,116 @@ kbd {
   user-select: all;
 }
 .validate-detail { color: var(--muted); font-size: 12px; }
+
+/* ── Threat intel chips ───────────────────────────────────────────────────────── */
+
+.threat-chip {
+  display: inline-block;
+  padding: .1rem .45rem;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  margin: .1rem .15rem .1rem 0;
+}
+.threat-malware  { background: rgba(220,38,38,.12); color: #dc2626; border: 1px solid rgba(220,38,38,.3); }
+.threat-campaign { background: rgba(217,119,6,.12); color: #d97706; border: 1px solid rgba(217,119,6,.3); }
+
+.detail-chip-label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .4px; margin-right: .3rem; }
+
+/* ── Risk score bar ───────────────────────────────────────────────────────────── */
+
+.risk-bar-wrap {
+  flex: 1;
+  height: 8px;
+  background: var(--surface2);
+  border-radius: 4px;
+  overflow: hidden;
+  max-width: 160px;
+}
+.risk-bar {
+  height: 100%;
+  border-radius: 4px;
+  transition: width .4s ease;
+}
+.risk-factors {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .4rem;
+}
+.risk-factor {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: .25rem .5rem;
+  font-size: 11px;
+  display: flex;
+  align-items: center;
+  gap: .3rem;
+}
+.risk-factor-label { color: var(--muted); text-transform: capitalize; }
+.risk-factor-val   { font-weight: 700; color: var(--text); }
+
+/* ── Compliance chips ─────────────────────────────────────────────────────────── */
+
+.compliance-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: .3rem;
+  margin-bottom: .4rem;
+}
+.compliance-label {
+  font-size: 11px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: .4px;
+  min-width: 90px;
+}
+.compliance-chip {
+  display: inline-block;
+  padding: .1rem .5rem;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 700;
+  font-family: monospace;
+}
+.chip-nist { background: rgba(59,130,246,.12); color: #3b82f6; border: 1px solid rgba(59,130,246,.3); }
+.chip-cis  { background: rgba(22,163,74,.12); color: #16a34a; border: 1px solid rgba(22,163,74,.3); }
+.chip-iso  { background: rgba(147,51,234,.12); color: #9333ea; border: 1px solid rgba(147,51,234,.3); }
+
+/* ── Vendor advisory card ─────────────────────────────────────────────────────── */
+
+.advisory-card {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: .5rem .75rem;
+  margin-bottom: .4rem;
+  font-size: 12px;
+}
+
+/* ── Comments ─────────────────────────────────────────────────────────────────── */
+
+.comments-list {
+  max-height: 220px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: .4rem;
+  margin-bottom: .4rem;
+}
+.comment-item {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: .4rem .65rem;
+}
+.comment-meta {
+  display: flex;
+  gap: .6rem;
+  align-items: baseline;
+  margin-bottom: .2rem;
+  font-size: 11px;
+}
+.comment-meta strong { font-size: 12px; }
+.comment-body { font-size: 13px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; }

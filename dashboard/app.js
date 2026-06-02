@@ -2627,6 +2627,410 @@ document.getElementById("btn-triage-refresh").removeEventListener("click", _orig
 document.getElementById("triage-status-filter").addEventListener("change", loadTriage);
 document.getElementById("btn-triage-refresh").addEventListener("click", loadTriage);
 
+// ── Threat intelligence panel (detail overlay) ───────────────────────────────
+
+async function _loadThreatIntel(row) {
+  const panel   = document.getElementById("threat-intel-panel");
+  const content = document.getElementById("threat-intel-content");
+  panel.style.display = "";
+  content.innerHTML = '<span class="muted">Loading…</span>';
+  try {
+    const r = await fetch(`${API}/api/threat/${encodeURIComponent(row.cve_id)}`);
+    const d = await r.json();
+    if (!d || !d.cve_id) {
+      content.innerHTML = '<span class="muted">No threat intel yet — click Fetch Threat Data.</span>';
+      return;
+    }
+    const badge = d.in_wild
+      ? `<span class="badge badge-CRITICAL">In The Wild</span>`
+      : `<span class="badge" style="background:#374151">Not Observed</span>`;
+    const mfList  = (d.malware_families || []).map(m => `<span class="threat-chip threat-malware">${escHtml(m)}</span>`).join("");
+    const campList = (d.campaigns || []).map(c => `<span class="threat-chip threat-campaign">${escHtml(c)}</span>`).join("");
+    content.innerHTML = `
+      <div style="display:flex;align-items:center;gap:.5rem;margin-bottom:.4rem">
+        ${badge}
+        <span class="muted" style="font-size:11px">Source: ${escHtml(d.source||"unknown")}</span>
+      </div>
+      ${mfList ? `<div style="margin-bottom:.3rem"><span class="detail-chip-label">Malware:</span> ${mfList}</div>` : ""}
+      ${campList ? `<div><span class="detail-chip-label">Campaigns:</span> ${campList}</div>` : ""}
+    `;
+  } catch { content.innerHTML = '<span class="muted">Failed to load.</span>'; }
+}
+
+document.getElementById("btn-detail-enrich-threat").addEventListener("click", async () => {
+  if (!_detailRow) return;
+  const msg = document.getElementById("threat-enrich-msg");
+  const btn = document.getElementById("btn-detail-enrich-threat");
+  btn.disabled = true;
+  msg.textContent = "Fetching…"; msg.className = "form-msg";
+  try {
+    const r = await fetch(`${API}/api/threat/enrich/${encodeURIComponent(_detailRow.cve_id)}`, { method: "POST" });
+    const d = await r.json();
+    msg.textContent = d.in_wild ? "In-the-wild exploitation confirmed!" : "No active threat data found.";
+    msg.className = d.in_wild ? "form-msg ok" : "form-msg";
+    await _loadThreatIntel(_detailRow);
+  } catch { msg.textContent = "Fetch failed"; msg.className = "form-msg err"; }
+  btn.disabled = false;
+  setTimeout(() => { msg.textContent = ""; }, 4000);
+});
+
+// ── Risk score panel (detail overlay) ────────────────────────────────────────
+
+async function _loadRiskScore(row) {
+  const panel   = document.getElementById("risk-score-panel");
+  const content = document.getElementById("risk-score-content");
+  try {
+    const params = new URLSearchParams({ table: row.keyword || row._table || "" });
+    const r = await fetch(`${API}/api/risk/${encodeURIComponent(row.cve_id)}?${params}`);
+    const d = await r.json();
+    if (!d || d.score == null) { panel.style.display = "none"; return; }
+    panel.style.display = "";
+    const pct = d.score;
+    const color = pct >= 80 ? "var(--critical)" : pct >= 60 ? "var(--high)" : pct >= 40 ? "var(--medium)" : "var(--low)";
+    const f = d.factors || {};
+    content.innerHTML = `
+      <div style="display:flex;align-items:center;gap:1rem;margin-bottom:.5rem">
+        <div style="font-size:28px;font-weight:800;color:${color}">${pct}</div>
+        <div>
+          <div style="font-weight:600;color:${color}">${escHtml(d.label)}</div>
+          <div class="muted" style="font-size:11px">out of 100</div>
+        </div>
+        <div class="risk-bar-wrap">
+          <div class="risk-bar" style="width:${pct}%;background:${color}"></div>
+        </div>
+      </div>
+      <div class="risk-factors">
+        ${Object.entries(f).map(([k,v]) => `
+          <div class="risk-factor">
+            <span class="risk-factor-label">${escHtml(k)}</span>
+            <span class="risk-factor-val">${v}</span>
+          </div>
+        `).join("")}
+      </div>
+    `;
+  } catch { panel.style.display = "none"; }
+}
+
+// ── Compliance panel (detail overlay) ────────────────────────────────────────
+
+async function _loadCompliance(row) {
+  const panel   = document.getElementById("compliance-panel");
+  const content = document.getElementById("compliance-content");
+  if (!row.cwe) { panel.style.display = "none"; return; }
+  try {
+    const r = await fetch(`${API}/api/compliance/map?cwe=${encodeURIComponent(row.cwe)}`);
+    const d = await r.json();
+    const nist = d.nist_800_53 || [];
+    const cis  = d.cis_v8 || [];
+    const iso  = d.iso_27001 || [];
+    if (!nist.length && !cis.length && !iso.length) { panel.style.display = "none"; return; }
+    panel.style.display = "";
+    const chips = (arr, cls) => arr.map(c => `<span class="compliance-chip ${cls}">${escHtml(c)}</span>`).join("");
+    content.innerHTML = `
+      ${nist.length ? `<div class="compliance-row"><span class="compliance-label">NIST 800-53</span>${chips(nist, "chip-nist")}</div>` : ""}
+      ${cis.length  ? `<div class="compliance-row"><span class="compliance-label">CIS v8</span>${chips(cis, "chip-cis")}</div>` : ""}
+      ${iso.length  ? `<div class="compliance-row"><span class="compliance-label">ISO 27001</span>${chips(iso, "chip-iso")}</div>` : ""}
+    `;
+  } catch { panel.style.display = "none"; }
+}
+
+// ── Exposure / vendor advisory panel (detail overlay) ────────────────────────
+
+async function _loadExposurePanel(row) {
+  const panel   = document.getElementById("exposure-panel");
+  const content = document.getElementById("exposure-content");
+  panel.style.display = "";
+  try {
+    content.innerHTML = '<span class="muted">Click "Check Advisories" to fetch.</span>';
+  } catch { panel.style.display = "none"; }
+}
+
+document.getElementById("btn-detail-check-exposure").addEventListener("click", async () => {
+  if (!_detailRow) return;
+  const msg = document.getElementById("exposure-msg");
+  const btn = document.getElementById("btn-detail-check-exposure");
+  btn.disabled = true;
+  msg.textContent = "Fetching…"; msg.className = "form-msg";
+  try {
+    const r = await fetch(`${API}/api/exposure/${encodeURIComponent(_detailRow.cve_id)}`, { method: "POST" });
+    const d = await r.json();
+    const content = document.getElementById("exposure-content");
+    const advisories = (d.advisories || []);
+    if (!advisories.length) {
+      content.innerHTML = '<span class="muted">No vendor advisories found.</span>';
+      msg.textContent = "No advisories."; msg.className = "form-msg";
+    } else {
+      content.innerHTML = advisories.map(a => `
+        <div class="advisory-card">
+          <div style="display:flex;align-items:center;gap:.5rem">
+            <strong>${escHtml(a.source)}</strong>
+            ${a.severity ? `<span class="badge" style="background:var(--medium);font-size:10px">${escHtml(a.severity)}</span>` : ""}
+            ${a.url ? `<a href="${escHtml(a.url)}" target="_blank" rel="noopener" style="font-size:11px;color:#60a5fa">Advisory ↗</a>` : ""}
+          </div>
+          ${(a.packages||[]).length ? `<div class="muted" style="font-size:11px;margin-top:.2rem">Packages: ${escHtml(a.packages.slice(0,5).join(", "))}</div>` : ""}
+        </div>
+      `).join("");
+      msg.textContent = `${advisories.length} advisory source(s) found.`; msg.className = "form-msg ok";
+    }
+  } catch { msg.textContent = "Fetch failed"; msg.className = "form-msg err"; }
+  btn.disabled = false;
+  setTimeout(() => { msg.textContent = ""; }, 4000);
+});
+
+// ── Comments (detail overlay) ─────────────────────────────────────────────────
+
+async function _loadComments(row) {
+  const list = document.getElementById("comments-list");
+  list.innerHTML = '<span class="muted" style="font-size:12px">Loading…</span>';
+  try {
+    const r = await fetch(`${API}/api/comments/${encodeURIComponent(row.cve_id)}`);
+    const comments = await r.json();
+    if (!comments.length) {
+      list.innerHTML = '<span class="muted" style="font-size:12px">No comments yet.</span>';
+      return;
+    }
+    list.innerHTML = comments.map(c => `
+      <div class="comment-item">
+        <div class="comment-meta">
+          <strong>${escHtml(c.author || "anon")}</strong>
+          <span class="muted">${escHtml((c.created_at||"").slice(0,16))}</span>
+        </div>
+        <div class="comment-body">${escHtml(c.body)}</div>
+      </div>
+    `).join("");
+  } catch { list.innerHTML = '<span class="muted">Failed to load.</span>'; }
+}
+
+document.getElementById("btn-comment-add").addEventListener("click", async () => {
+  if (!_detailRow) return;
+  const input = document.getElementById("comment-input");
+  const body  = input.value.trim();
+  if (!body) return;
+  try {
+    const r = await fetch(`${API}/api/comments`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ cve_id: _detailRow.cve_id, body }),
+    });
+    const j = await r.json();
+    if (j.ok) {
+      input.value = "";
+      await _loadComments(_detailRow);
+    }
+  } catch {}
+});
+
+document.getElementById("comment-input").addEventListener("keydown", e => {
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); document.getElementById("btn-comment-add").click(); }
+});
+
+// ── Extend openDetail to load new panels ─────────────────────────────────────
+
+const _origOpenDetail2 = openDetail;
+openDetail = async function(row) {
+  await _origOpenDetail2(row);
+  await Promise.all([
+    _loadThreatIntel(row),
+    _loadRiskScore(row),
+    _loadCompliance(row),
+    _loadExposurePanel(row),
+    _loadComments(row),
+  ]);
+};
+
+// ── MTTR panel ────────────────────────────────────────────────────────────────
+
+async function loadMttr() {
+  try {
+    const r = await fetch(`${API}/api/metrics/mttr`);
+    const d = await r.json();
+    document.getElementById("mttr-days").textContent        = d.mttr_days != null ? d.mttr_days : "—";
+    document.getElementById("mttr-remediated").textContent  = d.remediated ?? "—";
+    document.getElementById("mttr-open").textContent        = d.open ?? "—";
+    document.getElementById("mttr-overdue").textContent     = d.overdue ?? "—";
+
+    const statesEl = document.getElementById("mttr-states");
+    statesEl.innerHTML = "";
+    Object.entries(d.state_counts || {}).forEach(([state, cnt]) => {
+      statesEl.insertAdjacentHTML("beforeend",
+        `<span class="triage-badge triage-${escHtml(state)}" style="padding:.3rem .7rem;font-size:12px">${_triageLabel(state)}: ${cnt}</span>`);
+    });
+  } catch (e) { console.error("loadMttr:", e); }
+}
+
+document.getElementById("btn-refresh-mttr").addEventListener("click", loadMttr);
+
+// ── HTML Report download ──────────────────────────────────────────────────────
+
+document.getElementById("btn-report-html").addEventListener("click", () => {
+  const a = document.createElement("a");
+  a.href = `${API}/api/report/html`;
+  a.download = "";
+  a.click();
+});
+
+// ── Threat Intel section ──────────────────────────────────────────────────────
+
+async function loadThreatSection() {
+  try {
+    const r = await fetch(`${API}/api/threat`);
+    const rows = await r.json();
+    const tbody   = document.getElementById("threat-tbody");
+    const emptyEl = document.getElementById("threat-empty");
+    tbody.innerHTML = "";
+    if (!rows.length) { emptyEl.style.display = ""; return; }
+    emptyEl.style.display = "none";
+    rows.forEach(row => {
+      const badge = row.in_wild
+        ? `<span class="badge badge-CRITICAL">In Wild</span>`
+        : `<span class="muted">No</span>`;
+      const mf = (row.malware_families || []).slice(0,3).map(m => `<span class="threat-chip threat-malware">${escHtml(m)}</span>`).join("");
+      const cp = (row.campaigns || []).slice(0,3).map(c => `<span class="threat-chip threat-campaign">${escHtml(c)}</span>`).join("");
+      tbody.insertAdjacentHTML("beforeend", `
+        <tr>
+          <td><code>${escHtml(row.cve_id)}</code></td>
+          <td>${badge}</td>
+          <td>${mf || '<span class="muted">—</span>'}</td>
+          <td>${cp || '<span class="muted">—</span>'}</td>
+          <td><small>${escHtml(row.source||"—")}</small></td>
+          <td><small>${escHtml((row.updated_at||"").slice(0,16))}</small></td>
+        </tr>
+      `);
+    });
+  } catch (e) { console.error("loadThreatSection:", e); }
+}
+
+document.getElementById("btn-threat-refresh").addEventListener("click", loadThreatSection);
+
+// ── Routing rules section ─────────────────────────────────────────────────────
+
+let _editingRule = null;
+
+function _openRoutingEditor(rule = null) {
+  _editingRule = rule || null;
+  document.getElementById("routing-editor-title").textContent = rule ? `Edit — ${escHtml(rule.name)}` : "New Rule";
+  document.getElementById("routing-edit-id").value    = rule?.id || "";
+  document.getElementById("routing-name").value       = rule?.name || "";
+  document.getElementById("routing-severity").value   = rule?.min_severity || "CRITICAL";
+  document.getElementById("routing-channel").value    = rule?.channel || "pagerduty";
+  document.getElementById("routing-destination").value = rule?.destination || "";
+  document.getElementById("routing-tag").value        = rule?.tag_filter || "";
+  document.getElementById("btn-routing-delete").style.display = rule ? "" : "none";
+  document.getElementById("routing-msg").textContent  = "";
+  document.getElementById("routing-editor").classList.add("visible");
+}
+
+function _closeRoutingEditor() {
+  _editingRule = null;
+  document.getElementById("routing-editor").classList.remove("visible");
+}
+
+async function loadRoutingRules() {
+  try {
+    const r    = await fetch(`${API}/api/routing`);
+    const rows = await r.json();
+    const tbody   = document.getElementById("routing-tbody");
+    const emptyEl = document.getElementById("routing-empty");
+    tbody.innerHTML = "";
+    if (!rows.length) { emptyEl.style.display = ""; return; }
+    emptyEl.style.display = "none";
+    rows.forEach(rule => {
+      const tr = document.createElement("tr");
+      tr.className = "clickable";
+      tr.innerHTML = `
+        <td><strong>${escHtml(rule.name)}</strong></td>
+        <td>${sevBadge(rule.min_severity)}</td>
+        <td><span class="badge" style="background:var(--accent)">${escHtml(rule.channel)}</span></td>
+        <td><small class="muted">${escHtml(truncate(rule.destination||"",40))}</small></td>
+        <td><small>${escHtml(rule.tag_filter||"—")}</small></td>
+        <td><button class="btn-sm">Edit</button></td>
+      `;
+      tr.querySelector("button").addEventListener("click", e => { e.stopPropagation(); _openRoutingEditor(rule); });
+      tr.addEventListener("click", () => _openRoutingEditor(rule));
+      tbody.appendChild(tr);
+    });
+  } catch (e) { console.error("loadRoutingRules:", e); }
+}
+
+document.getElementById("btn-routing-new").addEventListener("click", () => _openRoutingEditor());
+document.getElementById("btn-routing-cancel").addEventListener("click", _closeRoutingEditor);
+
+document.getElementById("btn-routing-save").addEventListener("click", async () => {
+  const msg  = document.getElementById("routing-msg");
+  const name = document.getElementById("routing-name").value.trim();
+  const dest = document.getElementById("routing-destination").value.trim();
+  if (!name || !dest) { msg.textContent = "Name and destination are required."; msg.className = "form-msg err"; return; }
+  const body = {
+    name,
+    min_severity: document.getElementById("routing-severity").value,
+    channel:      document.getElementById("routing-channel").value,
+    destination:  dest,
+    tag_filter:   document.getElementById("routing-tag").value.trim(),
+  };
+  const editId = document.getElementById("routing-edit-id").value;
+  if (editId) body.id = parseInt(editId, 10);
+  try {
+    const r = await fetch(`${API}/api/routing`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const j = await r.json();
+    if (j.ok) { msg.textContent = "Saved!"; msg.className = "form-msg ok"; loadRoutingRules(); setTimeout(_closeRoutingEditor, 600); }
+    else { msg.textContent = j.error || "Failed"; msg.className = "form-msg err"; }
+  } catch { msg.textContent = "Request failed"; msg.className = "form-msg err"; }
+});
+
+document.getElementById("btn-routing-delete").addEventListener("click", async () => {
+  if (!_editingRule) return;
+  if (!confirm(`Delete rule "${_editingRule.name}"?`)) return;
+  await fetch(`${API}/api/routing/${_editingRule.id}`, { method: "DELETE" });
+  loadRoutingRules();
+  _closeRoutingEditor();
+});
+
+// ── Audit log section ─────────────────────────────────────────────────────────
+
+async function loadAuditLog() {
+  try {
+    const r = await fetch(`${API}/api/audit?limit=200`);
+    const rows = await r.json();
+    const tbody = document.getElementById("audit-tbody");
+    tbody.innerHTML = "";
+    if (!rows.length) {
+      tbody.innerHTML = `<tr><td colspan="5" class="muted" style="padding:1rem">No audit entries yet.</td></tr>`;
+      return;
+    }
+    rows.forEach(row => {
+      tbody.insertAdjacentHTML("beforeend", `
+        <tr>
+          <td><small>${escHtml((row.ts||"").slice(0,16))}</small></td>
+          <td>${escHtml(row.actor||"—")}</td>
+          <td><code style="font-size:11px">${escHtml(row.action||"")}</code></td>
+          <td>${row.target_id ? `<code>${escHtml(row.target_id)}</code>` : "—"}</td>
+          <td><small class="muted">${escHtml(truncate(row.detail||"",80))}</small></td>
+        </tr>
+      `);
+    });
+  } catch (e) { console.error("loadAuditLog:", e); }
+}
+
+document.getElementById("btn-audit-refresh").addEventListener("click", loadAuditLog);
+
+// ── Nav handler: new sections ─────────────────────────────────────────────────
+
+// Extend nav handler to call new loaders
+navLinks.forEach(l => {
+  if (!l.dataset.section) return;
+  const sec = l.dataset.section;
+  if (!["threat","routing","audit"].includes(sec)) return;
+  l.addEventListener("click", () => {
+    if (sec === "threat")  loadThreatSection();
+    if (sec === "routing") loadRoutingRules();
+    if (sec === "audit")   loadAuditLog();
+  });
+});
+
 // ── Initial load ──────────────────────────────────────────────────────────────
 
 loadDashboard();
@@ -2637,4 +3041,5 @@ loadSeverityChart();
 loadKwPerf();
 loadScheduleInfo();
 loadScanHealth();
+loadMttr();
 renderSavedSearches();

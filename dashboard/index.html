@@ -21,6 +21,9 @@
       <a href="#triage" class="nav-link" data-section="triage">Triage</a>
       <a href="#assets" class="nav-link" data-section="assets">Assets</a>
       <a href="#users" class="nav-link" data-section="users">Users</a>
+      <a href="#threat" class="nav-link" data-section="threat">Threat Intel</a>
+      <a href="#routing" class="nav-link" data-section="routing">Routing</a>
+      <a href="#audit" class="nav-link" data-section="audit">Audit Log</a>
       <a href="#notifylog" class="nav-link" data-section="notifylog">Notify Log</a>
       <a href="#settings" class="nav-link" data-section="settings">Settings</a>
       <a href="/docs" class="nav-link" target="_self">Docs</a>
@@ -49,6 +52,7 @@
             </select>
           </label>
           <button class="btn-sm" id="btn-export-all" title="Export all CVEs across all keywords to CSV">⬇ Export All</button>
+          <button class="btn-sm" id="btn-report-html" title="Download HTML security report">📄 Report</button>
           <span id="scan-status-text" class="scan-status-text"></span>
           <button class="btn-primary" id="btn-trigger-scan">▶ Run Scan</button>
         </div>
@@ -211,6 +215,34 @@
             <div class="schedule-value" id="sched-apikey">—</div>
           </div>
         </div>
+      </div>
+
+      <!-- MTTR / Lifecycle metrics -->
+      <div class="panel" style="margin-top:1.5rem">
+        <div class="panel-header">
+          <h2>Vulnerability Lifecycle &amp; MTTR</h2>
+          <span class="panel-hint">Mean time to remediate across all triaged CVEs</span>
+          <button class="btn-sm" id="btn-refresh-mttr">↻</button>
+        </div>
+        <div class="schedule-row" id="mttr-summary">
+          <div class="schedule-item">
+            <div class="schedule-label">MTTR (days)</div>
+            <div class="schedule-value" id="mttr-days">—</div>
+          </div>
+          <div class="schedule-item">
+            <div class="schedule-label">Remediated</div>
+            <div class="schedule-value" id="mttr-remediated">—</div>
+          </div>
+          <div class="schedule-item">
+            <div class="schedule-label">Open</div>
+            <div class="schedule-value" id="mttr-open">—</div>
+          </div>
+          <div class="schedule-item">
+            <div class="schedule-label">Overdue</div>
+            <div class="schedule-value" id="mttr-overdue" style="color:var(--critical)">—</div>
+          </div>
+        </div>
+        <div id="mttr-states" style="margin-top:.75rem;display:flex;gap:.5rem;flex-wrap:wrap"></div>
       </div>
 
       <!-- Scan health -->
@@ -394,6 +426,44 @@
           <div id="related-cves-panel" style="margin-top:.75rem;display:none">
             <div class="detail-section-title">Related CVEs (same CWE / product)</div>
             <div id="related-cves-content"></div>
+          </div>
+
+          <!-- Threat intelligence panel -->
+          <div id="threat-intel-panel" style="margin-top:.75rem;display:none">
+            <div class="detail-section-title">Threat Intelligence</div>
+            <div id="threat-intel-content"></div>
+            <button class="btn-sm" id="btn-detail-enrich-threat" style="margin-top:.4rem" title="Fetch OTX / CISA KEV data">⚡ Fetch Threat Data</button>
+            <span id="threat-enrich-msg" class="form-msg" style="margin-left:.5rem"></span>
+          </div>
+
+          <!-- Composite risk score -->
+          <div id="risk-score-panel" style="margin-top:.75rem;display:none">
+            <div class="detail-section-title">Composite Risk Score</div>
+            <div id="risk-score-content"></div>
+          </div>
+
+          <!-- Compliance mapping -->
+          <div id="compliance-panel" style="margin-top:.75rem;display:none">
+            <div class="detail-section-title">Compliance Mapping</div>
+            <div id="compliance-content"></div>
+          </div>
+
+          <!-- Internet exposure / vendor advisories -->
+          <div id="exposure-panel" style="margin-top:.75rem;display:none">
+            <div class="detail-section-title">Vendor Advisories &amp; Exposure</div>
+            <div id="exposure-content"></div>
+            <button class="btn-sm" id="btn-detail-check-exposure" style="margin-top:.4rem" title="Check Red Hat, Ubuntu advisories">⚡ Check Advisories</button>
+            <span id="exposure-msg" class="form-msg" style="margin-left:.5rem"></span>
+          </div>
+
+          <!-- Comments thread -->
+          <div style="margin-top:.75rem">
+            <div class="detail-section-title">Comments</div>
+            <div id="comments-list" class="comments-list"></div>
+            <div style="display:flex;gap:.5rem;margin-top:.5rem">
+              <input class="input-sm" id="comment-input" placeholder="Add a comment…" style="flex:1" />
+              <button class="btn-sm" id="btn-comment-add">Post</button>
+            </div>
           </div>
 
           <!-- Internal CVSS override -->
@@ -1031,6 +1101,155 @@
             </tr>
           </thead>
           <tbody id="notifylog-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- THREAT INTEL -->
+  <section id="section-threat" class="section">
+    <div class="container">
+      <div class="page-title-row">
+        <h1 class="page-title">Threat Intelligence</h1>
+        <div class="page-actions">
+          <button class="btn-sm" id="btn-threat-refresh">↻ Refresh</button>
+        </div>
+      </div>
+      <p class="section-hint">CVEs with known in-the-wild exploitation, threat actor associations, and malware family links. Use the detail panel to enrich individual CVEs from AlienVault OTX.</p>
+
+      <!-- In-the-wild summary chips -->
+      <div class="panel" style="margin-bottom:1.5rem">
+        <div class="panel-header">
+          <h2>In-the-Wild Exploitation</h2>
+          <span class="panel-hint">From CISA KEV + AlienVault OTX</span>
+        </div>
+        <div class="table-wrap">
+          <table id="threat-table">
+            <thead>
+              <tr>
+                <th>CVE ID</th>
+                <th>In Wild</th>
+                <th>Malware Families</th>
+                <th>Campaigns / Tags</th>
+                <th>Source</th>
+                <th>Updated</th>
+              </tr>
+            </thead>
+            <tbody id="threat-tbody"></tbody>
+          </table>
+        </div>
+        <div id="threat-empty" class="muted" style="padding:1rem 0;display:none">No threat intelligence data yet. Open a CVE detail and click "Fetch Threat Data".</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ROUTING RULES -->
+  <section id="section-routing" class="section">
+    <div class="container">
+      <div class="page-title-row">
+        <h1 class="page-title">Alert Routing Rules</h1>
+        <div class="page-actions">
+          <button class="btn-primary" id="btn-routing-new">+ New Rule</button>
+        </div>
+      </div>
+      <p class="section-hint">Define routing rules to send high-severity alerts to specific channels (Teams, PagerDuty, Opsgenie) based on severity or keyword tags. Rules apply during scan dispatch.</p>
+
+      <div class="split-layout">
+        <div class="split-main">
+          <div class="panel">
+            <div class="table-wrap">
+              <table id="routing-table">
+                <thead>
+                  <tr>
+                    <th>Name</th>
+                    <th>Min Severity</th>
+                    <th>Channel</th>
+                    <th>Destination</th>
+                    <th>Tag Filter</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody id="routing-tbody"></tbody>
+              </table>
+            </div>
+            <div id="routing-empty" class="muted" style="padding:1rem 0;display:none">No routing rules yet.</div>
+          </div>
+        </div>
+
+        <div class="split-side" id="routing-editor">
+          <div class="panel">
+            <div class="panel-header">
+              <h2 id="routing-editor-title">New Rule</h2>
+            </div>
+            <div class="form-body">
+              <input type="hidden" id="routing-edit-id" />
+              <div class="form-group">
+                <label class="form-label">Rule name</label>
+                <input class="input-sm" id="routing-name" placeholder="e.g. Critical → PagerDuty" style="width:100%" />
+              </div>
+              <div class="form-group">
+                <label class="form-label">Min severity</label>
+                <select class="input-sm" id="routing-severity" style="width:100%">
+                  <option value="CRITICAL">CRITICAL only</option>
+                  <option value="HIGH">HIGH+</option>
+                  <option value="MEDIUM">MEDIUM+</option>
+                  <option value="LOW">LOW+</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label class="form-label">Channel</label>
+                <select class="input-sm" id="routing-channel" style="width:100%">
+                  <option value="pagerduty">PagerDuty</option>
+                  <option value="opsgenie">Opsgenie</option>
+                  <option value="teams">Microsoft Teams</option>
+                  <option value="slack">Slack</option>
+                  <option value="webhook">Webhook</option>
+                  <option value="email">Email</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label class="form-label">Destination <span class="form-hint">(routing key, webhook URL, or email)</span></label>
+                <input class="input-sm" id="routing-destination" placeholder="https://… or key…" style="width:100%" />
+              </div>
+              <div class="form-group">
+                <label class="form-label">Tag filter <span class="form-hint">(optional keyword substring)</span></label>
+                <input class="input-sm" id="routing-tag" placeholder="e.g. apache, log4j" style="width:100%" />
+              </div>
+              <div class="form-actions">
+                <button class="btn-primary" id="btn-routing-save">Save rule</button>
+                <button class="btn-sm" id="btn-routing-cancel">Cancel</button>
+                <button class="btn-danger" id="btn-routing-delete" style="display:none">Delete</button>
+              </div>
+              <div id="routing-msg" class="form-msg"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- AUDIT LOG -->
+  <section id="section-audit" class="section">
+    <div class="container">
+      <div class="page-title-row">
+        <h1 class="page-title">Audit Log</h1>
+        <div class="page-actions">
+          <button class="btn-sm" id="btn-audit-refresh">↻ Refresh</button>
+        </div>
+      </div>
+      <p class="section-hint">Every triage action, comment, override, and threat intel update — who did what and when.</p>
+      <div class="table-wrap">
+        <table id="audit-table">
+          <thead>
+            <tr>
+              <th>Timestamp</th>
+              <th>Actor</th>
+              <th>Action</th>
+              <th>CVE / Target</th>
+              <th>Detail</th>
+            </tr>
+          </thead>
+          <tbody id="audit-tbody"></tbody>
         </table>
       </div>
     </div>
