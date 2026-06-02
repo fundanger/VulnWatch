@@ -18,15 +18,16 @@ navLinks.forEach(l => l.addEventListener("click", e => {
   e.preventDefault();
   const sec = l.dataset.section;
   showSection(sec);
-  if (sec === "overview")   { loadDashboard(); loadTopCves(); loadTrend(); loadKwPerf(); loadScheduleInfo(); }
+  if (sec === "overview")   { loadDashboard(); loadTopCves(); loadTrend(); loadKwPerf(); loadScheduleInfo(); loadScanHealth(); }
   if (sec === "history")    loadHistory();
   if (sec === "profiles")   loadProfiles();
   if (sec === "browse")     loadBrowseTables();
   if (sec === "digest")     loadDigestQueue();
-  if (sec === "settings")   loadSettings();
+  if (sec === "settings")   { loadSettings(); loadSavedViews(); renderSavedSearches(); }
   if (sec === "watchlist")  loadWatchlist();
   if (sec === "analytics")  loadAnalytics();
   if (sec === "notifylog")  loadNotifyLog();
+  if (sec === "triage")     loadTriage();
 }));
 
 // ── Health check ─────────────────────────────────────────────────────────────
@@ -170,6 +171,7 @@ async function doBrowseSearch() {
 }
 
 let _reviewedMap = {};  // cve_id -> bool, cached per browse load
+let _triageMap   = {};  // cve_id -> {status, assignee, due_date}
 
 async function _loadReviewedMap(rows) {
   try {
@@ -177,6 +179,15 @@ async function _loadReviewedMap(rows) {
     const all = await r.json();
     _reviewedMap = {};
     all.forEach(rv => { _reviewedMap[rv.cve_id] = !!rv.reviewed; });
+  } catch {}
+}
+
+async function _loadTriageMap() {
+  try {
+    const r = await fetch(`${API}/api/triage`);
+    const all = await r.json();
+    _triageMap = {};
+    all.forEach(t => { _triageMap[t.cve_id] = t; });
   } catch {}
 }
 
@@ -251,6 +262,22 @@ async function openDetail(row) {
     }
     notesEl.value = rj.notes || "";
   } catch {}
+
+  // Load triage state
+  try {
+    const tr = await fetch(`${API}/api/triage/${encodeURIComponent(row.cve_id)}`);
+    const tj = await tr.json();
+    document.getElementById("detail-triage-status").value   = tj.status   || "open";
+    document.getElementById("detail-triage-assignee").value = tj.assignee || "";
+    document.getElementById("detail-triage-due").value      = tj.due_date || "";
+  } catch {
+    document.getElementById("detail-triage-status").value   = "open";
+    document.getElementById("detail-triage-assignee").value = "";
+    document.getElementById("detail-triage-due").value      = "";
+  }
+
+  // Load CVSS vector breakdown if available
+  _loadCvssVector(row);
 
   document.getElementById("detail-overlay").classList.remove("hidden");
 }
@@ -1436,7 +1463,7 @@ document.querySelectorAll(".qf-chip").forEach(btn => {
 let _qfEpssMin = null;
 
 async function _origRenderBrowse() {
-  await _loadReviewedMap(_browseRows);
+  await Promise.all([_loadReviewedMap(_browseRows), _loadTriageMap()]);
 
   const reviewFilter = document.getElementById("br-reviewed").value;
   let rows = _browseRows;
@@ -1444,14 +1471,25 @@ async function _origRenderBrowse() {
   if (reviewFilter === "unreviewed") rows = rows.filter(r => !_reviewedMap[r.cve_id]);
   if (_qfEpssMin != null) rows = rows.filter(r => (r.epss_score || 0) >= _qfEpssMin);
 
+  const today = new Date().toISOString().slice(0, 10);
+
   const tbody = document.getElementById("browse-tbody");
   tbody.innerHTML = "";
   rows.forEach((row) => {
     const reviewed = _reviewedMap[row.cve_id];
     const checked  = _selectedCves.has(row.cve_id);
+    const triage   = _triageMap[row.cve_id];
+    let triageCell = "";
+    if (triage) {
+      const breached = triage.due_date && triage.due_date < today
+        && !["closed","mitigated","wont_fix","false_positive"].includes(triage.status);
+      triageCell = `<span class="triage-badge triage-${triage.status}${breached ? " triage-breached" : ""}">${_triageLabel(triage.status)}</span>`;
+      if (triage.assignee) triageCell += ` <span class="triage-assignee">${escHtml(triage.assignee)}</span>`;
+    }
     const tr = document.createElement("tr");
     tr.className = `clickable${reviewed ? " row-reviewed" : ""}`;
     tr.dataset.cve = row.cve_id;
+    tr.dataset.idx = rows.indexOf(row);
     tr.innerHTML = `
       <td><input type="checkbox" class="chk-row" data-cve="${escHtml(row.cve_id)}" ${checked ? "checked" : ""} /></td>
       <td><code>${escHtml(row.cve_id)}</code></td>
@@ -1462,6 +1500,7 @@ async function _origRenderBrowse() {
       <td>${escHtml(row.keyword || "")}</td>
       <td>${escHtml((row.publish_date || "").slice(0, 10))}</td>
       <td>${reviewed ? `<span class="badge-reviewed">✓</span>` : ""}</td>
+      <td>${triageCell}</td>
       <td>${escHtml(truncate(row.description, 90))}</td>
     `;
     // Checkbox toggle
@@ -1472,11 +1511,18 @@ async function _origRenderBrowse() {
     });
     tr.addEventListener("click", e => {
       if (e.target.type === "checkbox") return;
+      _browseSelectedIdx = parseInt(tr.dataset.idx, 10);
+      _updateBrowseHighlight();
       openDetail(row);
     });
     tbody.appendChild(tr);
   });
   document.getElementById("browse-status").textContent = `${rows.length} result(s) — click a row for detail`;
+}
+
+function _triageLabel(status) {
+  return { open: "Open", investigating: "Investigating", mitigated: "Mitigated",
+           wont_fix: "Won't Fix", false_positive: "FP", closed: "Closed" }[status] || status;
 }
 
 // ── Analytics ─────────────────────────────────────────────────────────────────
@@ -1645,6 +1691,421 @@ async function loadNotifyLog() {
   } catch (e) { console.error("loadNotifyLog:", e); }
 }
 
+// ── Triage detail save ────────────────────────────────────────────────────────
+
+document.getElementById("btn-detail-triage-save").addEventListener("click", async () => {
+  if (!_detailRow) return;
+  const msg = document.getElementById("detail-action-msg");
+  try {
+    const r = await fetch(`${API}/api/triage`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        cve_id:   _detailRow.cve_id,
+        status:   document.getElementById("detail-triage-status").value,
+        assignee: document.getElementById("detail-triage-assignee").value.trim(),
+        due_date: document.getElementById("detail-triage-due").value,
+        severity: _detailRow.severity || "",
+      }),
+    });
+    const j = await r.json();
+    if (j.ok) { msg.textContent = "Triage saved!"; msg.className = "form-msg ok"; }
+    else       { msg.textContent = j.error || "Failed"; msg.className = "form-msg err"; }
+  } catch { msg.textContent = "Request failed"; msg.className = "form-msg err"; }
+  setTimeout(() => { msg.textContent = ""; }, 2500);
+});
+
+// ── Suppress / false-positive ─────────────────────────────────────────────────
+
+document.getElementById("btn-detail-suppress").addEventListener("click", async () => {
+  if (!_detailRow) return;
+  const reason = prompt(`Suppress ${_detailRow.cve_id}?\nEnter a reason (or leave blank):`);
+  if (reason === null) return; // cancelled
+  const msg = document.getElementById("detail-action-msg");
+  try {
+    const r = await fetch(`${API}/api/suppressions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        cve_id:  _detailRow.cve_id,
+        keyword: _detailRow.keyword || "",
+        reason,
+      }),
+    });
+    const j = await r.json();
+    if (j.ok) { msg.textContent = "CVE suppressed."; msg.className = "form-msg ok"; }
+    else       { msg.textContent = j.error || "Failed"; msg.className = "form-msg err"; }
+  } catch { msg.textContent = "Request failed"; msg.className = "form-msg err"; }
+  setTimeout(() => { msg.textContent = ""; }, 2500);
+});
+
+// ── CVSS vector breakdown ─────────────────────────────────────────────────────
+
+async function _loadCvssVector(row) {
+  const el = document.getElementById("cvss-vector-breakdown");
+  el.style.display = "none";
+  el.innerHTML = "";
+  // Extract vector from cpe or references_json — NVD stores it in the raw data
+  // We try the references for a CVSS vector string pattern
+  let vector = "";
+  try {
+    const refs = JSON.parse(row.references_json || "[]");
+    for (const ref of refs) {
+      const m = ref.match(/CVSS:3\.[01]\/[A-Z:A-Z\/]+/);
+      if (m) { vector = m[0]; break; }
+    }
+  } catch {}
+
+  if (!vector) return;
+
+  try {
+    const r = await fetch(`${API}/api/cve/cvss-vector?v=${encodeURIComponent(vector)}`);
+    const data = await r.json();
+    if (!Object.keys(data).length) return;
+    const cols = Object.entries(data).map(([k, v]) => `
+      <div class="cvss-component">
+        <div class="cvss-key">${escHtml(v.name)}</div>
+        <div class="cvss-val cvss-${v.code}">${escHtml(v.label)}</div>
+      </div>
+    `).join("");
+    el.innerHTML = `<div class="cvss-grid">${cols}</div>`;
+    el.style.display = "";
+  } catch {}
+}
+
+// ── Triage section ────────────────────────────────────────────────────────────
+
+async function loadTriage() {
+  const statusFilter = document.getElementById("triage-status-filter").value;
+  try {
+    const [triageRows, breachedRows] = await Promise.all([
+      fetch(`${API}/api/triage${statusFilter ? "?status=" + statusFilter : ""}`).then(r => r.json()),
+      fetch(`${API}/api/triage/sla/breached`).then(r => r.json()),
+    ]);
+
+    // SLA breach banner
+    const banner = document.getElementById("sla-breach-banner");
+    if (breachedRows.length) {
+      banner.style.display = "";
+      banner.innerHTML = `<strong>⚠ ${breachedRows.length} SLA breach${breachedRows.length > 1 ? "es" : ""}:</strong> ` +
+        breachedRows.map(r => `<code>${escHtml(r.cve_id)}</code> (due ${escHtml(r.due_date)})`).join(", ");
+    } else {
+      banner.style.display = "none";
+    }
+
+    const tbody = document.getElementById("triage-tbody");
+    const emptyEl = document.getElementById("triage-empty");
+    tbody.innerHTML = "";
+    if (!triageRows.length) {
+      emptyEl.style.display = "";
+      return;
+    }
+    emptyEl.style.display = "none";
+    const today = new Date().toISOString().slice(0, 10);
+
+    triageRows.forEach(row => {
+      const breached = row.due_date && row.due_date < today
+        && !["closed","mitigated","wont_fix","false_positive"].includes(row.status);
+      const slaBadge = !row.due_date ? "—"
+        : breached
+          ? `<span class="sla-badge sla-breached">Breached (${escHtml(row.due_date)})</span>`
+          : `<span class="sla-badge sla-ok">${escHtml(row.due_date)}</span>`;
+
+      tbody.insertAdjacentHTML("beforeend", `
+        <tr>
+          <td><code>${escHtml(row.cve_id)}</code></td>
+          <td><span class="triage-badge triage-${row.status}">${_triageLabel(row.status)}</span></td>
+          <td>${escHtml(row.assignee || "—")}</td>
+          <td>${escHtml(row.due_date || "—")}</td>
+          <td>${slaBadge}</td>
+          <td>${escHtml((row.updated_at || "").slice(0, 16))}</td>
+        </tr>
+      `);
+    });
+  } catch (e) { console.error("loadTriage:", e); }
+
+  loadSuppressions();
+}
+
+document.getElementById("triage-status-filter").addEventListener("change", loadTriage);
+document.getElementById("btn-triage-refresh").addEventListener("click", loadTriage);
+
+async function loadSuppressions() {
+  try {
+    const r = await fetch(`${API}/api/suppressions`);
+    const rows = await r.json();
+    const tbody = document.getElementById("suppression-tbody");
+    const emptyEl = document.getElementById("suppression-empty");
+    tbody.innerHTML = "";
+    if (!rows.length) { emptyEl.style.display = ""; return; }
+    emptyEl.style.display = "none";
+    rows.forEach(row => {
+      const tr = document.createElement("tr");
+      tr.innerHTML = `
+        <td><code>${escHtml(row.cve_id)}</code></td>
+        <td>${escHtml(row.keyword || "—")}</td>
+        <td>${escHtml(row.reason || "—")}</td>
+        <td>${escHtml((row.suppressed_at || "").slice(0, 16))}</td>
+        <td>${escHtml(row.suppressed_by || "—")}</td>
+        <td><button class="btn-sm btn-suppression-remove" data-cve="${escHtml(row.cve_id)}">Restore</button></td>
+      `;
+      tbody.appendChild(tr);
+    });
+    tbody.querySelectorAll(".btn-suppression-remove").forEach(btn => {
+      btn.addEventListener("click", async () => {
+        await fetch(`${API}/api/suppressions/${encodeURIComponent(btn.dataset.cve)}`, { method: "DELETE" });
+        loadSuppressions();
+      });
+    });
+  } catch (e) { console.error("loadSuppressions:", e); }
+}
+
+document.getElementById("btn-suppression-refresh").addEventListener("click", loadSuppressions);
+
+// ── Saved views (server-side) ─────────────────────────────────────────────────
+
+async function loadSavedViews() {
+  try {
+    const r = await fetch(`${API}/api/views`);
+    const views = await r.json();
+    const list = document.getElementById("saved-views-list");
+    list.innerHTML = "";
+    if (!views.length) {
+      list.innerHTML = '<span class="muted">No saved views yet.</span>';
+      return;
+    }
+    views.forEach(v => {
+      const chip = document.createElement("span");
+      chip.className = "search-chip";
+      chip.innerHTML = `${escHtml(v.name)} <button class="chip-del" data-name="${escHtml(v.name)}">✕</button>`;
+      chip.querySelector("button").addEventListener("click", async e => {
+        e.stopPropagation();
+        await fetch(`${API}/api/views/${encodeURIComponent(v.name)}`, { method: "DELETE" });
+        loadSavedViews();
+      });
+      chip.addEventListener("click", e => {
+        if (e.target.tagName === "BUTTON") return;
+        const f = v.filters || {};
+        showSection("browse");
+        loadBrowseTables().then(() => {
+          if (f.table)    document.getElementById("br-table").value     = f.table;
+          if (f.search)   document.getElementById("br-search").value    = f.search;
+          if (f.severity) document.getElementById("br-severity").value  = f.severity;
+          if (f.dateFrom) document.getElementById("br-date-from").value = f.dateFrom;
+          if (f.dateTo)   document.getElementById("br-date-to").value   = f.dateTo;
+          if (document.getElementById("br-table").value) doBrowseSearchPaged(0);
+        });
+      });
+      list.appendChild(chip);
+    });
+  } catch (e) { console.error("loadSavedViews:", e); }
+}
+
+document.getElementById("btn-save-view").addEventListener("click", async () => {
+  const name = document.getElementById("saved-view-name").value.trim();
+  if (!name) return;
+  const msg  = document.getElementById("saved-view-msg");
+  const filters = {
+    table:    document.getElementById("br-table").value,
+    search:   document.getElementById("br-search").value,
+    severity: document.getElementById("br-severity").value,
+    dateFrom: document.getElementById("br-date-from").value,
+    dateTo:   document.getElementById("br-date-to").value,
+  };
+  try {
+    const r = await fetch(`${API}/api/views`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, filters }),
+    });
+    const j = await r.json();
+    if (j.ok) {
+      msg.textContent = "View saved!"; msg.className = "form-msg ok";
+      document.getElementById("saved-view-name").value = "";
+      loadSavedViews();
+    } else {
+      msg.textContent = j.error || "Failed"; msg.className = "form-msg err";
+    }
+  } catch { msg.textContent = "Request failed"; msg.className = "form-msg err"; }
+  setTimeout(() => { msg.textContent = ""; }, 3000);
+});
+
+// ── Config validation ─────────────────────────────────────────────────────────
+
+document.getElementById("btn-validate-config").addEventListener("click", async () => {
+  const msg     = document.getElementById("validate-msg");
+  const results = document.getElementById("validate-results");
+  msg.textContent = "Testing…"; msg.className = "form-msg";
+  results.style.display = "none";
+  try {
+    const r = await fetch(`${API}/api/config/validate`, { method: "POST" });
+    const data = await r.json();
+    msg.textContent = "Done"; msg.className = "form-msg ok";
+    results.style.display = "";
+    results.innerHTML = Object.entries(data).map(([ch, v]) => {
+      const icon = v.ok === true ? "✓" : v.ok === false ? "✗" : "—";
+      const cls  = v.ok === true ? "validate-ok" : v.ok === false ? "validate-err" : "validate-na";
+      return `<div class="validate-row"><span class="${cls}">${icon}</span><strong>${escHtml(ch)}</strong>${v.error ? `<span class="validate-detail">${escHtml(v.error)}</span>` : ""}</div>`;
+    }).join("");
+  } catch { msg.textContent = "Request failed"; msg.className = "form-msg err"; }
+  setTimeout(() => { msg.textContent = ""; }, 4000);
+});
+
+// ── Scan health panel ─────────────────────────────────────────────────────────
+
+let _scanHealthChart = null;
+
+async function loadScanHealth() {
+  try {
+    const r = await fetch(`${API}/api/scan/health?limit=20`);
+    const d = await r.json();
+    document.getElementById("health-success-rate").textContent = d.success_rate != null ? `${d.success_rate}%` : "—";
+    document.getElementById("health-avg-dur").textContent      = d.avg_duration_sec ? `${d.avg_duration_sec}s` : "—";
+    document.getElementById("health-error-rate").textContent   = d.error_rate != null ? `${d.error_rate}%` : "—";
+    document.getElementById("health-total").textContent        = d.total ?? "—";
+
+    // Mini sparkline: new CVEs per scan
+    const scans = d.scans || [];
+    const labels = scans.map(s => (s.started_at || "").slice(5, 10));
+    const values = scans.map(s => s.new_cves || 0);
+    const colors = scans.map(s => s.error ? "rgba(220,38,38,.7)" : "rgba(124,58,237,.6)");
+
+    const ctx = document.getElementById("scan-health-chart").getContext("2d");
+    if (_scanHealthChart) _scanHealthChart.destroy();
+    _scanHealthChart = new Chart(ctx, {
+      type: "bar",
+      data: {
+        labels,
+        datasets: [{ data: values, backgroundColor: colors, borderRadius: 2 }],
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { display: false }, tooltip: {
+          callbacks: { label: ctx => {
+            const s = scans[ctx.dataIndex];
+            return s?.error ? `Error: ${s.error}` : `${ctx.raw} new CVEs`;
+          }}
+        }},
+        scales: {
+          x: { display: false },
+          y: { display: false },
+        },
+      },
+    });
+  } catch (e) { console.error("loadScanHealth:", e); }
+}
+
+document.getElementById("btn-refresh-scan-health").addEventListener("click", loadScanHealth);
+
+// ── Keyboard navigation in Browse ─────────────────────────────────────────────
+
+let _browseSelectedIdx = -1;
+
+function _updateBrowseHighlight() {
+  document.querySelectorAll("#browse-tbody tr[data-idx]").forEach(tr => {
+    tr.classList.toggle("kb-selected", parseInt(tr.dataset.idx, 10) === _browseSelectedIdx);
+  });
+}
+
+function _getBrowseRows() {
+  return Array.from(document.querySelectorAll("#browse-tbody tr[data-idx]"));
+}
+
+// ── Keyboard shortcuts ────────────────────────────────────────────────────────
+
+document.getElementById("btn-shortcuts").addEventListener("click", () => {
+  document.getElementById("shortcuts-overlay").classList.toggle("hidden");
+});
+document.getElementById("btn-shortcuts-close").addEventListener("click", () => {
+  document.getElementById("shortcuts-overlay").classList.add("hidden");
+});
+document.getElementById("shortcuts-overlay").addEventListener("click", e => {
+  if (e.target === e.currentTarget) e.currentTarget.classList.add("hidden");
+});
+
+document.addEventListener("keydown", e => {
+  // Ignore when typing in an input
+  if (["INPUT","TEXTAREA","SELECT"].includes(e.target.tagName)) {
+    if (e.key === "Escape") { e.target.blur(); return; }
+    return;
+  }
+
+  const overlayOpen = !document.getElementById("detail-overlay").classList.contains("hidden")
+                   || !document.getElementById("compare-overlay").classList.contains("hidden");
+
+  if (e.key === "?") {
+    e.preventDefault();
+    document.getElementById("shortcuts-overlay").classList.toggle("hidden");
+    return;
+  }
+
+  if (e.key === "/" && !overlayOpen) {
+    e.preventDefault();
+    showSection("browse");
+    document.getElementById("br-search").focus();
+    return;
+  }
+
+  if (overlayOpen) return;
+
+  const browseActive = document.getElementById("section-browse").classList.contains("active");
+  if (!browseActive) return;
+
+  const trs = _getBrowseRows();
+  if (!trs.length) return;
+
+  if (e.key === "j" || e.key === "ArrowDown") {
+    e.preventDefault();
+    _browseSelectedIdx = Math.min(_browseSelectedIdx + 1, trs.length - 1);
+    _updateBrowseHighlight();
+    trs[_browseSelectedIdx]?.scrollIntoView({ block: "nearest" });
+  } else if (e.key === "k" || e.key === "ArrowUp") {
+    e.preventDefault();
+    _browseSelectedIdx = Math.max(_browseSelectedIdx - 1, 0);
+    _updateBrowseHighlight();
+    trs[_browseSelectedIdx]?.scrollIntoView({ block: "nearest" });
+  } else if ((e.key === "o" || e.key === "Enter") && _browseSelectedIdx >= 0) {
+    e.preventDefault();
+    const row = _browseRows[_browseSelectedIdx];
+    if (row) openDetail(row);
+  } else if (e.key === "w" && _browseSelectedIdx >= 0) {
+    e.preventDefault();
+    const row = _browseRows[_browseSelectedIdx];
+    if (row) {
+      fetch(`${API}/api/watchlist`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ cve_id: row.cve_id, keyword: row.keyword || "" }),
+      });
+    }
+  } else if (e.key === "r" && _browseSelectedIdx >= 0) {
+    e.preventDefault();
+    const row = _browseRows[_browseSelectedIdx];
+    if (row) {
+      const alreadyReviewed = !!_reviewedMap[row.cve_id];
+      fetch(`${API}/api/review`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ cve_id: row.cve_id, reviewed: !alreadyReviewed, notes: "" }),
+      }).then(() => renderBrowseResults());
+    }
+  } else if (e.key === "s" && _browseSelectedIdx >= 0) {
+    e.preventDefault();
+    const row = _browseRows[_browseSelectedIdx];
+    if (row) {
+      if (_selectedCves.has(row.cve_id)) _selectedCves.delete(row.cve_id);
+      else _selectedCves.add(row.cve_id);
+      _updateBulkBar();
+      _updateBrowseHighlight();
+      const chk = trs[_browseSelectedIdx]?.querySelector(".chk-row");
+      if (chk) chk.checked = _selectedCves.has(row.cve_id);
+    }
+  } else if (e.key >= "1" && e.key <= "6") {
+    e.preventDefault();
+    const chips = document.querySelectorAll(".qf-chip");
+    const chip = chips[parseInt(e.key, 10) - 1];
+    if (chip) chip.click();
+  }
+});
+
 // ── Initial load ──────────────────────────────────────────────────────────────
 
 loadDashboard();
@@ -1654,4 +2115,5 @@ loadEpssChart();
 loadSeverityChart();
 loadKwPerf();
 loadScheduleInfo();
+loadScanHealth();
 renderSavedSearches();

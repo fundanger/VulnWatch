@@ -18,10 +18,12 @@
       <a href="#history" class="nav-link" data-section="history">Scan History</a>
       <a href="#profiles" class="nav-link" data-section="profiles">Profiles</a>
       <a href="#digest" class="nav-link" data-section="digest">Digest Queue</a>
+      <a href="#triage" class="nav-link" data-section="triage">Triage</a>
       <a href="#notifylog" class="nav-link" data-section="notifylog">Notify Log</a>
       <a href="#settings" class="nav-link" data-section="settings">Settings</a>
       <a href="/docs" class="nav-link" target="_self">Docs</a>
       <button class="btn-theme" id="btn-theme" title="Toggle theme">☀</button>
+      <button class="btn-theme" id="btn-shortcuts" title="Keyboard shortcuts (?)">⌨</button>
     </div>
     <div class="nav-status">
       <span id="health-dot" class="health-dot"></span>
@@ -209,6 +211,34 @@
         </div>
       </div>
 
+      <!-- Scan health -->
+      <div class="panel" style="margin-top:1.5rem">
+        <div class="panel-header">
+          <h2>Scan Health</h2>
+          <span class="panel-hint">Last 20 scans</span>
+          <button class="btn-sm" id="btn-refresh-scan-health">↻</button>
+        </div>
+        <div class="schedule-row" id="scan-health-summary">
+          <div class="schedule-item">
+            <div class="schedule-label">Success rate</div>
+            <div class="schedule-value" id="health-success-rate">—</div>
+          </div>
+          <div class="schedule-item">
+            <div class="schedule-label">Avg duration</div>
+            <div class="schedule-value" id="health-avg-dur">—</div>
+          </div>
+          <div class="schedule-item">
+            <div class="schedule-label">Error rate</div>
+            <div class="schedule-value" id="health-error-rate">—</div>
+          </div>
+          <div class="schedule-item">
+            <div class="schedule-label">Total scans</div>
+            <div class="schedule-value" id="health-total">—</div>
+          </div>
+        </div>
+        <div class="chart-wrap" style="margin-top:1rem;height:80px"><canvas id="scan-health-chart"></canvas></div>
+      </div>
+
       <!-- Live scan log -->
       <div class="panel" style="margin-top:1.5rem" id="scan-log-panel">
         <div class="panel-header">
@@ -273,6 +303,7 @@
               <th>Keyword</th>
               <th>Published</th>
               <th>Reviewed</th>
+              <th>Triage</th>
               <th>Description</th>
             </tr>
           </thead>
@@ -302,12 +333,41 @@
           <div class="detail-actions">
             <button class="btn-sm" id="btn-detail-watchlist">☆ Watchlist</button>
             <button class="btn-sm" id="btn-detail-reviewed">✓ Mark Reviewed</button>
+            <button class="btn-sm btn-danger-sm" id="btn-detail-suppress" title="Mark as false positive / suppress future alerts">⊘ Suppress</button>
             <button class="btn-sm" id="btn-detail-send-slack" title="Send to Slack">⇒ Slack</button>
             <button class="btn-sm" id="btn-detail-send-webhook" title="Send to Webhook">⇒ Webhook</button>
             <button class="btn-sm" id="btn-detail-send-jira" title="Create Jira ticket">⇒ Jira</button>
             <button class="btn-sm" id="btn-detail-send-snow" title="Create ServiceNow incident">⇒ ServiceNow</button>
             <span id="detail-action-msg" class="form-msg" style="margin-left:.5rem"></span>
           </div>
+
+          <!-- Triage controls -->
+          <div class="triage-row" style="margin-top:.75rem">
+            <div class="form-group" style="margin-bottom:0;flex:1">
+              <label class="form-label">Status</label>
+              <select class="input-sm" id="detail-triage-status" style="width:100%">
+                <option value="open">Open</option>
+                <option value="investigating">Investigating</option>
+                <option value="mitigated">Mitigated</option>
+                <option value="wont_fix">Won't Fix</option>
+                <option value="false_positive">False Positive</option>
+                <option value="closed">Closed</option>
+              </select>
+            </div>
+            <div class="form-group" style="margin-bottom:0;flex:1">
+              <label class="form-label">Assignee</label>
+              <input class="input-sm" id="detail-triage-assignee" placeholder="name or email…" style="width:100%" />
+            </div>
+            <div class="form-group" style="margin-bottom:0;flex:1">
+              <label class="form-label">Due date</label>
+              <input class="input-sm" id="detail-triage-due" type="date" style="width:100%" />
+            </div>
+            <button class="btn-sm" id="btn-detail-triage-save" style="align-self:flex-end">Save triage</button>
+          </div>
+
+          <!-- CVSS vector breakdown -->
+          <div id="cvss-vector-breakdown" class="cvss-breakdown" style="display:none;margin-top:.75rem"></div>
+
           <div class="form-group" style="margin-top:.75rem">
             <label class="form-label">Notes</label>
             <textarea class="textarea-sm" id="detail-notes" rows="2" placeholder="Internal notes about this CVE…"></textarea>
@@ -568,6 +628,29 @@
           </div>
         </div>
 
+        <!-- Saved views (server-side) -->
+        <div class="settings-group">
+          <div class="settings-group-title">Saved Views</div>
+          <p class="section-hint" style="margin-bottom:1rem">Named filter presets saved server-side — available across sessions and devices.</p>
+          <div id="saved-views-list" class="saved-searches-list"></div>
+          <div class="save-search-form" style="margin-top:.75rem">
+            <input class="input-sm" id="saved-view-name" placeholder="View name…" style="width:220px" />
+            <button class="btn-sm" id="btn-save-view">Save current Browse filters as view</button>
+          </div>
+          <div id="saved-view-msg" class="form-msg" style="margin-top:.4rem"></div>
+        </div>
+
+        <!-- Config validation -->
+        <div class="settings-group">
+          <div class="settings-group-title">Connection Tests</div>
+          <p class="section-hint" style="margin-bottom:1rem">Validate that your configured channels are reachable.</p>
+          <div class="test-row">
+            <button class="btn-sm" id="btn-validate-config">Test all connections</button>
+            <span id="validate-msg" class="form-msg"></span>
+          </div>
+          <div id="validate-results" class="validate-results" style="display:none;margin-top:.75rem"></div>
+        </div>
+
         <div class="form-actions">
           <button type="submit" class="btn-primary" id="btn-settings-save">Save settings</button>
           <span id="settings-msg" class="form-msg"></span>
@@ -626,6 +709,73 @@
     </div>
   </section>
 
+  <!-- TRIAGE -->
+  <section id="section-triage" class="section">
+    <div class="container">
+      <div class="page-title-row">
+        <h1 class="page-title">Triage</h1>
+        <div class="page-actions">
+          <select class="input-sm" id="triage-status-filter">
+            <option value="">All statuses</option>
+            <option value="open">Open</option>
+            <option value="investigating">Investigating</option>
+            <option value="mitigated">Mitigated</option>
+            <option value="wont_fix">Won't Fix</option>
+            <option value="false_positive">False Positive</option>
+            <option value="closed">Closed</option>
+          </select>
+          <button class="btn-sm" id="btn-triage-refresh">↻ Refresh</button>
+        </div>
+      </div>
+      <p class="section-hint">Assign CVEs to team members, set remediation status, and track SLA deadlines. Use the detail overlay in Browse to set triage for a CVE.</p>
+
+      <!-- SLA breach banner -->
+      <div id="sla-breach-banner" class="sla-breach-banner" style="display:none"></div>
+
+      <div class="table-wrap">
+        <table id="triage-table">
+          <thead>
+            <tr>
+              <th>CVE ID</th>
+              <th>Status</th>
+              <th>Assignee</th>
+              <th>Due Date</th>
+              <th>SLA</th>
+              <th>Updated</th>
+            </tr>
+          </thead>
+          <tbody id="triage-tbody"></tbody>
+        </table>
+      </div>
+      <div id="triage-empty" class="muted" style="padding:1rem 0;display:none">No CVEs in triage yet. Open a CVE from Browse and set its status.</div>
+
+      <!-- Suppression list -->
+      <div class="panel" style="margin-top:2rem">
+        <div class="panel-header">
+          <h2>Suppression List</h2>
+          <span class="panel-hint">CVEs marked false positive — excluded from future alerts</span>
+          <button class="btn-sm" id="btn-suppression-refresh">↻</button>
+        </div>
+        <div class="table-wrap">
+          <table id="suppression-table">
+            <thead>
+              <tr>
+                <th>CVE ID</th>
+                <th>Keyword</th>
+                <th>Reason</th>
+                <th>Suppressed At</th>
+                <th>By</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="suppression-tbody"></tbody>
+          </table>
+        </div>
+        <div id="suppression-empty" class="muted" style="padding:.75rem 0;display:none">No suppressed CVEs.</div>
+      </div>
+    </div>
+  </section>
+
   <!-- NOTIFICATION LOG -->
   <section id="section-notifylog" class="section">
     <div class="container">
@@ -649,6 +799,28 @@
       </div>
     </div>
   </section>
+
+  <!-- Keyboard shortcuts modal -->
+  <div id="shortcuts-overlay" class="detail-overlay hidden">
+    <div class="detail-panel" style="max-width:540px">
+      <button class="detail-close" id="btn-shortcuts-close">✕</button>
+      <h2 style="margin-bottom:1.25rem">Keyboard Shortcuts</h2>
+      <table class="shortcuts-table">
+        <tbody>
+          <tr><td><kbd>?</kbd></td><td>Show / hide this help</td></tr>
+          <tr><td><kbd>j</kbd> / <kbd>↓</kbd></td><td>Next CVE in browse list</td></tr>
+          <tr><td><kbd>k</kbd> / <kbd>↑</kbd></td><td>Previous CVE in browse list</td></tr>
+          <tr><td><kbd>o</kbd> / <kbd>Enter</kbd></td><td>Open detail for selected CVE</td></tr>
+          <tr><td><kbd>Esc</kbd></td><td>Close overlay / panel</td></tr>
+          <tr><td><kbd>w</kbd></td><td>Add selected CVE to watchlist</td></tr>
+          <tr><td><kbd>r</kbd></td><td>Toggle reviewed on selected CVE</td></tr>
+          <tr><td><kbd>s</kbd></td><td>Toggle checkbox on selected CVE</td></tr>
+          <tr><td><kbd>1</kbd>–<kbd>6</kbd></td><td>Apply quick filter chip 1–6</td></tr>
+          <tr><td><kbd>/</kbd></td><td>Focus search box (Browse section)</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
 
   <script src="app.js"></script>
 </body>

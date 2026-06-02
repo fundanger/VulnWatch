@@ -657,6 +657,221 @@ def api_cve_send():
     return jsonify({"ok": False, "error": f"Unknown channel: {channel}"}), 400
 
 
+# ── CVE Triage ────────────────────────────────────────────────────────────────
+
+@app.route("/api/triage/<path:cve_id>")
+def api_triage_get(cve_id: str):
+    return jsonify(database.triage_get(cve_id) or {})
+
+
+@app.route("/api/triage", methods=["POST"])
+@_require_auth
+def api_triage_set():
+    data = request.get_json(force=True) or {}
+    cve_id = data.get("cve_id", "").strip()
+    if not cve_id:
+        return jsonify({"error": "cve_id required"}), 400
+    database.triage_set(
+        cve_id,
+        status=data.get("status", "open"),
+        assignee=data.get("assignee", ""),
+        due_date=data.get("due_date", ""),
+        severity=data.get("severity", ""),
+    )
+    return jsonify({"ok": True})
+
+
+@app.route("/api/triage")
+def api_triage_all():
+    status = request.args.get("status", "")
+    return jsonify(database.triage_get_all(status))
+
+
+@app.route("/api/triage/sla/breached")
+def api_triage_sla_breached():
+    return jsonify(database.triage_sla_breached())
+
+
+# ── Suppressions ──────────────────────────────────────────────────────────────
+
+@app.route("/api/suppressions")
+def api_suppressions_get():
+    return jsonify(database.suppression_get_all())
+
+
+@app.route("/api/suppressions", methods=["POST"])
+@_require_auth
+def api_suppression_add():
+    data = request.get_json(force=True) or {}
+    cve_id = data.get("cve_id", "").strip()
+    if not cve_id:
+        return jsonify({"error": "cve_id required"}), 400
+    database.suppression_add(
+        cve_id,
+        keyword=data.get("keyword", ""),
+        reason=data.get("reason", ""),
+        by=data.get("by", ""),
+    )
+    return jsonify({"ok": True})
+
+
+@app.route("/api/suppressions/<path:cve_id>", methods=["DELETE"])
+@_require_auth
+def api_suppression_remove(cve_id: str):
+    database.suppression_remove(cve_id)
+    return jsonify({"ok": True})
+
+
+# ── Saved views ───────────────────────────────────────────────────────────────
+
+@app.route("/api/views")
+def api_views_get():
+    return jsonify(database.saved_views_get())
+
+
+@app.route("/api/views", methods=["POST"])
+@_require_auth
+def api_view_set():
+    data = request.get_json(force=True) or {}
+    name = data.get("name", "").strip()
+    if not name:
+        return jsonify({"error": "name required"}), 400
+    database.saved_view_set(name, data.get("filters", {}))
+    return jsonify({"ok": True})
+
+
+@app.route("/api/views/<path:name>", methods=["DELETE"])
+@_require_auth
+def api_view_delete(name: str):
+    database.saved_view_delete(name)
+    return jsonify({"ok": True})
+
+
+# ── Scan health ───────────────────────────────────────────────────────────────
+
+@app.route("/api/scan/health")
+def api_scan_health():
+    limit = min(int(request.args.get("limit", 20)), 100)
+    return jsonify(database.get_scan_health(limit))
+
+
+# ── CVSS vector parse ─────────────────────────────────────────────────────────
+
+@app.route("/api/cve/cvss-vector")
+def api_cvss_vector():
+    """Parse a CVSS v3 vector string into labeled components."""
+    vector = request.args.get("v", "")
+    result = _parse_cvss_vector(vector)
+    return jsonify(result)
+
+
+def _parse_cvss_vector(v: str) -> dict:
+    """Parse CVSS v3 AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H into readable labels."""
+    LABELS = {
+        "AV":  {"N": "Network", "A": "Adjacent", "L": "Local",        "P": "Physical"},
+        "AC":  {"L": "Low",     "H": "High"},
+        "PR":  {"N": "None",    "L": "Low",       "H": "High"},
+        "UI":  {"N": "None",    "R": "Required"},
+        "S":   {"U": "Unchanged","C": "Changed"},
+        "C":   {"N": "None",    "L": "Low",       "H": "High"},
+        "I":   {"N": "None",    "L": "Low",       "H": "High"},
+        "A":   {"N": "None",    "L": "Low",       "H": "High"},
+    }
+    NAMES = {
+        "AV": "Attack Vector", "AC": "Attack Complexity",
+        "PR": "Privileges Required", "UI": "User Interaction",
+        "S":  "Scope", "C": "Confidentiality",
+        "I":  "Integrity", "A": "Availability",
+    }
+    if not v:
+        return {}
+    parts = v.lstrip("CVSS:3.0/").lstrip("CVSS:3.1/").split("/")
+    result = {}
+    for part in parts:
+        if ":" not in part:
+            continue
+        key, val = part.split(":", 1)
+        label_map = LABELS.get(key, {})
+        result[key] = {
+            "code":  val,
+            "label": label_map.get(val, val),
+            "name":  NAMES.get(key, key),
+        }
+    return result
+
+
+# ── Config validation ─────────────────────────────────────────────────────────
+
+@app.route("/api/config/validate", methods=["POST"])
+@_require_auth
+def api_config_validate():
+    """Test-connect each configured channel and return status per channel."""
+    cfg = _read_config()
+    results = {}
+
+    # SMTP
+    sender   = os.environ.get("CVE_SENDER_EMAIL",    "").strip() or cfg.get("EMAIL", "senderEmail",    fallback="")
+    password = os.environ.get("CVE_SENDER_PASSWORD", "").strip() or cfg.get("EMAIL", "senderPassword", fallback="")
+    if sender and password:
+        try:
+            import smtplib, ssl
+            ctx = ssl.create_default_context()
+            with smtplib.SMTP_SSL("smtp.gmail.com", 465, context=ctx) as s:
+                s.login(sender, password)
+            results["email"] = {"ok": True}
+        except Exception as exc:
+            results["email"] = {"ok": False, "error": str(exc)}
+    else:
+        results["email"] = {"ok": None, "error": "Not configured"}
+
+    # Slack
+    slack = os.environ.get("CVE_SLACK_WEBHOOK", "").strip() or cfg.get("DEFAULT", "slackWebhook", fallback="")
+    if slack:
+        try:
+            import urllib.request, urllib.error
+            req = urllib.request.Request(slack, data=b'{"text":"CVE Emailer config test"}',
+                                         headers={"Content-Type": "application/json"}, method="POST")
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                results["slack"] = {"ok": resp.status == 200}
+        except Exception as exc:
+            results["slack"] = {"ok": False, "error": str(exc)}
+    else:
+        results["slack"] = {"ok": None, "error": "Not configured"}
+
+    # Webhook
+    webhook = os.environ.get("CVE_WEBHOOK_URL", "").strip() or cfg.get("DEFAULT", "webhookUrl", fallback="")
+    if webhook:
+        try:
+            import urllib.request
+            req = urllib.request.Request(webhook, data=b'{"test":true}',
+                                         headers={"Content-Type": "application/json"}, method="POST")
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                results["webhook"] = {"ok": resp.status < 400}
+        except Exception as exc:
+            results["webhook"] = {"ok": False, "error": str(exc)}
+    else:
+        results["webhook"] = {"ok": None, "error": "Not configured"}
+
+    # Jira
+    jira_url   = os.environ.get("JIRA_URL", "").strip()   or cfg.get("JIRA", "url",   fallback="")
+    jira_user  = os.environ.get("JIRA_USER", "").strip()  or cfg.get("JIRA", "user",  fallback="")
+    jira_token = os.environ.get("JIRA_TOKEN", "").strip() or cfg.get("JIRA", "token", fallback="")
+    if jira_url and jira_user and jira_token:
+        try:
+            import urllib.request, base64
+            creds = base64.b64encode(f"{jira_user}:{jira_token}".encode()).decode()
+            req = urllib.request.Request(f"{jira_url.rstrip('/')}/rest/api/3/myself",
+                                         headers={"Authorization": f"Basic {creds}"})
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                results["jira"] = {"ok": resp.status == 200}
+        except Exception as exc:
+            results["jira"] = {"ok": False, "error": str(exc)}
+    else:
+        results["jira"] = {"ok": None, "error": "Not configured"}
+
+    return jsonify(results)
+
+
 # ── Export all CVEs ───────────────────────────────────────────────────────────
 
 @app.route("/api/cves/export-all")
@@ -676,6 +891,9 @@ def _bootstrap_all():
     database.bootstrap_watchlist()
     database.bootstrap_reviews()
     database.bootstrap_notify_log()
+    database.bootstrap_triage()
+    database.bootstrap_suppressions()
+    database.bootstrap_saved_views()
 
 
 def create_app() -> Flask:

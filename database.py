@@ -987,3 +987,240 @@ def get_schedule_info() -> dict:
         "last_scan": row[0] if row else None,
         "last_finished": row[1] if row else None,
     }
+
+
+# ── CVE Triage (assignment, status, SLA) ──────────────────────────────────────
+
+_TRIAGE_STATUSES = {"open", "investigating", "mitigated", "wont_fix", "false_positive", "closed"}
+_SLA_DEFAULTS = {"CRITICAL": 3, "HIGH": 7, "MEDIUM": 30, "LOW": 90}  # days
+
+
+def bootstrap_triage() -> None:
+    engine = _get_engine()
+    with engine.connect() as conn:
+        trans = conn.begin()
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS cve_triage (
+                cve_id      TEXT NOT NULL PRIMARY KEY,
+                status      TEXT DEFAULT 'open',
+                assignee    TEXT DEFAULT '',
+                due_date    TEXT DEFAULT '',
+                created_at  TEXT NOT NULL,
+                updated_at  TEXT NOT NULL
+            )
+        """))
+        _add_column_if_missing(conn, "cve_triage", "status",     "TEXT DEFAULT 'open'")
+        _add_column_if_missing(conn, "cve_triage", "assignee",   "TEXT DEFAULT ''")
+        _add_column_if_missing(conn, "cve_triage", "due_date",   "TEXT DEFAULT ''")
+        _add_column_if_missing(conn, "cve_triage", "created_at", "TEXT NOT NULL DEFAULT ''")
+        _add_column_if_missing(conn, "cve_triage", "updated_at", "TEXT NOT NULL DEFAULT ''")
+        trans.commit()
+
+
+def triage_set(cve_id: str, status: str = "open", assignee: str = "",
+               due_date: str = "", severity: str = "") -> None:
+    now = datetime.now().isoformat(timespec="seconds")
+    if not due_date and severity:
+        days = _SLA_DEFAULTS.get(severity.upper(), 30)
+        due = datetime.now()
+        due = due.replace(hour=0, minute=0, second=0, microsecond=0)
+        from datetime import timedelta
+        due_date = (due + timedelta(days=days)).isoformat()[:10]
+    if _IS_SQLITE:
+        upsert = text(
+            "INSERT INTO cve_triage (cve_id, status, assignee, due_date, created_at, updated_at) "
+            "VALUES (:cid, :st, :asg, :due, :now, :now) "
+            "ON CONFLICT(cve_id) DO UPDATE SET status=excluded.status, "
+            "assignee=excluded.assignee, due_date=excluded.due_date, updated_at=excluded.updated_at"
+        )
+    else:
+        upsert = text(
+            "INSERT INTO cve_triage (cve_id, status, assignee, due_date, created_at, updated_at) "
+            "VALUES (:cid, :st, :asg, :due, :now, :now) "
+            "ON CONFLICT(cve_id) DO UPDATE SET status=EXCLUDED.status, "
+            "assignee=EXCLUDED.assignee, due_date=EXCLUDED.due_date, updated_at=EXCLUDED.updated_at"
+        )
+    with _connect() as conn:
+        conn.execute(upsert, {"cid": cve_id, "st": status, "asg": assignee, "due": due_date, "now": now})
+
+
+def triage_get(cve_id: str) -> dict | None:
+    with _connect() as conn:
+        row = conn.execute(text(
+            "SELECT * FROM cve_triage WHERE cve_id=:cid"
+        ), {"cid": cve_id}).fetchone()
+        return _row_to_dict(row) if row else None
+
+
+def triage_get_all(status: str = "") -> list[dict]:
+    with _connect() as conn:
+        if status:
+            rows = conn.execute(text(
+                "SELECT * FROM cve_triage WHERE status=:st ORDER BY updated_at DESC"
+            ), {"st": status}).fetchall()
+        else:
+            rows = conn.execute(text(
+                "SELECT * FROM cve_triage ORDER BY updated_at DESC"
+            )).fetchall()
+        return [_row_to_dict(r) for r in rows]
+
+
+def triage_sla_breached() -> list[dict]:
+    """Return triage entries whose due_date has passed and aren't closed/mitigated."""
+    today = datetime.now().isoformat()[:10]
+    with _connect() as conn:
+        rows = conn.execute(text(
+            "SELECT * FROM cve_triage WHERE due_date != '' AND due_date < :today "
+            "AND status NOT IN ('closed','mitigated','wont_fix','false_positive') "
+            "ORDER BY due_date"
+        ), {"today": today}).fetchall()
+        return [_row_to_dict(r) for r in rows]
+
+
+# ── False-positive suppression ────────────────────────────────────────────────
+
+def bootstrap_suppressions() -> None:
+    engine = _get_engine()
+    with engine.connect() as conn:
+        trans = conn.begin()
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS cve_suppressions (
+                cve_id      TEXT NOT NULL PRIMARY KEY,
+                keyword     TEXT DEFAULT '',
+                reason      TEXT DEFAULT '',
+                suppressed_at TEXT NOT NULL,
+                suppressed_by TEXT DEFAULT ''
+            )
+        """))
+        trans.commit()
+
+
+def suppression_add(cve_id: str, keyword: str = "", reason: str = "", by: str = "") -> None:
+    now = datetime.now().isoformat(timespec="seconds")
+    with _connect() as conn:
+        if _IS_SQLITE:
+            conn.execute(text(
+                "INSERT OR IGNORE INTO cve_suppressions (cve_id, keyword, reason, suppressed_at, suppressed_by) "
+                "VALUES (:cid, :kw, :reason, :ts, :by)"
+            ), {"cid": cve_id, "kw": keyword, "reason": reason, "ts": now, "by": by})
+        else:
+            conn.execute(text(
+                "INSERT INTO cve_suppressions (cve_id, keyword, reason, suppressed_at, suppressed_by) "
+                "VALUES (:cid, :kw, :reason, :ts, :by) ON CONFLICT (cve_id) DO NOTHING"
+            ), {"cid": cve_id, "kw": keyword, "reason": reason, "ts": now, "by": by})
+
+
+def suppression_remove(cve_id: str) -> None:
+    with _connect() as conn:
+        conn.execute(text("DELETE FROM cve_suppressions WHERE cve_id=:cid"), {"cid": cve_id})
+
+
+def suppression_get_all() -> list[dict]:
+    with _connect() as conn:
+        rows = conn.execute(text(
+            "SELECT * FROM cve_suppressions ORDER BY suppressed_at DESC"
+        )).fetchall()
+        return [_row_to_dict(r) for r in rows]
+
+
+def is_suppressed(cve_id: str) -> bool:
+    with _connect() as conn:
+        row = conn.execute(text(
+            "SELECT 1 FROM cve_suppressions WHERE cve_id=:cid"
+        ), {"cid": cve_id}).fetchone()
+        return row is not None
+
+
+# ── Saved views ───────────────────────────────────────────────────────────────
+
+def bootstrap_saved_views() -> None:
+    engine = _get_engine()
+    with engine.connect() as conn:
+        trans = conn.begin()
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS saved_views (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                name       TEXT NOT NULL UNIQUE,
+                filters    TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+        """ if _IS_SQLITE else """
+            CREATE TABLE IF NOT EXISTS saved_views (
+                id         SERIAL PRIMARY KEY,
+                name       TEXT NOT NULL UNIQUE,
+                filters    TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+        """))
+        trans.commit()
+
+
+def saved_view_set(name: str, filters: dict) -> None:
+    now = datetime.now().isoformat(timespec="seconds")
+    filters_json = json.dumps(filters)
+    with _connect() as conn:
+        if _IS_SQLITE:
+            conn.execute(text(
+                "INSERT INTO saved_views (name, filters, created_at) VALUES (:n, :f, :ts) "
+                "ON CONFLICT(name) DO UPDATE SET filters=excluded.filters, created_at=excluded.created_at"
+            ), {"n": name, "f": filters_json, "ts": now})
+        else:
+            conn.execute(text(
+                "INSERT INTO saved_views (name, filters, created_at) VALUES (:n, :f, :ts) "
+                "ON CONFLICT(name) DO UPDATE SET filters=EXCLUDED.filters, created_at=EXCLUDED.created_at"
+            ), {"n": name, "f": filters_json, "ts": now})
+
+
+def saved_view_delete(name: str) -> None:
+    with _connect() as conn:
+        conn.execute(text("DELETE FROM saved_views WHERE name=:n"), {"n": name})
+
+
+def saved_views_get() -> list[dict]:
+    with _connect() as conn:
+        rows = conn.execute(text(
+            "SELECT * FROM saved_views ORDER BY name"
+        )).fetchall()
+        result = []
+        for r in rows:
+            d = _row_to_dict(r)
+            try:
+                d["filters"] = json.loads(d["filters"])
+            except Exception:
+                d["filters"] = {}
+            result.append(d)
+        return result
+
+
+# ── Scan health stats ─────────────────────────────────────────────────────────
+
+def get_scan_health(limit: int = 20) -> dict:
+    """Return scan success rate, avg duration, error rate for last N scans."""
+    with _connect() as conn:
+        rows = conn.execute(text(
+            "SELECT started_at, finished_at, new_cves, updated_cves, error "
+            "FROM scan_history ORDER BY id DESC LIMIT :lim"
+        ), {"lim": limit}).fetchall()
+
+    scans = [_row_to_dict(r) for r in rows]
+    total = len(scans)
+    if not total:
+        return {"total": 0, "success_rate": 0, "avg_duration_sec": 0, "error_rate": 0, "scans": []}
+
+    errors = sum(1 for s in scans if s.get("error"))
+    durations = []
+    for s in scans:
+        if s.get("started_at") and s.get("finished_at"):
+            try:
+                dur = (datetime.fromisoformat(s["finished_at"]) - datetime.fromisoformat(s["started_at"])).total_seconds()
+                durations.append(dur)
+            except Exception:
+                pass
+
+    return {
+        "total":           total,
+        "success_rate":    round((total - errors) / total * 100, 1),
+        "avg_duration_sec": round(sum(durations) / len(durations), 1) if durations else 0,
+        "error_rate":      round(errors / total * 100, 1),
+        "scans":           list(reversed(scans)),
+    }

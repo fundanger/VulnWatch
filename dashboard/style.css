@@ -755,3 +755,155 @@ thead th:first-child, td:first-child { width: 36px; padding-right: 0; }
   .heatmap-container { grid-template-columns: repeat(15, 1fr); }
   .schedule-row { gap: 1rem; }
 }
+
+/* ── Triage badges ───────────────────────────────────────────────────────────── */
+
+.triage-badge {
+  display: inline-block;
+  padding: 1px 7px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .3px;
+  color: #fff;
+}
+.triage-open          { background: #374151; }
+.triage-investigating { background: var(--medium); }
+.triage-mitigated     { background: var(--success); }
+.triage-wont_fix      { background: #6b7280; }
+.triage-false_positive{ background: #0891b2; }
+.triage-closed        { background: #1e3a4c; }
+.triage-breached      { outline: 2px solid var(--critical); outline-offset: 1px; }
+
+.triage-assignee {
+  font-size: 11px;
+  color: var(--muted);
+  margin-left: .3rem;
+}
+
+/* ── Triage row in detail panel ─────────────────────────────────────────────── */
+
+.triage-row {
+  display: flex;
+  gap: .75rem;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  padding: .75rem 0;
+  border-top: 1px solid var(--border);
+}
+
+/* ── SLA badges ──────────────────────────────────────────────────────────────── */
+
+.sla-badge {
+  display: inline-block;
+  padding: 1px 7px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+}
+.sla-ok      { background: var(--surface2); color: var(--muted); }
+.sla-breached{ background: var(--critical); color: #fff; }
+
+/* ── SLA breach banner ───────────────────────────────────────────────────────── */
+
+.sla-breach-banner {
+  background: rgba(220,38,38,.12);
+  border: 1px solid var(--critical);
+  border-radius: var(--radius);
+  padding: .65rem 1rem;
+  font-size: 13px;
+  margin-bottom: 1.25rem;
+  color: var(--text);
+  line-height: 1.6;
+}
+.sla-breach-banner code { color: var(--critical); }
+
+/* ── CVSS vector breakdown ───────────────────────────────────────────────────── */
+
+.cvss-breakdown {
+  border-top: 1px solid var(--border);
+  padding-top: .75rem;
+}
+
+.cvss-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .5rem;
+}
+
+.cvss-component {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: .4rem .65rem;
+  min-width: 90px;
+}
+
+.cvss-key {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: .5px;
+  color: var(--muted);
+  margin-bottom: .2rem;
+}
+
+.cvss-val {
+  font-size: 12px;
+  font-weight: 600;
+}
+.cvss-N { color: var(--success); }
+.cvss-L { color: var(--low); }
+.cvss-H { color: var(--critical); }
+.cvss-P { color: var(--muted); }
+.cvss-A { color: var(--medium); }
+.cvss-C { color: var(--critical); }
+.cvss-U { color: var(--muted); }
+.cvss-R { color: var(--medium); }
+
+/* ── Keyboard shortcuts modal ────────────────────────────────────────────────── */
+
+.shortcuts-table { width: 100%; border-collapse: collapse; }
+.shortcuts-table tr { border-bottom: 1px solid var(--border); }
+.shortcuts-table tr:last-child { border-bottom: none; }
+.shortcuts-table td { padding: .55rem .5rem; font-size: 13px; }
+.shortcuts-table td:first-child { white-space: nowrap; width: 140px; }
+
+kbd {
+  display: inline-block;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 7px;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  box-shadow: 0 1px 0 var(--border);
+}
+
+/* ── Browse keyboard selection highlight ─────────────────────────────────────── */
+
+#browse-tbody tr.kb-selected { background: rgba(124,58,237,.12); outline: 1px solid var(--accent); }
+
+/* ── Suppress button (danger-sm) ─────────────────────────────────────────────── */
+
+.btn-danger-sm {
+  background: transparent;
+  color: var(--critical);
+  border: 1px solid var(--critical);
+  border-radius: 6px;
+  padding: .35rem .75rem;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background .15s;
+}
+.btn-danger-sm:hover { background: var(--critical); color: #fff; }
+
+/* ── Config validate results ─────────────────────────────────────────────────── */
+
+.validate-results { display: flex; flex-direction: column; gap: .5rem; }
+.validate-row { display: flex; align-items: center; gap: .6rem; font-size: 13px; }
+.validate-ok  { color: var(--success); font-weight: 700; font-size: 15px; }
+.validate-err { color: var(--critical); font-weight: 700; font-size: 15px; }
+.validate-na  { color: var(--muted);    font-weight: 700; font-size: 15px; }
+.validate-detail { color: var(--muted); font-size: 12px; }
