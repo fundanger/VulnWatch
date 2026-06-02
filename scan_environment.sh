@@ -291,18 +291,77 @@ collect_databases() {
         _add "InfluxDB" "$ver" "db" "HIGH" "cpe:2.3:a:influxdata:influxdb:*:*:*:*:*:*:*:*" "influxd version"
     fi
 
-    if _cmd rabbitmq-server; then
-        _add "RabbitMQ" "" "db" "HIGH" "cpe:2.3:a:pivotal_software:rabbitmq:*:*:*:*:*:*:*:*" "rabbitmq-server"
+    if _cmd rabbitmq-server || _cmd rabbitmqctl; then
+        ver=""
+        if _cmd rabbitmqctl; then
+            raw=$(_run rabbitmqctl version)
+            ver=$(_ver "$raw")
+        fi
+        if [[ -z "$ver" ]]; then
+            # Parse version from lib dir: rabbitmq_server-3.12.6/
+            for d in /usr/lib/rabbitmq/lib /usr/local/lib/rabbitmq/lib /opt/rabbitmq/lib; do
+                [[ -d "$d" ]] || continue
+                local entry
+                entry=$(ls "$d" 2>/dev/null | grep '^rabbitmq_server-' | head -1 || true)
+                if [[ -n "$entry" ]]; then ver=$(_ver "$entry"); break; fi
+            done
+        fi
+        _add "RabbitMQ" "$ver" "db" "HIGH" "cpe:2.3:a:pivotal_software:rabbitmq:*:*:*:*:*:*:*:*" "rabbitmqctl version"
     fi
 
-    if _cmd cqlsh; then
-        raw=$(_run cqlsh --version)
-        ver=$(_ver "$raw")
-        _add "Apache Cassandra" "$ver" "db" "HIGH" "cpe:2.3:a:apache:cassandra:*:*:*:*:*:*:*:*" "cqlsh --version"
+    if _cmd cqlsh || _cmd cassandra; then
+        ver=""
+        if _cmd cqlsh; then
+            raw=$(_run cqlsh --version)
+            ver=$(_ver "$raw")
+        fi
+        if [[ -z "$ver" ]]; then
+            # Parse from jar: apache-cassandra-4.1.3.jar
+            for d in /usr/share/cassandra/lib /opt/cassandra/lib /usr/local/cassandra/lib; do
+                [[ -d "$d" ]] || continue
+                local jf
+                jf=$(ls "$d" 2>/dev/null | grep '^apache-cassandra-' | head -1 || true)
+                if [[ -n "$jf" ]]; then ver=$(_ver "$jf"); break; fi
+            done
+        fi
+        _add "Apache Cassandra" "$ver" "db" "HIGH" "cpe:2.3:a:apache:cassandra:*:*:*:*:*:*:*:*" "cqlsh/cassandra"
     fi
 
     if _cmd kafka-server-start.sh || _cmd kafka-server-start; then
-        _add "Apache Kafka" "" "db" "HIGH" "cpe:2.3:a:apache:kafka:*:*:*:*:*:*:*:*" "kafka"
+        ver=""
+        for d in /usr/share/kafka/libs /opt/kafka/libs /usr/local/kafka/libs; do
+            [[ -d "$d" ]] || continue
+            local jf
+            jf=$(ls "$d" 2>/dev/null | grep '^kafka_' | head -1 || true)
+            if [[ -n "$jf" ]]; then ver=$(_ver "$jf"); break; fi
+        done
+        _add "Apache Kafka" "$ver" "db" "HIGH" "cpe:2.3:a:apache:kafka:*:*:*:*:*:*:*:*" "kafka"
+    fi
+
+    if _cmd zookeeper-server-start.sh || _cmd zkServer.sh; then
+        ver=""
+        for d in /usr/share/zookeeper /opt/zookeeper/lib /usr/local/zookeeper/lib /usr/lib/zookeeper; do
+            [[ -d "$d" ]] || continue
+            local jf
+            jf=$(ls "$d" 2>/dev/null | grep '^zookeeper-' | grep '\.jar$' | head -1 || true)
+            if [[ -n "$jf" ]]; then ver=$(_ver "$jf"); break; fi
+        done
+        _add "Apache ZooKeeper" "$ver" "db" "HIGH" "cpe:2.3:a:apache:zookeeper:*:*:*:*:*:*:*:*" "zookeeper"
+    fi
+
+    if _cmd slapd; then
+        raw=$(_run slapd -V)
+        _add "OpenLDAP" "$(_ver "$raw")" "network" "CRITICAL" "cpe:2.3:a:openldap:openldap:*:*:*:*:*:*:*:*" "slapd -V"
+    fi
+
+    if _cmd mosquitto; then
+        raw=$(_run mosquitto --help 2>&1 || true)
+        _add "Mosquitto" "$(_ver "$raw")" "network" "HIGH" "cpe:2.3:a:eclipse:mosquitto:*:*:*:*:*:*:*:*" "mosquitto"
+    fi
+
+    if _cmd nats-server; then
+        raw=$(_run nats-server -v)
+        _add "NATS" "$(_ver "$raw")" "network" "HIGH" "cpe:2.3:a:nats:nats_server:*:*:*:*:*:*:*:*" "nats-server -v"
     fi
 
     if _cmd sqlite3; then
@@ -367,11 +426,11 @@ collect_containers() {
         ver=$(_ver "$raw")
         _add "Docker" "$ver" "container" "HIGH" "cpe:2.3:a:docker:docker:*:*:*:*:*:*:*:*" "docker --version"
 
-        # Running containers -- map image names via whitelist
-        local images
-        images=$(timeout 8 docker ps --format '{{.Image}}' 2>/dev/null || true)
+        # Running containers -- map image names via whitelist + OCI label version
+        local ps_lines
+        ps_lines=$(timeout 8 docker ps --format '{{.ID}}\t{{.Image}}' 2>/dev/null || true)
         declare -A seen_images=()
-        while IFS= read -r img; do
+        while IFS=$'\t' read -r cid img; do
             [[ -z "$img" ]] && continue
             # Strip registry prefix and tag: registry.example.com/org/name:tag -> name
             local name
@@ -382,15 +441,22 @@ collect_containers() {
             [[ -n "${seen_images[$name]+_}" ]] && continue
             seen_images[$name]=1
             _is_infra_image "$name" && continue
-            if [[ -n "${DOCKER_IMAGE_MAP[$name]+_}" ]]; then
-                local entry nvd_name cpe
-                entry="${DOCKER_IMAGE_MAP[$name]}"
-                nvd_name="${entry%%|*}"
-                cpe="${entry##*|}"
-                _add "$nvd_name" "" "container" "HIGH" "$cpe" "docker ps ($img)"
+            [[ -z "${DOCKER_IMAGE_MAP[$name]+_}" ]] && continue
+            local entry nvd_name cpe oci_ver
+            entry="${DOCKER_IMAGE_MAP[$name]}"
+            nvd_name="${entry%%|*}"
+            cpe="${entry##*|}"
+            # Try OCI version label for real version number
+            oci_ver=""
+            if [[ -n "$cid" ]]; then
+                oci_ver=$(docker inspect --format \
+                    '{{index .Config.Labels "org.opencontainers.image.version"}}' \
+                    "$cid" 2>/dev/null || true)
+                [[ "$oci_ver" == "<no value>" ]] && oci_ver=""
+                oci_ver=$(_ver "$oci_ver")
             fi
-            # Unknown image names are dropped -- they produce poor NVD results
-        done <<< "$images"
+            _add "$nvd_name" "$oci_ver" "container" "HIGH" "$cpe" "docker ps ($img)"
+        done <<< "$ps_lines"
     fi
 
     if _cmd podman; then
@@ -946,6 +1012,224 @@ do_upload() {
 }
 
 # ---------------------------------------------------------------------------
+# Standalone tool binaries (often installed to /usr/local/bin outside pkg mgr)
+# ---------------------------------------------------------------------------
+collect_standalone_tools() {
+    local raw ver
+
+    if _cmd ansible; then
+        raw=$(_run ansible --version)
+        _add "Ansible" "$(_ver "$raw")" "tool" "HIGH" "cpe:2.3:a:redhat:ansible:*:*:*:*:*:*:*:*" "ansible --version"
+    fi
+
+    if _cmd terraform; then
+        raw=$(_run terraform version)
+        _add "Terraform" "$(_ver "$raw")" "tool" "HIGH" "cpe:2.3:a:hashicorp:terraform:*:*:*:*:*:*:*:*" "terraform version"
+    fi
+
+    if _cmd vault; then
+        raw=$(_run vault version)
+        _add "HashiCorp Vault" "$(_ver "$raw")" "tool" "CRITICAL" "cpe:2.3:a:hashicorp:vault:*:*:*:*:*:*:*:*" "vault version"
+    fi
+
+    if _cmd consul; then
+        raw=$(_run consul version)
+        _add "HashiCorp Consul" "$(_ver "$raw")" "tool" "HIGH" "cpe:2.3:a:hashicorp:consul:*:*:*:*:*:*:*:*" "consul version"
+    fi
+
+    if _cmd nomad; then
+        raw=$(_run nomad version)
+        _add "HashiCorp Nomad" "$(_ver "$raw")" "tool" "HIGH" "cpe:2.3:a:hashicorp:nomad:*:*:*:*:*:*:*:*" "nomad version"
+    fi
+
+    if _cmd traefik; then
+        raw=$(_run traefik version)
+        _add "Traefik" "$(_ver "$raw")" "web" "HIGH" "cpe:2.3:a:traefik:traefik:*:*:*:*:*:*:*:*" "traefik version"
+    fi
+
+    if _cmd grafana-server || _cmd grafana; then
+        local gbin; _cmd grafana-server && gbin="grafana-server" || gbin="grafana"
+        raw=$(_run "$gbin" -v 2>&1 || _run "$gbin" --version 2>&1 || true)
+        _add "Grafana" "$(_ver "$raw")" "tool" "HIGH" "cpe:2.3:a:grafana:grafana:*:*:*:*:*:*:*:*" "$gbin -v"
+    fi
+
+    if _cmd prometheus; then
+        raw=$(_run prometheus --version)
+        _add "Prometheus" "$(_ver "$raw")" "tool" "MEDIUM" "cpe:2.3:a:prometheus:prometheus:*:*:*:*:*:*:*:*" "prometheus --version"
+    fi
+
+    if _cmd etcd; then
+        raw=$(_run etcd --version)
+        _add "etcd" "$(_ver "$raw")" "tool" "HIGH" "cpe:2.3:a:etcd:etcd:*:*:*:*:*:*:*:*" "etcd --version"
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# pip package inventory (high-value packages with CVE histories)
+# ---------------------------------------------------------------------------
+collect_pip_packages() {
+    # Only run if pip is available
+    local pip_bin=""
+    for b in pip3 pip; do _cmd "$b" && pip_bin="$b" && break; done
+    [[ -z "$pip_bin" ]] && return 0
+
+    local raw
+    raw=$(_run "$pip_bin" list --format=json 2>/dev/null || true)
+    [[ -z "$raw" || "${raw:0:1}" != "[" ]] && return 0
+
+    # Packages worth monitoring in NVD
+    declare -A PIP_MAP=(
+        [cryptography]="cryptography:tool:HIGH:cpe:2.3:a:cryptography.io:cryptography:*:*:*:*:*:*:*:*"
+        [paramiko]="paramiko:network:HIGH:cpe:2.3:a:paramiko:paramiko:*:*:*:*:*:*:*:*"
+        [requests]="Python Requests:tool:MEDIUM:cpe:2.3:a:python-requests:requests:*:*:*:*:*:*:*:*"
+        [urllib3]="urllib3:tool:HIGH:cpe:2.3:a:urllib3_project:urllib3:*:*:*:*:*:*:*:*"
+        [pillow]="Pillow:tool:HIGH:cpe:2.3:a:python:pillow:*:*:*:*:*:*:*:*"
+        [jinja2]="Jinja2:tool:HIGH:cpe:2.3:a:palletsprojects:jinja:*:*:*:*:*:*:*:*"
+        [django]="Django:tool:HIGH:cpe:2.3:a:djangoproject:django:*:*:*:*:*:*:*:*"
+        [flask]="Flask:tool:HIGH:cpe:2.3:a:palletsprojects:flask:*:*:*:*:*:*:*:*"
+        [fastapi]="FastAPI:tool:HIGH:"
+        [aiohttp]="aiohttp:tool:HIGH:cpe:2.3:a:aiohttp_project:aiohttp:*:*:*:*:*:*:*:*"
+        [pyyaml]="PyYAML:tool:HIGH:cpe:2.3:a:pyyaml:pyyaml:*:*:*:*:*:*:*:*"
+        [lxml]="lxml:tool:HIGH:cpe:2.3:a:lxml:lxml:*:*:*:*:*:*:*:*"
+        [ansible]="Ansible:tool:HIGH:cpe:2.3:a:redhat:ansible:*:*:*:*:*:*:*:*"
+        [werkzeug]="Werkzeug:tool:HIGH:cpe:2.3:a:palletsprojects:werkzeug:*:*:*:*:*:*:*:*"
+        [celery]="Celery:tool:HIGH:cpe:2.3:a:celeryproject:celery:*:*:*:*:*:*:*:*"
+        [gunicorn]="Gunicorn:web:HIGH:cpe:2.3:a:gunicorn:gunicorn:*:*:*:*:*:*:*:*"
+        [pyopenssl]="pyOpenSSL:network:HIGH:cpe:2.3:a:pyopenssl_project:pyopenssl:*:*:*:*:*:*:*:*"
+        [pyjwt]="PyJWT:tool:HIGH:cpe:2.3:a:pyjwt_project:pyjwt:*:*:*:*:*:*:*:*"
+        [numpy]="NumPy:tool:MEDIUM:cpe:2.3:a:numpy:numpy:*:*:*:*:*:*:*:*"
+        [tensorflow]="TensorFlow:tool:HIGH:cpe:2.3:a:google:tensorflow:*:*:*:*:*:*:*:*"
+        [torch]="PyTorch:tool:HIGH:cpe:2.3:a:pytorch:pytorch:*:*:*:*:*:*:*:*"
+        [scrapy]="Scrapy:tool:HIGH:cpe:2.3:a:scrapy:scrapy:*:*:*:*:*:*:*:*"
+    )
+
+    # Parse JSON with awk (no jq/python required)
+    # Each package line: {"name": "Foo", "version": "1.2.3"}
+    while IFS= read -r line; do
+        local pkg_name pkg_ver
+        pkg_name=$(echo "$line" | grep -oP '"name":\s*"\K[^"]+' | head -1 || true)
+        pkg_ver=$(echo "$line"  | grep -oP '"version":\s*"\K[^"]+' | head -1 || true)
+        [[ -z "$pkg_name" ]] && continue
+        local key="${pkg_name,,}"
+        if [[ -n "${PIP_MAP[$key]+_}" ]]; then
+            IFS=':' read -r nvd_name cat sev cpe <<< "${PIP_MAP[$key]}"
+            _add "$nvd_name" "$(_ver "$pkg_ver")" "$cat" "$sev" "$cpe" "pip $pkg_name"
+        fi
+    done < <(echo "$raw" | tr ',' '\n' | grep '"name"')
+}
+
+# ---------------------------------------------------------------------------
+# systemctl service detection (Linux only)
+# ---------------------------------------------------------------------------
+collect_systemd_services() {
+    [[ "$(uname -s)" != "Linux" ]] && return 0
+    _cmd systemctl || return 0
+
+    declare -A SVC_MAP=(
+        [nginx]="nginx:web:CRITICAL:cpe:2.3:a:nginx:nginx:*:*:*:*:*:*:*:*"
+        [apache2]="Apache HTTP Server:web:CRITICAL:cpe:2.3:a:apache:http_server:*:*:*:*:*:*:*:*"
+        [httpd]="Apache HTTP Server:web:CRITICAL:cpe:2.3:a:apache:http_server:*:*:*:*:*:*:*:*"
+        [mysql]="MySQL:db:CRITICAL:cpe:2.3:a:mysql:mysql:*:*:*:*:*:*:*:*"
+        [mysqld]="MySQL:db:CRITICAL:cpe:2.3:a:mysql:mysql:*:*:*:*:*:*:*:*"
+        [mariadb]="MariaDB:db:CRITICAL:cpe:2.3:a:mariadb:mariadb:*:*:*:*:*:*:*:*"
+        [postgresql]="PostgreSQL:db:CRITICAL:cpe:2.3:a:postgresql:postgresql:*:*:*:*:*:*:*:*"
+        [mongod]="MongoDB:db:CRITICAL:cpe:2.3:a:mongodb:mongodb:*:*:*:*:*:*:*:*"
+        [redis]="Redis:db:HIGH:cpe:2.3:a:redis:redis:*:*:*:*:*:*:*:*"
+        [redis-server]="Redis:db:HIGH:cpe:2.3:a:redis:redis:*:*:*:*:*:*:*:*"
+        [elasticsearch]="Elasticsearch:db:CRITICAL:cpe:2.3:a:elastic:elasticsearch:*:*:*:*:*:*:*:*"
+        [rabbitmq-server]="RabbitMQ:db:HIGH:cpe:2.3:a:pivotal_software:rabbitmq:*:*:*:*:*:*:*:*"
+        [kafka]="Apache Kafka:db:HIGH:cpe:2.3:a:apache:kafka:*:*:*:*:*:*:*:*"
+        [zookeeper]="Apache ZooKeeper:db:HIGH:cpe:2.3:a:apache:zookeeper:*:*:*:*:*:*:*:*"
+        [docker]="Docker:container:HIGH:cpe:2.3:a:docker:docker:*:*:*:*:*:*:*:*"
+        [containerd]="containerd:container:HIGH:cpe:2.3:a:docker:containerd:*:*:*:*:*:*:*:*"
+        [sshd]="OpenSSH:network:HIGH:cpe:2.3:a:openbsd:openssh:*:*:*:*:*:*:*:*"
+        [named]="ISC BIND:network:CRITICAL:cpe:2.3:a:isc:bind:*:*:*:*:*:*:*:*"
+        [bind9]="ISC BIND:network:CRITICAL:cpe:2.3:a:isc:bind:*:*:*:*:*:*:*:*"
+        [postfix]="Postfix:network:HIGH:cpe:2.3:a:postfix:postfix:*:*:*:*:*:*:*:*"
+        [exim4]="Exim:network:CRITICAL:cpe:2.3:a:exim:exim:*:*:*:*:*:*:*:*"
+        [dovecot]="Dovecot:network:HIGH:cpe:2.3:a:dovecot:dovecot:*:*:*:*:*:*:*:*"
+        [squid]="Squid:network:HIGH:cpe:2.3:a:squid-cache:squid:*:*:*:*:*:*:*:*"
+        [openvpn]="OpenVPN:network:HIGH:cpe:2.3:a:openvpn:openvpn:*:*:*:*:*:*:*:*"
+        [vault]="HashiCorp Vault:tool:CRITICAL:cpe:2.3:a:hashicorp:vault:*:*:*:*:*:*:*:*"
+        [consul]="HashiCorp Consul:tool:HIGH:cpe:2.3:a:hashicorp:consul:*:*:*:*:*:*:*:*"
+        [traefik]="Traefik:web:HIGH:cpe:2.3:a:traefik:traefik:*:*:*:*:*:*:*:*"
+        [mosquitto]="Mosquitto:network:HIGH:cpe:2.3:a:eclipse:mosquitto:*:*:*:*:*:*:*:*"
+        [nats-server]="NATS:network:HIGH:cpe:2.3:a:nats:nats_server:*:*:*:*:*:*:*:*"
+        [slapd]="OpenLDAP:network:CRITICAL:cpe:2.3:a:openldap:openldap:*:*:*:*:*:*:*:*"
+        [influxd]="InfluxDB:db:HIGH:cpe:2.3:a:influxdata:influxdb:*:*:*:*:*:*:*:*"
+        [grafana-server]="Grafana:tool:HIGH:cpe:2.3:a:grafana:grafana:*:*:*:*:*:*:*:*"
+        [prometheus]="Prometheus:tool:MEDIUM:cpe:2.3:a:prometheus:prometheus:*:*:*:*:*:*:*:*"
+        [kibana]="Kibana:db:HIGH:cpe:2.3:a:elastic:kibana:*:*:*:*:*:*:*:*"
+        [jenkins]="Jenkins:tool:CRITICAL:cpe:2.3:a:jenkins:jenkins:*:*:*:*:*:*:*:*"
+        [tomcat9]="Apache Tomcat:web:CRITICAL:cpe:2.3:a:apache:tomcat:*:*:*:*:*:*:*:*"
+        [tomcat10]="Apache Tomcat:web:CRITICAL:cpe:2.3:a:apache:tomcat:*:*:*:*:*:*:*:*"
+        [cassandra]="Apache Cassandra:db:HIGH:cpe:2.3:a:apache:cassandra:*:*:*:*:*:*:*:*"
+        [memcached]="Memcached:db:HIGH:cpe:2.3:a:memcached:memcached:*:*:*:*:*:*:*:*"
+        [haproxy]="HAProxy:web:HIGH:cpe:2.3:a:haproxy:haproxy:*:*:*:*:*:*:*:*"
+        [smbd]="Samba:network:CRITICAL:cpe:2.3:a:samba:samba:*:*:*:*:*:*:*:*"
+        [vsftpd]="vsftpd:network:HIGH:cpe:2.3:a:vsftpd_project:vsftpd:*:*:*:*:*:*:*:*"
+        [cups]="CUPS:network:HIGH:cpe:2.3:a:apple:cups:*:*:*:*:*:*:*:*"
+        [ntpd]="NTP:network:HIGH:cpe:2.3:a:ntp:ntp:*:*:*:*:*:*:*:*"
+        [chronyd]="Chrony:network:HIGH:cpe:2.3:a:tuxfamily:chrony:*:*:*:*:*:*:*:*"
+        [etcd]="etcd:tool:HIGH:cpe:2.3:a:etcd:etcd:*:*:*:*:*:*:*:*"
+    )
+
+    local raw
+    raw=$(systemctl list-units --type=service --state=running --no-legend --no-pager 2>/dev/null || true)
+    [[ -z "$raw" ]] && return 0
+
+    declare -A seen_svcs=()
+    while IFS= read -r line; do
+        local unit
+        unit=$(echo "$line" | awk '{print $1}' | sed 's/\.service$//')
+        [[ -z "$unit" ]] && continue
+        if [[ -n "${SVC_MAP[$unit]+_}" ]]; then
+            IFS=':' read -r nvd_name cat sev cpe <<< "${SVC_MAP[$unit]}"
+            if [[ -z "${seen_svcs[$nvd_name]+_}" ]]; then
+                seen_svcs[$nvd_name]=1
+                _add "$nvd_name" "" "$cat" "$sev" "$cpe" "systemctl ($unit)"
+            fi
+        fi
+    done <<< "$raw"
+}
+
+# ---------------------------------------------------------------------------
+# snap packages (Linux)
+# ---------------------------------------------------------------------------
+collect_snap_packages() {
+    [[ "$(uname -s)" != "Linux" ]] && return 0
+    _cmd snap || return 0
+
+    declare -A SNAP_MAP=(
+        [lxd]="LXD:container:HIGH:cpe:2.3:a:linuxcontainers:lxd:*:*:*:*:*:*:*:*"
+        [microk8s]="MicroK8s:container:CRITICAL:cpe:2.3:a:canonical:microk8s:*:*:*:*:*:*:*:*"
+        [kubectl]="Kubernetes:container:CRITICAL:cpe:2.3:a:kubernetes:kubernetes:*:*:*:*:*:*:*:*"
+        [helm]="Helm:container:HIGH:cpe:2.3:a:helm:helm:*:*:*:*:*:*:*:*"
+        [docker]="Docker:container:HIGH:cpe:2.3:a:docker:docker:*:*:*:*:*:*:*:*"
+        [vault]="HashiCorp Vault:tool:CRITICAL:cpe:2.3:a:hashicorp:vault:*:*:*:*:*:*:*:*"
+        [terraform]="Terraform:tool:HIGH:cpe:2.3:a:hashicorp:terraform:*:*:*:*:*:*:*:*"
+        [grafana]="Grafana:tool:HIGH:cpe:2.3:a:grafana:grafana:*:*:*:*:*:*:*:*"
+    )
+
+    local raw
+    raw=$(snap list --unicode=never 2>/dev/null || true)
+    [[ -z "$raw" ]] && return 0
+
+    declare -A seen_snaps=()
+    while IFS= read -r line; do
+        local snap_name ver_raw
+        snap_name=$(echo "$line" | awk '{print tolower($1)}')
+        ver_raw=$(echo "$line" | awk '{print $2}')
+        [[ -z "$snap_name" ]] && continue
+        if [[ -n "${SNAP_MAP[$snap_name]+_}" && -z "${seen_snaps[$snap_name]+_}" ]]; then
+            seen_snaps[$snap_name]=1
+            IFS=':' read -r nvd_name cat sev cpe <<< "${SNAP_MAP[$snap_name]}"
+            _add "$nvd_name" "$(_ver "$ver_raw")" "$cat" "$sev" "$cpe" "snap $snap_name"
+        fi
+    done < <(echo "$raw" | tail -n +2)
+}
+
+# ---------------------------------------------------------------------------
 # Run all collectors
 # ---------------------------------------------------------------------------
 echo "CVE Emailer -- Environment Scanner" >&2
@@ -958,9 +1242,13 @@ collect_web_servers
 collect_databases
 collect_containers
 collect_network
+collect_standalone_tools
+collect_pip_packages
 collect_packages
 collect_brew
 collect_ports
+collect_systemd_services
+collect_snap_packages
 
 dedup_items
 

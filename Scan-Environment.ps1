@@ -166,7 +166,7 @@ function Get-OsItems {
         }
 
         # Surface the specific Server year as a separate keyword (better NVD hits)
-        foreach ($yr in @("2022","2019","2016","2012","2008")) {
+        foreach ($yr in @("2025","2022","2019","2016","2012","2008")) {
             if ($caption -match $yr) {
                 $items.Add((New-Software "Windows Server $yr" $ver "os" "CRITICAL" `
                     "cpe:2.3:o:microsoft:windows_server_$yr`:*:*:*:*:*:*:*:*" "Win32_OperatingSystem"))
@@ -369,7 +369,24 @@ function Get-DatabaseItems {
     # RabbitMQ
     $rmqSvc = Get-Service -Name "RabbitMQ" -ErrorAction SilentlyContinue
     if ($rmqSvc) {
-        $items.Add((New-Software "RabbitMQ" "" "db" "HIGH" `
+        $rmqVer = ""
+        # Try rabbitmqctl for version
+        if (Test-CommandExists "rabbitmqctl") {
+            $rmqVer = Get-FirstVersion (Invoke-SafeCommand "rabbitmqctl" @("version"))
+        }
+        if (-not $rmqVer) {
+            # Parse from lib dir: rabbitmq_server-3.12.6\
+            foreach ($base in @("C:\Program Files\RabbitMQ Server",
+                                "C:\Program Files (x86)\RabbitMQ Server")) {
+                if (Test-Path $base) {
+                    $entry = Get-ChildItem $base -Directory -ErrorAction SilentlyContinue |
+                             Where-Object { $_.Name -match '^rabbitmq_server-' } |
+                             Select-Object -First 1
+                    if ($entry) { $rmqVer = Get-FirstVersion $entry.Name; break }
+                }
+            }
+        }
+        $items.Add((New-Software "RabbitMQ" $rmqVer "db" "HIGH" `
             "cpe:2.3:a:pivotal_software:rabbitmq:*:*:*:*:*:*:*:*" "RabbitMQ service"))
     }
 
@@ -424,20 +441,30 @@ function Get-ContainerItems {
             "dockerdesktoplinuxengine","docker-desktop","registry","pause","moby","buildkit","k8s.gcr.io"
         )
 
-        $running = Invoke-SafeCommand "docker" @("ps","--format","{{.Image}}")
+        $running = Invoke-SafeCommand "docker" @("ps","--format","{{.ID}} {{.Image}}")
         $seenImgs = [System.Collections.Generic.HashSet[string]]::new()
-        foreach ($img in ($running -split "`n")) {
-            $img = $img.Trim()
-            if (-not $img) { continue }
+        foreach ($line in ($running -split "`n")) {
+            $line = $line.Trim()
+            if (-not $line) { continue }
+            $parts   = $line -split ' ', 2
+            $cid     = $parts[0].Trim()
+            $img     = if ($parts.Count -gt 1) { $parts[1].Trim() } else { "" }
             # Strip registry prefix and tag: registry/org/name:tag -> name
             $imgName = (($img -split "/")[-1] -split ":")[0].ToLower()
             if (-not $imgName -or $infraImages.Contains($imgName)) { continue }
             if (-not $seenImgs.Add($imgName)) { continue }
-            if ($dockerImageMap.ContainsKey($imgName)) {
-                $nvdName, $cpe = $dockerImageMap[$imgName]
-                $items.Add((New-Software $nvdName "" "container" "HIGH" $cpe "docker ps ($img)"))
+            if (-not $dockerImageMap.ContainsKey($imgName)) { continue }
+            $nvdName, $cpe = $dockerImageMap[$imgName]
+            # Try OCI version label for real version number
+            $ociVer = ""
+            if ($cid) {
+                $ociRaw = Invoke-SafeCommand "docker" @("inspect","--format",
+                    '{{index .Config.Labels "org.opencontainers.image.version"}}', $cid)
+                if ($ociRaw -and $ociRaw -ne "<no value>") {
+                    $ociVer = Get-FirstVersion $ociRaw
+                }
             }
-            # Unknown image names are dropped -- they produce poor NVD results
+            $items.Add((New-Software $nvdName $ociVer "container" "HIGH" $cpe "docker ps ($img)"))
         }
     }
 
@@ -508,6 +535,95 @@ function Get-NetworkItems {
     if ($ovpnSvc) {
         $items.Add((New-Software "OpenVPN" "" "network" "HIGH" `
             "cpe:2.3:a:openvpn:openvpn:*:*:*:*:*:*:*:*" "OpenVPN service"))
+    }
+
+    # OpenLDAP (binary or service)
+    if (Test-CommandExists "slapd") {
+        $raw = Invoke-SafeCommand "slapd" @("-V")
+        $items.Add((New-Software "OpenLDAP" (Get-FirstVersion $raw) "network" "CRITICAL" `
+            "cpe:2.3:a:openldap:openldap:*:*:*:*:*:*:*:*" "slapd -V"))
+    }
+
+    # Mosquitto MQTT broker
+    if (Test-CommandExists "mosquitto") {
+        $raw = Invoke-SafeCommand "mosquitto" @("--help")
+        $items.Add((New-Software "Mosquitto" (Get-FirstVersion $raw) "network" "HIGH" `
+            "cpe:2.3:a:eclipse:mosquitto:*:*:*:*:*:*:*:*" "mosquitto"))
+    } else {
+        $mqttSvc = Get-Service -Name "mosquitto" -ErrorAction SilentlyContinue
+        if ($mqttSvc) {
+            $items.Add((New-Software "Mosquitto" "" "network" "HIGH" `
+                "cpe:2.3:a:eclipse:mosquitto:*:*:*:*:*:*:*:*" "mosquitto service"))
+        }
+    }
+
+    # NATS server
+    if (Test-CommandExists "nats-server") {
+        $raw = Invoke-SafeCommand "nats-server" @("-v")
+        $items.Add((New-Software "NATS" (Get-FirstVersion $raw) "network" "HIGH" `
+            "cpe:2.3:a:nats:nats_server:*:*:*:*:*:*:*:*" "nats-server -v"))
+    }
+
+    return $items
+}
+
+# -- Standalone tools (HashiCorp stack, Grafana, Prometheus, etc.) -------------
+
+function Get-StandaloneToolItems {
+    $items = [System.Collections.Generic.List[Software]]::new()
+
+    if (Test-CommandExists "ansible") {
+        $raw = Invoke-SafeCommand "ansible" @("--version")
+        $items.Add((New-Software "Ansible" (Get-FirstVersion $raw) "tool" "HIGH" `
+            "cpe:2.3:a:redhat:ansible:*:*:*:*:*:*:*:*" "ansible --version"))
+    }
+
+    if (Test-CommandExists "terraform") {
+        $raw = Invoke-SafeCommand "terraform" @("version")
+        $items.Add((New-Software "Terraform" (Get-FirstVersion $raw) "tool" "HIGH" `
+            "cpe:2.3:a:hashicorp:terraform:*:*:*:*:*:*:*:*" "terraform version"))
+    }
+
+    if (Test-CommandExists "vault") {
+        $raw = Invoke-SafeCommand "vault" @("version")
+        $items.Add((New-Software "HashiCorp Vault" (Get-FirstVersion $raw) "tool" "CRITICAL" `
+            "cpe:2.3:a:hashicorp:vault:*:*:*:*:*:*:*:*" "vault version"))
+    }
+
+    if (Test-CommandExists "consul") {
+        $raw = Invoke-SafeCommand "consul" @("version")
+        $items.Add((New-Software "HashiCorp Consul" (Get-FirstVersion $raw) "tool" "HIGH" `
+            "cpe:2.3:a:hashicorp:consul:*:*:*:*:*:*:*:*" "consul version"))
+    }
+
+    if (Test-CommandExists "nomad") {
+        $raw = Invoke-SafeCommand "nomad" @("version")
+        $items.Add((New-Software "HashiCorp Nomad" (Get-FirstVersion $raw) "tool" "HIGH" `
+            "cpe:2.3:a:hashicorp:nomad:*:*:*:*:*:*:*:*" "nomad version"))
+    }
+
+    if (Test-CommandExists "traefik") {
+        $raw = Invoke-SafeCommand "traefik" @("version")
+        $items.Add((New-Software "Traefik" (Get-FirstVersion $raw) "web" "HIGH" `
+            "cpe:2.3:a:traefik:traefik:*:*:*:*:*:*:*:*" "traefik version"))
+    }
+
+    if (Test-CommandExists "grafana") {
+        $raw = Invoke-SafeCommand "grafana" @("-v")
+        $items.Add((New-Software "Grafana" (Get-FirstVersion $raw) "tool" "HIGH" `
+            "cpe:2.3:a:grafana:grafana:*:*:*:*:*:*:*:*" "grafana -v"))
+    }
+
+    if (Test-CommandExists "prometheus") {
+        $raw = Invoke-SafeCommand "prometheus" @("--version")
+        $items.Add((New-Software "Prometheus" (Get-FirstVersion $raw) "tool" "MEDIUM" `
+            "cpe:2.3:a:prometheus:prometheus:*:*:*:*:*:*:*:*" "prometheus --version"))
+    }
+
+    if (Test-CommandExists "etcd") {
+        $raw = Invoke-SafeCommand "etcd" @("--version")
+        $items.Add((New-Software "etcd" (Get-FirstVersion $raw) "tool" "HIGH" `
+            "cpe:2.3:a:etcd:etcd:*:*:*:*:*:*:*:*" "etcd --version"))
     }
 
     return $items
@@ -981,6 +1097,7 @@ $collectors = @(
     { Get-DatabaseItems },
     { Get-ContainerItems },
     { Get-NetworkItems },
+    { Get-StandaloneToolItems },
     { Get-InstalledProgramItems },
     { Get-ListeningPortItems },
     { Get-WindowsFeatureItems }

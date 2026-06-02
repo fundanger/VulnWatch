@@ -79,6 +79,38 @@ def _ver(raw: str) -> Optional[str]:
     return m.group(1) if m else None
 
 
+def _jar_version(search_dirs: list[str], prefix: str) -> Optional[str]:
+    """Find a version by scanning jar filenames matching a known prefix."""
+    for d in search_dirs:
+        try:
+            for fn in os.listdir(d):
+                if fn.startswith(prefix) and fn.endswith(".jar"):
+                    ver = _ver(fn[len(prefix):])
+                    if ver:
+                        return ver
+        except OSError:
+            pass
+    return None
+
+
+def _kafka_version() -> Optional[str]:
+    """Extract Kafka version from its jar files."""
+    return _jar_version(
+        ["/usr/share/kafka/libs", "/opt/kafka/libs", "/usr/local/kafka/libs",
+         "/opt/kafka_*", "/usr/lib/kafka/libs"],
+        "kafka_",
+    )
+
+
+def _zookeeper_version() -> Optional[str]:
+    """Extract ZooKeeper version from its jar files."""
+    return _jar_version(
+        ["/usr/share/zookeeper", "/opt/zookeeper/lib", "/usr/local/zookeeper/lib",
+         "/usr/lib/zookeeper"],
+        "zookeeper-",
+    )
+
+
 # -- OS / kernel ---------------------------------------------------------------
 
 def _collect_os() -> list[Software]:
@@ -264,9 +296,21 @@ def _collect_databases() -> list[Software]:
                                 "cpe:2.3:a:elastic:elasticsearch:*:*:*:*:*:*:*:*"))
 
     if _which("cqlsh") or _which("cassandra"):
-        bin_ = "cqlsh" if _which("cqlsh") else "cassandra"
-        raw = _run(bin_, "--version") if bin_ == "cqlsh" else ""
-        results.append(Software("Apache Cassandra", _ver(raw), "db", "HIGH", bin_,
+        ver = None
+        if _which("cqlsh"):
+            raw = _run("cqlsh", "--version")
+            ver = _ver(raw)
+        if not ver:
+            # Parse version from jar filename: apache-cassandra-4.1.3.jar
+            for search_dir in ("/usr/share/cassandra/lib", "/opt/cassandra/lib", "/usr/local/cassandra/lib"):
+                if os.path.isdir(search_dir):
+                    for fn in os.listdir(search_dir):
+                        if fn.startswith("apache-cassandra-") and fn.endswith(".jar"):
+                            ver = _ver(fn)
+                            break
+                if ver:
+                    break
+        results.append(Software("Apache Cassandra", ver, "db", "HIGH", "cqlsh/cassandra",
                                 "cpe:2.3:a:apache:cassandra:*:*:*:*:*:*:*:*"))
 
     if _which("influxd"):
@@ -274,18 +318,56 @@ def _collect_databases() -> list[Software]:
         results.append(Software("InfluxDB", _ver(raw), "db", "HIGH", "influxd version",
                                 "cpe:2.3:a:influxdata:influxdb:*:*:*:*:*:*:*:*"))
 
-    if _which("rabbitmq-server"):
-        raw = _run("rabbitmq-server", "version")
-        results.append(Software("RabbitMQ", _ver(raw), "db", "HIGH", "rabbitmq-server version",
+    if _which("rabbitmq-server") or _which("rabbitmqctl"):
+        ver = None
+        if _which("rabbitmqctl"):
+            raw = _run("rabbitmqctl", "version")
+            ver = _ver(raw)
+        if not ver and _which("rabbitmq-server"):
+            # rabbitmq-server prints version on stderr as part of startup; try rabbitmq-diagnostics
+            if _which("rabbitmq-diagnostics"):
+                raw = _run("rabbitmq-diagnostics", "server_version")
+                ver = _ver(raw)
+        if not ver:
+            # Parse from lib dir: rabbitmq_server-3.12.6/ebin/rabbit.app
+            for search_dir in ("/usr/lib/rabbitmq/lib", "/usr/local/lib/rabbitmq/lib",
+                               "/opt/rabbitmq/lib"):
+                if os.path.isdir(search_dir):
+                    for entry in os.listdir(search_dir):
+                        if entry.startswith("rabbitmq_server-"):
+                            ver = _ver(entry)
+                            break
+                if ver:
+                    break
+        results.append(Software("RabbitMQ", ver, "db", "HIGH", "rabbitmqctl version",
                                 "cpe:2.3:a:pivotal_software:rabbitmq:*:*:*:*:*:*:*:*"))
 
     if _which("kafka-server-start.sh") or _which("kafka-server-start"):
-        results.append(Software("Apache Kafka", None, "db", "HIGH", "kafka",
+        ver = _kafka_version()
+        results.append(Software("Apache Kafka", ver, "db", "HIGH", "kafka",
                                 "cpe:2.3:a:apache:kafka:*:*:*:*:*:*:*:*"))
 
     if _which("zookeeper-server-start.sh") or _which("zkServer.sh"):
-        results.append(Software("Apache ZooKeeper", None, "db", "HIGH", "zookeeper",
+        ver = _zookeeper_version()
+        results.append(Software("Apache ZooKeeper", ver, "db", "HIGH", "zookeeper",
                                 "cpe:2.3:a:apache:zookeeper:*:*:*:*:*:*:*:*"))
+
+    if _which("slapd"):
+        raw = _run("slapd", "-V")
+        results.append(Software("OpenLDAP", _ver(raw), "network", "CRITICAL", "slapd -V",
+                                "cpe:2.3:a:openldap:openldap:*:*:*:*:*:*:*:*"))
+
+    if _which("mosquitto"):
+        raw = _run("mosquitto", "-v") or _run("mosquitto", "--help")
+        # mosquitto -v prints "mosquitto version X.Y.Z" then starts listening; kill output
+        ver = _ver(raw)
+        results.append(Software("Mosquitto", ver, "network", "HIGH", "mosquitto -v",
+                                "cpe:2.3:a:eclipse:mosquitto:*:*:*:*:*:*:*:*"))
+
+    if _which("nats-server"):
+        raw = _run("nats-server", "-v")
+        results.append(Software("NATS", _ver(raw), "network", "HIGH", "nats-server -v",
+                                "cpe:2.3:a:nats:nats_server:*:*:*:*:*:*:*:*"))
 
     if _which("sqlite3"):
         raw = _run("sqlite3", "--version")
@@ -348,23 +430,33 @@ def _collect_containers() -> list[Software]:
         results.append(Software("Docker", _ver(raw), "container", "HIGH", "docker --version",
                                 "cpe:2.3:a:docker:docker:*:*:*:*:*:*:*:*"))
 
-        raw2 = _run("docker", "ps", "--format", "{{.Image}}", timeout=8)
+        # Get running container IDs + image names
+        ps_raw = _run("docker", "ps", "--format", "{{.ID}}\t{{.Image}}", timeout=8)
         seen_images: set[str] = set()
-        for img in raw2.splitlines():
-            img = img.strip()
-            if not img:
+        for line in ps_raw.splitlines():
+            line = line.strip()
+            if not line:
                 continue
-            # strip registry prefix (registry.example.com/org/name:tag -> name)
+            parts = line.split("\t", 1)
+            cid = parts[0].strip()
+            img = parts[1].strip() if len(parts) > 1 else ""
             name = img.split("/")[-1].split(":")[0].lower()
             if not name or name in _DOCKER_INFRA_IMAGES:
                 continue
             if name in seen_images:
                 continue
             seen_images.add(name)
-            if name in _DOCKER_IMAGE_MAP:
-                nvd_name, cpe = _DOCKER_IMAGE_MAP[name]
-                results.append(Software(nvd_name, None, "container", "HIGH", f"docker ps ({img})", cpe))
-            # Unknown image names are intentionally dropped — they produce poor NVD results
+            if name not in _DOCKER_IMAGE_MAP:
+                continue
+            nvd_name, cpe = _DOCKER_IMAGE_MAP[name]
+            # Try OCI version label for real version number
+            ver: Optional[str] = None
+            if cid:
+                label_raw = _run("docker", "inspect", "--format",
+                                 "{{index .Config.Labels \"org.opencontainers.image.version\"}}",
+                                 cid, timeout=5)
+                ver = _ver(label_raw) if label_raw and label_raw != "<no value>" else None
+            results.append(Software(nvd_name, ver, "container", "HIGH", f"docker ps ({img})", cpe))
 
     if _which("podman"):
         raw = _run("podman", "--version")
@@ -719,6 +811,253 @@ def _collect_listening_services() -> list[Software]:
     return results
 
 
+# -- pip package inventory -----------------------------------------------------
+
+# High-value pip packages that have real CVE histories in NVD
+_PIP_INTERESTING: dict[str, tuple[str, str, str, str]] = {
+    "cryptography":     ("cryptography",        "tool",    "HIGH",     "cpe:2.3:a:cryptography.io:cryptography:*:*:*:*:*:*:*:*"),
+    "paramiko":         ("paramiko",            "network", "HIGH",     "cpe:2.3:a:paramiko:paramiko:*:*:*:*:*:*:*:*"),
+    "requests":         ("Python Requests",     "tool",    "MEDIUM",   "cpe:2.3:a:python-requests:requests:*:*:*:*:*:*:*:*"),
+    "urllib3":          ("urllib3",             "tool",    "HIGH",     "cpe:2.3:a:urllib3_project:urllib3:*:*:*:*:*:*:*:*"),
+    "Pillow":           ("Pillow",              "tool",    "HIGH",     "cpe:2.3:a:python:pillow:*:*:*:*:*:*:*:*"),
+    "Jinja2":           ("Jinja2",              "tool",    "HIGH",     "cpe:2.3:a:palletsprojects:jinja:*:*:*:*:*:*:*:*"),
+    "Django":           ("Django",              "tool",    "HIGH",     "cpe:2.3:a:djangoproject:django:*:*:*:*:*:*:*:*"),
+    "Flask":            ("Flask",               "tool",    "HIGH",     "cpe:2.3:a:palletsprojects:flask:*:*:*:*:*:*:*:*"),
+    "fastapi":          ("FastAPI",             "tool",    "HIGH",     "cpe:2.3:a:fastapi_project:fastapi:*:*:*:*:*:*:*:*"),
+    "aiohttp":          ("aiohttp",             "tool",    "HIGH",     "cpe:2.3:a:aiohttp_project:aiohttp:*:*:*:*:*:*:*:*"),
+    "PyYAML":           ("PyYAML",              "tool",    "HIGH",     "cpe:2.3:a:pyyaml:pyyaml:*:*:*:*:*:*:*:*"),
+    "lxml":             ("lxml",                "tool",    "HIGH",     "cpe:2.3:a:lxml:lxml:*:*:*:*:*:*:*:*"),
+    "sqlalchemy":       ("SQLAlchemy",          "tool",    "MEDIUM",   "cpe:2.3:a:sqlalchemy:sqlalchemy:*:*:*:*:*:*:*:*"),
+    "boto3":            ("boto3",               "tool",    "MEDIUM",   ""),
+    "ansible":          ("Ansible",             "tool",    "HIGH",     "cpe:2.3:a:redhat:ansible:*:*:*:*:*:*:*:*"),
+    "Werkzeug":         ("Werkzeug",            "tool",    "HIGH",     "cpe:2.3:a:palletsprojects:werkzeug:*:*:*:*:*:*:*:*"),
+    "celery":           ("Celery",              "tool",    "HIGH",     "cpe:2.3:a:celeryproject:celery:*:*:*:*:*:*:*:*"),
+    "gunicorn":         ("Gunicorn",            "web",     "HIGH",     "cpe:2.3:a:gunicorn:gunicorn:*:*:*:*:*:*:*:*"),
+    "uvicorn":          ("uvicorn",             "web",     "HIGH",     ""),
+    "httpx":            ("httpx",               "tool",    "MEDIUM",   ""),
+    "pyOpenSSL":        ("pyOpenSSL",           "network", "HIGH",     "cpe:2.3:a:pyopenssl_project:pyopenssl:*:*:*:*:*:*:*:*"),
+    "pycryptodome":     ("PyCryptodome",        "tool",    "HIGH",     "cpe:2.3:a:pycryptodome:pycryptodome:*:*:*:*:*:*:*:*"),
+    "jwt":              ("PyJWT",               "tool",    "HIGH",     "cpe:2.3:a:pyjwt_project:pyjwt:*:*:*:*:*:*:*:*"),
+    "PyJWT":            ("PyJWT",               "tool",    "HIGH",     "cpe:2.3:a:pyjwt_project:pyjwt:*:*:*:*:*:*:*:*"),
+    "redis":            ("redis-py",            "tool",    "MEDIUM",   ""),
+    "numpy":            ("NumPy",               "tool",    "MEDIUM",   "cpe:2.3:a:numpy:numpy:*:*:*:*:*:*:*:*"),
+    "scipy":            ("SciPy",               "tool",    "MEDIUM",   "cpe:2.3:a:scipy:scipy:*:*:*:*:*:*:*:*"),
+    "tensorflow":       ("TensorFlow",          "tool",    "HIGH",     "cpe:2.3:a:google:tensorflow:*:*:*:*:*:*:*:*"),
+    "torch":            ("PyTorch",             "tool",    "HIGH",     "cpe:2.3:a:pytorch:pytorch:*:*:*:*:*:*:*:*"),
+    "scrapy":           ("Scrapy",              "tool",    "HIGH",     "cpe:2.3:a:scrapy:scrapy:*:*:*:*:*:*:*:*"),
+}
+
+
+def _collect_pip_packages() -> list[Software]:
+    """Enumerate installed pip packages and return high-value ones."""
+    results = []
+    for python_bin in ("pip3", "pip", "python3", "python"):
+        if not _which(python_bin):
+            continue
+        if python_bin.startswith("pip"):
+            raw = _run(python_bin, "list", "--format=json", timeout=15)
+        else:
+            raw = _run(python_bin, "-m", "pip", "list", "--format=json", timeout=15)
+        if not raw or not raw.strip().startswith("["):
+            continue
+        try:
+            pkgs = json.loads(raw)
+        except Exception:
+            continue
+        installed = {p["name"]: p.get("version", "") for p in pkgs if isinstance(p, dict)}
+        seen: set[str] = set()
+        for pkg_name, ver_str in installed.items():
+            # Match case-insensitively
+            match_key = next((k for k in _PIP_INTERESTING if k.lower() == pkg_name.lower()), None)
+            if match_key and match_key not in seen:
+                seen.add(match_key)
+                nvd_name, cat, sev, cpe = _PIP_INTERESTING[match_key]
+                results.append(Software(nvd_name, _ver(ver_str), cat, sev, f"pip {pkg_name}", cpe))
+        break  # one successful pip run is enough
+    return results
+
+
+# -- systemctl service detection (Linux) ---------------------------------------
+
+# Map systemd service unit names -> (NVD product name, category, severity, CPE)
+_SYSTEMD_SERVICE_MAP: dict[str, tuple[str, str, str, str]] = {
+    "nginx":            ("nginx",               "web",     "CRITICAL", "cpe:2.3:a:nginx:nginx:*:*:*:*:*:*:*:*"),
+    "nginx.service":    ("nginx",               "web",     "CRITICAL", "cpe:2.3:a:nginx:nginx:*:*:*:*:*:*:*:*"),
+    "apache2":          ("Apache HTTP Server",  "web",     "CRITICAL", "cpe:2.3:a:apache:http_server:*:*:*:*:*:*:*:*"),
+    "httpd":            ("Apache HTTP Server",  "web",     "CRITICAL", "cpe:2.3:a:apache:http_server:*:*:*:*:*:*:*:*"),
+    "mysql":            ("MySQL",               "db",      "CRITICAL", "cpe:2.3:a:mysql:mysql:*:*:*:*:*:*:*:*"),
+    "mysqld":           ("MySQL",               "db",      "CRITICAL", "cpe:2.3:a:mysql:mysql:*:*:*:*:*:*:*:*"),
+    "mariadb":          ("MariaDB",             "db",      "CRITICAL", "cpe:2.3:a:mariadb:mariadb:*:*:*:*:*:*:*:*"),
+    "postgresql":       ("PostgreSQL",          "db",      "CRITICAL", "cpe:2.3:a:postgresql:postgresql:*:*:*:*:*:*:*:*"),
+    "mongod":           ("MongoDB",             "db",      "CRITICAL", "cpe:2.3:a:mongodb:mongodb:*:*:*:*:*:*:*:*"),
+    "redis":            ("Redis",               "db",      "HIGH",     "cpe:2.3:a:redis:redis:*:*:*:*:*:*:*:*"),
+    "redis-server":     ("Redis",               "db",      "HIGH",     "cpe:2.3:a:redis:redis:*:*:*:*:*:*:*:*"),
+    "elasticsearch":    ("Elasticsearch",       "db",      "CRITICAL", "cpe:2.3:a:elastic:elasticsearch:*:*:*:*:*:*:*:*"),
+    "rabbitmq-server":  ("RabbitMQ",            "db",      "HIGH",     "cpe:2.3:a:pivotal_software:rabbitmq:*:*:*:*:*:*:*:*"),
+    "kafka":            ("Apache Kafka",        "db",      "HIGH",     "cpe:2.3:a:apache:kafka:*:*:*:*:*:*:*:*"),
+    "zookeeper":        ("Apache ZooKeeper",    "db",      "HIGH",     "cpe:2.3:a:apache:zookeeper:*:*:*:*:*:*:*:*"),
+    "docker":           ("Docker",              "container","HIGH",    "cpe:2.3:a:docker:docker:*:*:*:*:*:*:*:*"),
+    "containerd":       ("containerd",          "container","HIGH",    "cpe:2.3:a:docker:containerd:*:*:*:*:*:*:*:*"),
+    "sshd":             ("OpenSSH",             "network", "HIGH",     "cpe:2.3:a:openbsd:openssh:*:*:*:*:*:*:*:*"),
+    "named":            ("ISC BIND",            "network", "CRITICAL", "cpe:2.3:a:isc:bind:*:*:*:*:*:*:*:*"),
+    "bind9":            ("ISC BIND",            "network", "CRITICAL", "cpe:2.3:a:isc:bind:*:*:*:*:*:*:*:*"),
+    "postfix":          ("Postfix",             "network", "HIGH",     "cpe:2.3:a:postfix:postfix:*:*:*:*:*:*:*:*"),
+    "exim4":            ("Exim",                "network", "CRITICAL", "cpe:2.3:a:exim:exim:*:*:*:*:*:*:*:*"),
+    "dovecot":          ("Dovecot",             "network", "HIGH",     "cpe:2.3:a:dovecot:dovecot:*:*:*:*:*:*:*:*"),
+    "squid":            ("Squid",               "network", "HIGH",     "cpe:2.3:a:squid-cache:squid:*:*:*:*:*:*:*:*"),
+    "openvpn":          ("OpenVPN",             "network", "HIGH",     "cpe:2.3:a:openvpn:openvpn:*:*:*:*:*:*:*:*"),
+    "vault":            ("HashiCorp Vault",     "tool",    "CRITICAL", "cpe:2.3:a:hashicorp:vault:*:*:*:*:*:*:*:*"),
+    "consul":           ("HashiCorp Consul",    "tool",    "HIGH",     "cpe:2.3:a:hashicorp:consul:*:*:*:*:*:*:*:*"),
+    "traefik":          ("Traefik",             "web",     "HIGH",     "cpe:2.3:a:traefik:traefik:*:*:*:*:*:*:*:*"),
+    "mosquitto":        ("Mosquitto",           "network", "HIGH",     "cpe:2.3:a:eclipse:mosquitto:*:*:*:*:*:*:*:*"),
+    "nats-server":      ("NATS",                "network", "HIGH",     "cpe:2.3:a:nats:nats_server:*:*:*:*:*:*:*:*"),
+    "slapd":            ("OpenLDAP",            "network", "CRITICAL", "cpe:2.3:a:openldap:openldap:*:*:*:*:*:*:*:*"),
+    "influxd":          ("InfluxDB",            "db",      "HIGH",     "cpe:2.3:a:influxdata:influxdb:*:*:*:*:*:*:*:*"),
+    "grafana-server":   ("Grafana",             "tool",    "HIGH",     "cpe:2.3:a:grafana:grafana:*:*:*:*:*:*:*:*"),
+    "prometheus":       ("Prometheus",          "tool",    "MEDIUM",   "cpe:2.3:a:prometheus:prometheus:*:*:*:*:*:*:*:*"),
+    "kibana":           ("Kibana",              "db",      "HIGH",     "cpe:2.3:a:elastic:kibana:*:*:*:*:*:*:*:*"),
+    "jenkins":          ("Jenkins",             "tool",    "CRITICAL", "cpe:2.3:a:jenkins:jenkins:*:*:*:*:*:*:*:*"),
+    "gitlab-runsvdir":  ("GitLab",              "tool",    "CRITICAL", "cpe:2.3:a:gitlab:gitlab:*:*:*:*:*:*:*:*"),
+    "tomcat":           ("Apache Tomcat",       "web",     "CRITICAL", "cpe:2.3:a:apache:tomcat:*:*:*:*:*:*:*:*"),
+    "tomcat9":          ("Apache Tomcat",       "web",     "CRITICAL", "cpe:2.3:a:apache:tomcat:*:*:*:*:*:*:*:*"),
+    "tomcat10":         ("Apache Tomcat",       "web",     "CRITICAL", "cpe:2.3:a:apache:tomcat:*:*:*:*:*:*:*:*"),
+    "cassandra":        ("Apache Cassandra",    "db",      "HIGH",     "cpe:2.3:a:apache:cassandra:*:*:*:*:*:*:*:*"),
+    "memcached":        ("Memcached",           "db",      "HIGH",     "cpe:2.3:a:memcached:memcached:*:*:*:*:*:*:*:*"),
+    "haproxy":          ("HAProxy",             "web",     "HIGH",     "cpe:2.3:a:haproxy:haproxy:*:*:*:*:*:*:*:*"),
+    "samba":            ("Samba",               "network", "CRITICAL", "cpe:2.3:a:samba:samba:*:*:*:*:*:*:*:*"),
+    "smbd":             ("Samba",               "network", "CRITICAL", "cpe:2.3:a:samba:samba:*:*:*:*:*:*:*:*"),
+    "vsftpd":           ("vsftpd",              "network", "HIGH",     "cpe:2.3:a:vsftpd_project:vsftpd:*:*:*:*:*:*:*:*"),
+    "nfs-server":       ("NFS",                 "network", "HIGH",     ""),
+    "rpcbind":          ("rpcbind",             "network", "HIGH",     ""),
+    "cups":             ("CUPS",                "network", "HIGH",     "cpe:2.3:a:apple:cups:*:*:*:*:*:*:*:*"),
+    "ntpd":             ("NTP",                 "network", "HIGH",     "cpe:2.3:a:ntp:ntp:*:*:*:*:*:*:*:*"),
+    "chronyd":          ("Chrony",              "network", "HIGH",     "cpe:2.3:a:tuxfamily:chrony:*:*:*:*:*:*:*:*"),
+}
+
+
+def _collect_systemd_services() -> list[Software]:
+    """Detect running services via systemctl on Linux."""
+    if platform.system() != "Linux":
+        return []
+    if not _which("systemctl"):
+        return []
+    raw = _run("systemctl", "list-units", "--type=service", "--state=running",
+               "--no-legend", "--no-pager", timeout=10)
+    if not raw:
+        return []
+    results = []
+    seen: set[str] = set()
+    for line in raw.splitlines():
+        parts = line.split()
+        if not parts:
+            continue
+        unit = parts[0].rstrip(".service")
+        # Try exact match first, then with .service suffix
+        entry = _SYSTEMD_SERVICE_MAP.get(unit) or _SYSTEMD_SERVICE_MAP.get(unit + ".service")
+        if entry:
+            nvd_name, cat, sev, cpe = entry
+            if nvd_name not in seen:
+                seen.add(nvd_name)
+                results.append(Software(nvd_name, None, cat, sev, f"systemctl ({unit})", cpe))
+    return results
+
+
+# -- Standalone tool binaries (commonly installed outside package managers) ----
+
+def _collect_standalone_tools() -> list[Software]:
+    """Detect tools typically installed as single binaries to /usr/local/bin."""
+    results = []
+
+    if _which("ansible"):
+        raw = _run("ansible", "--version")
+        results.append(Software("Ansible", _ver(raw), "tool", "HIGH", "ansible --version",
+                                "cpe:2.3:a:redhat:ansible:*:*:*:*:*:*:*:*"))
+
+    if _which("terraform"):
+        raw = _run("terraform", "version")
+        results.append(Software("Terraform", _ver(raw), "tool", "HIGH", "terraform version",
+                                "cpe:2.3:a:hashicorp:terraform:*:*:*:*:*:*:*:*"))
+
+    if _which("vault"):
+        raw = _run("vault", "version")
+        results.append(Software("HashiCorp Vault", _ver(raw), "tool", "CRITICAL", "vault version",
+                                "cpe:2.3:a:hashicorp:vault:*:*:*:*:*:*:*:*"))
+
+    if _which("consul"):
+        raw = _run("consul", "version")
+        results.append(Software("HashiCorp Consul", _ver(raw), "tool", "HIGH", "consul version",
+                                "cpe:2.3:a:hashicorp:consul:*:*:*:*:*:*:*:*"))
+
+    if _which("nomad"):
+        raw = _run("nomad", "version")
+        results.append(Software("HashiCorp Nomad", _ver(raw), "tool", "HIGH", "nomad version",
+                                "cpe:2.3:a:hashicorp:nomad:*:*:*:*:*:*:*:*"))
+
+    if _which("packer"):
+        raw = _run("packer", "version")
+        results.append(Software("HashiCorp Packer", _ver(raw), "tool", "HIGH", "packer version",
+                                "cpe:2.3:a:hashicorp:packer:*:*:*:*:*:*:*:*"))
+
+    if _which("traefik"):
+        raw = _run("traefik", "version")
+        results.append(Software("Traefik", _ver(raw), "web", "HIGH", "traefik version",
+                                "cpe:2.3:a:traefik:traefik:*:*:*:*:*:*:*:*"))
+
+    if _which("grafana") or _which("grafana-server"):
+        bin_ = "grafana" if _which("grafana") else "grafana-server"
+        raw = _run(bin_, "-v") or _run(bin_, "--version")
+        results.append(Software("Grafana", _ver(raw), "tool", "HIGH", f"{bin_} -v",
+                                "cpe:2.3:a:grafana:grafana:*:*:*:*:*:*:*:*"))
+
+    if _which("prometheus"):
+        raw = _run("prometheus", "--version")
+        results.append(Software("Prometheus", _ver(raw), "tool", "MEDIUM", "prometheus --version",
+                                "cpe:2.3:a:prometheus:prometheus:*:*:*:*:*:*:*:*"))
+
+    if _which("etcd"):
+        raw = _run("etcd", "--version")
+        results.append(Software("etcd", _ver(raw), "tool", "HIGH", "etcd --version",
+                                "cpe:2.3:a:etcd:etcd:*:*:*:*:*:*:*:*"))
+
+    return results
+
+
+# -- snap packages (Linux) -----------------------------------------------------
+
+_SNAP_INTERESTING: dict[str, tuple[str, str, str, str]] = {
+    "lxd":        ("LXD",            "container", "HIGH",     "cpe:2.3:a:linuxcontainers:lxd:*:*:*:*:*:*:*:*"),
+    "microk8s":   ("MicroK8s",       "container", "CRITICAL", "cpe:2.3:a:canonical:microk8s:*:*:*:*:*:*:*:*"),
+    "multipass":  ("Multipass",      "container", "HIGH",     ""),
+    "kubectl":    ("Kubernetes",     "container", "CRITICAL", "cpe:2.3:a:kubernetes:kubernetes:*:*:*:*:*:*:*:*"),
+    "helm":       ("Helm",           "container", "HIGH",     "cpe:2.3:a:helm:helm:*:*:*:*:*:*:*:*"),
+    "docker":     ("Docker",         "container", "HIGH",     "cpe:2.3:a:docker:docker:*:*:*:*:*:*:*:*"),
+    "vault":      ("HashiCorp Vault","tool",      "CRITICAL", "cpe:2.3:a:hashicorp:vault:*:*:*:*:*:*:*:*"),
+    "terraform":  ("Terraform",      "tool",      "HIGH",     "cpe:2.3:a:hashicorp:terraform:*:*:*:*:*:*:*:*"),
+    "grafana":    ("Grafana",        "tool",      "HIGH",     "cpe:2.3:a:grafana:grafana:*:*:*:*:*:*:*:*"),
+}
+
+
+def _collect_snap_packages() -> list[Software]:
+    if platform.system() != "Linux" or not _which("snap"):
+        return []
+    raw = _run("snap", "list", "--unicode=never", timeout=12)
+    if not raw:
+        return []
+    results = []
+    seen: set[str] = set()
+    for line in raw.splitlines()[1:]:  # skip header
+        parts = line.split()
+        if not parts:
+            continue
+        snap_name = parts[0].lower()
+        ver_str = parts[1] if len(parts) > 1 else ""
+        if snap_name in _SNAP_INTERESTING and snap_name not in seen:
+            seen.add(snap_name)
+            nvd_name, cat, sev, cpe = _SNAP_INTERESTING[snap_name]
+            results.append(Software(nvd_name, _ver(ver_str), cat, sev, f"snap {snap_name}", cpe))
+    return results
+
+
 # -- Dedup & format ------------------------------------------------------------
 
 def _dedup(items: list[Software]) -> list[Software]:
@@ -796,9 +1135,13 @@ def collect_all() -> list[Software]:
         _collect_containers,
         _collect_network,
         _collect_listening_services,
+        _collect_standalone_tools,
+        _collect_pip_packages,
     ]
     if platform.system() == "Linux":
         collectors.append(_collect_packages_linux)
+        collectors.append(_collect_systemd_services)
+        collectors.append(_collect_snap_packages)
     elif platform.system() == "Windows":
         collectors.append(_collect_windows_programs)
     elif platform.system() == "Darwin":
