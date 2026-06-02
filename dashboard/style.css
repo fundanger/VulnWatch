@@ -576,3 +576,86 @@ body.light-theme {
   .nav-links { display: none; }
   .settings-grid { grid-template-columns: 1fr; }
 }
+
+/* ── Auto-refresh label ──────────────────────────────────────────────────────── */
+
+.auto-refresh-label {
+  display: flex;
+  align-items: center;
+  gap: .4rem;
+  font-size: 12px;
+  color: var(--muted);
+  cursor: pointer;
+}
+.auto-refresh-label input[type="checkbox"] { cursor: pointer; }
+
+/* ── Smaller doughnut chart ──────────────────────────────────────────────────── */
+
+.chart-wrap-sm {
+  position: relative;
+  height: 180px;
+  width: 100%;
+}
+
+/* ── Reviewed badge / row ────────────────────────────────────────────────────── */
+
+.badge-reviewed {
+  display: inline-block;
+  background: var(--success);
+  color: #fff;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 1px 6px;
+}
+
+.row-reviewed { opacity: .65; }
+.row-reviewed:hover { opacity: 1; }
+
+.btn-reviewed {
+  background: var(--success) !important;
+  color: #fff !important;
+  border-color: var(--success) !important;
+}
+
+/* ── Detail panel actions ────────────────────────────────────────────────────── */
+
+.detail-actions {
+  display: flex;
+  align-items: center;
+  gap: .6rem;
+  margin-top: 1rem;
+  padding-top: .75rem;
+  border-top: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+
+/* ── History expand ──────────────────────────────────────────────────────────── */
+
+.expand-chevron {
+  color: var(--muted);
+  font-size: 10px;
+  width: 20px;
+  user-select: none;
+}
+
+.history-detail-row { background: var(--surface2) !important; }
+.history-detail-row.hidden { display: none; }
+
+.history-detail {
+  padding: .5rem .25rem;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: .4rem;
+  font-size: 12px;
+}
+
+/* ── Watchlist notes cell ────────────────────────────────────────────────────── */
+
+.watchlist-notes-cell {
+  font-size: 12px;
+  color: var(--muted);
+  max-width: 220px;
+  word-break: break-word;
+}

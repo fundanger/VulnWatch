@@ -18,12 +18,13 @@ navLinks.forEach(l => l.addEventListener("click", e => {
   e.preventDefault();
   const sec = l.dataset.section;
   showSection(sec);
-  if (sec === "overview")  { loadDashboard(); loadTopCves(); loadTrend(); }
-  if (sec === "history")   loadHistory();
-  if (sec === "profiles")  loadProfiles();
-  if (sec === "browse")    loadBrowseTables();
-  if (sec === "digest")    loadDigestQueue();
-  if (sec === "settings")  loadSettings();
+  if (sec === "overview")   { loadDashboard(); loadTopCves(); loadTrend(); loadKwPerf(); }
+  if (sec === "history")    loadHistory();
+  if (sec === "profiles")   loadProfiles();
+  if (sec === "browse")     loadBrowseTables();
+  if (sec === "digest")     loadDigestQueue();
+  if (sec === "settings")   loadSettings();
+  if (sec === "watchlist")  loadWatchlist();
 }));
 
 // ── Health check ─────────────────────────────────────────────────────────────
@@ -160,18 +161,38 @@ async function doBrowseSearch() {
     const r = await fetch(`${API}/api/cves?${params}`);
     _browseRows  = await r.json();
     _browseTable = table;
-    renderBrowseResults();
+    await renderBrowseResults();
   } catch (e) {
     console.error("doBrowseSearch:", e);
   }
 }
 
-function renderBrowseResults() {
+let _reviewedMap = {};  // cve_id -> bool, cached per browse load
+
+async function _loadReviewedMap(rows) {
+  // Fetch all reviews once and index them
+  try {
+    const r = await fetch(`${API}/api/reviews`);
+    const all = await r.json();
+    _reviewedMap = {};
+    all.forEach(rv => { _reviewedMap[rv.cve_id] = !!rv.reviewed; });
+  } catch {}
+}
+
+async function renderBrowseResults() {
+  await _loadReviewedMap(_browseRows);
+
+  const reviewFilter = document.getElementById("br-reviewed").value;
+  let rows = _browseRows;
+  if (reviewFilter === "reviewed")   rows = rows.filter(r => _reviewedMap[r.cve_id]);
+  if (reviewFilter === "unreviewed") rows = rows.filter(r => !_reviewedMap[r.cve_id]);
+
   const tbody = document.getElementById("browse-tbody");
   tbody.innerHTML = "";
-  _browseRows.forEach((row, idx) => {
+  rows.forEach((row, idx) => {
+    const reviewed = _reviewedMap[row.cve_id];
     tbody.insertAdjacentHTML("beforeend", `
-      <tr class="clickable" data-idx="${idx}">
+      <tr class="clickable${reviewed ? " row-reviewed" : ""}" data-cve="${escHtml(row.cve_id)}" data-idx="${idx}">
         <td><code>${escHtml(row.cve_id)}</code></td>
         <td>${sevBadge(row.severity)}</td>
         <td class="num">${scoreStr(row.cvss_score)}</td>
@@ -179,15 +200,21 @@ function renderBrowseResults() {
         <td>${kevBadge(row.kev)}</td>
         <td>${escHtml(row.keyword || "")}</td>
         <td>${escHtml((row.publish_date || "").slice(0, 10))}</td>
+        <td>${reviewed ? `<span class="badge-reviewed">✓</span>` : ""}</td>
         <td>${escHtml(truncate(row.description, 90))}</td>
       </tr>
     `);
   });
-  document.getElementById("browse-tbody").querySelectorAll("tr[data-idx]").forEach(tr => {
-    tr.addEventListener("click", () => openDetail(_browseRows[+tr.dataset.idx]));
+  document.getElementById("browse-tbody").querySelectorAll("tr[data-cve]").forEach(tr => {
+    tr.addEventListener("click", () => {
+      const idx = _browseRows.findIndex(r => r.cve_id === tr.dataset.cve);
+      if (idx >= 0) openDetail(_browseRows[idx]);
+    });
   });
-  document.getElementById("browse-status").textContent = `${_browseRows.length} result(s) — click a row for detail`;
+  document.getElementById("browse-status").textContent = `${rows.length} result(s) — click a row for detail`;
 }
+
+document.getElementById("br-reviewed").addEventListener("change", renderBrowseResults);
 
 document.getElementById("btn-browse-search").addEventListener("click", () => doBrowseSearchPaged(0));
 document.getElementById("br-search").addEventListener("keydown", e => { if (e.key === "Enter") doBrowseSearchPaged(0); });
@@ -206,7 +233,10 @@ document.getElementById("btn-browse-export").addEventListener("click", () => {
 
 // ── CVE Detail overlay ────────────────────────────────────────────────────────
 
-function openDetail(row) {
+let _detailRow = null;
+
+async function openDetail(row) {
+  _detailRow = row;
   let refs = [];
   try { refs = JSON.parse(row.references_json || "[]"); } catch {}
 
@@ -233,6 +263,25 @@ function openDetail(row) {
     <div class="desc">${escHtml(row.description || "")}</div>
     <div class="refs"><strong>References</strong><br>${refLinks}</div>
   `;
+
+  // Load review state + notes
+  const actionMsg = document.getElementById("detail-action-msg");
+  const notesEl   = document.getElementById("detail-notes");
+  const btnRev    = document.getElementById("btn-detail-reviewed");
+  notesEl.value   = "";
+  actionMsg.textContent = "";
+  btnRev.textContent    = "✓ Mark Reviewed";
+  btnRev.className      = "btn-sm";
+  try {
+    const rv = await fetch(`${API}/api/review/${encodeURIComponent(row.cve_id)}`);
+    const rj = await rv.json();
+    if (rj.reviewed) {
+      btnRev.textContent = "✓ Reviewed";
+      btnRev.className   = "btn-sm btn-reviewed";
+    }
+    notesEl.value = rj.notes || "";
+  } catch {}
+
   document.getElementById("detail-overlay").classList.remove("hidden");
 }
 
@@ -246,6 +295,69 @@ document.addEventListener("keydown", e => {
   if (e.key === "Escape") document.getElementById("detail-overlay").classList.add("hidden");
 });
 
+document.getElementById("btn-detail-watchlist").addEventListener("click", async () => {
+  if (!_detailRow) return;
+  const msg = document.getElementById("detail-action-msg");
+  try {
+    const r = await fetch(`${API}/api/watchlist`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ cve_id: _detailRow.cve_id, keyword: _detailRow.keyword || "" }),
+    });
+    const j = await r.json();
+    if (j.ok) { msg.textContent = "Added to watchlist!"; msg.className = "form-msg ok"; }
+    else       { msg.textContent = j.error || "Failed";   msg.className = "form-msg err"; }
+  } catch { msg.textContent = "Request failed"; msg.className = "form-msg err"; }
+  setTimeout(() => { msg.textContent = ""; }, 3000);
+});
+
+document.getElementById("btn-detail-reviewed").addEventListener("click", async () => {
+  if (!_detailRow) return;
+  const btn = document.getElementById("btn-detail-reviewed");
+  const msg = document.getElementById("detail-action-msg");
+  const alreadyReviewed = btn.classList.contains("btn-reviewed");
+  try {
+    const r = await fetch(`${API}/api/review`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ cve_id: _detailRow.cve_id, reviewed: !alreadyReviewed, notes: document.getElementById("detail-notes").value }),
+    });
+    const j = await r.json();
+    if (j.ok) {
+      if (!alreadyReviewed) { btn.textContent = "✓ Reviewed"; btn.className = "btn-sm btn-reviewed"; }
+      else                  { btn.textContent = "✓ Mark Reviewed"; btn.className = "btn-sm"; }
+      msg.textContent = alreadyReviewed ? "Marked unreviewed" : "Marked reviewed!";
+      msg.className   = "form-msg ok";
+    }
+  } catch {}
+  setTimeout(() => { msg.textContent = ""; }, 2500);
+});
+
+document.getElementById("btn-detail-save-notes").addEventListener("click", async () => {
+  if (!_detailRow) return;
+  const notes = document.getElementById("detail-notes").value;
+  const msg   = document.getElementById("detail-action-msg");
+  try {
+    const r = await fetch(`${API}/api/review`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ cve_id: _detailRow.cve_id, reviewed: document.getElementById("btn-detail-reviewed").classList.contains("btn-reviewed"), notes }),
+    });
+    const j = await r.json();
+    if (j.ok) { msg.textContent = "Notes saved!"; msg.className = "form-msg ok"; }
+    else       { msg.textContent = j.error || "Failed"; msg.className = "form-msg err"; }
+  } catch { msg.textContent = "Request failed"; msg.className = "form-msg err"; }
+  // Also sync to watchlist if present
+  try {
+    await fetch(`${API}/api/watchlist/${encodeURIComponent(_detailRow.cve_id)}/notes`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ notes }),
+    });
+  } catch {}
+  setTimeout(() => { msg.textContent = ""; }, 2500);
+});
+
 // ── Scan History ──────────────────────────────────────────────────────────────
 
 async function loadHistory() {
@@ -254,23 +366,125 @@ async function loadHistory() {
     const rows = await r.json();
     const tbody = document.getElementById("history-tbody");
     tbody.innerHTML = "";
-    rows.forEach(row => {
-      tbody.insertAdjacentHTML("beforeend", `
-        <tr>
-          <td>${escHtml((row.started_at || "").slice(0, 16))}</td>
-          <td>${escHtml((row.finished_at || "").slice(0, 16))}</td>
-          <td>${escHtml(truncate(row.keywords || "", 40))}</td>
-          <td class="num">${row.new_cves ?? 0}</td>
-          <td class="num">${row.updated_cves ?? 0}</td>
-          <td>${row.emailed ? "✓" : ""}</td>
-          <td><small style="color:${row.error ? "var(--critical)" : "inherit"}">${escHtml(truncate(row.error || "", 40))}</small></td>
-        </tr>
-      `);
+    rows.forEach((row, idx) => {
+      const hasDetail = row.keywords && row.keywords.trim();
+      const chevron   = hasDetail ? "▶" : "";
+      const tr = document.createElement("tr");
+      tr.className = hasDetail ? "clickable" : "";
+      tr.innerHTML = `
+        <td class="expand-chevron">${escHtml(chevron)}</td>
+        <td>${escHtml((row.started_at || "").slice(0, 16))}</td>
+        <td>${escHtml((row.finished_at || "").slice(0, 16))}</td>
+        <td>${escHtml(truncate(row.keywords || "", 40))}</td>
+        <td class="num">${row.new_cves ?? 0}</td>
+        <td class="num">${row.updated_cves ?? 0}</td>
+        <td>${row.emailed ? "✓" : ""}</td>
+        <td><small style="color:${row.error ? "var(--critical)" : "inherit"}">${escHtml(truncate(row.error || "", 40))}</small></td>
+      `;
+      tbody.appendChild(tr);
+
+      if (hasDetail) {
+        const detailTr = document.createElement("tr");
+        detailTr.className = "history-detail-row hidden";
+        const kwList = row.keywords.split(",").map(k => k.trim()).filter(Boolean);
+        detailTr.innerHTML = `
+          <td></td>
+          <td colspan="7">
+            <div class="history-detail">
+              <strong>Keywords scanned:</strong>
+              ${kwList.map(k => `<span class="search-chip" style="cursor:default">${escHtml(k)}</span>`).join("")}
+              <div style="margin-top:.5rem;color:var(--muted);font-size:12px">
+                Duration: ${_duration(row.started_at, row.finished_at)}
+                ${row.error ? `<span style="color:var(--critical);margin-left:1rem">Error: ${escHtml(row.error)}</span>` : ""}
+              </div>
+            </div>
+          </td>
+        `;
+        tbody.appendChild(detailTr);
+
+        tr.addEventListener("click", () => {
+          const open = !detailTr.classList.contains("hidden");
+          detailTr.classList.toggle("hidden", open);
+          tr.querySelector(".expand-chevron").textContent = open ? "▶" : "▼";
+        });
+      }
     });
   } catch (e) {
     console.error("loadHistory:", e);
   }
 }
+
+function _duration(start, end) {
+  if (!start || !end) return "—";
+  try {
+    const s = new Date(start), e = new Date(end);
+    const sec = Math.round((e - s) / 1000);
+    if (sec < 60) return `${sec}s`;
+    return `${Math.floor(sec/60)}m ${sec%60}s`;
+  } catch { return "—"; }
+}
+
+// ── Watchlist ─────────────────────────────────────────────────────────────────
+
+let _watchlistData = [];
+
+async function loadWatchlist() {
+  try {
+    const r = await fetch(`${API}/api/watchlist`);
+    _watchlistData = await r.json();
+    const tbody   = document.getElementById("watchlist-tbody");
+    const emptyEl = document.getElementById("watchlist-empty");
+    tbody.innerHTML = "";
+
+    if (!_watchlistData.length) {
+      emptyEl.style.display = "";
+      return;
+    }
+    emptyEl.style.display = "none";
+
+    _watchlistData.forEach((w, idx) => {
+      const tr = document.createElement("tr");
+      tr.innerHTML = `
+        <td><code>${escHtml(w.cve_id)}</code></td>
+        <td>${escHtml(w.keyword || "—")}</td>
+        <td>${sevBadge(w.severity || "UNKNOWN")}</td>
+        <td class="num">${scoreStr(w.cvss_score)}</td>
+        <td class="num">${epssStr(w.epss_score)}</td>
+        <td>${kevBadge(w.kev)}</td>
+        <td>${escHtml((w.added_at || "").slice(0, 10))}</td>
+        <td class="watchlist-notes-cell" data-idx="${idx}">${escHtml(truncate(w.notes || "", 50))}</td>
+        <td><button class="btn-sm btn-watchlist-remove" data-cve="${escHtml(w.cve_id)}">Remove</button></td>
+      `;
+      tbody.appendChild(tr);
+    });
+
+    tbody.querySelectorAll(".btn-watchlist-remove").forEach(btn => {
+      btn.addEventListener("click", async () => {
+        await fetch(`${API}/api/watchlist/${encodeURIComponent(btn.dataset.cve)}`, { method: "DELETE" });
+        loadWatchlist();
+      });
+    });
+  } catch (e) { console.error("loadWatchlist:", e); }
+}
+
+document.getElementById("btn-watchlist-add").addEventListener("click", async () => {
+  const cveId = document.getElementById("watchlist-add-id").value.trim().toUpperCase();
+  if (!cveId) return;
+  try {
+    const r = await fetch(`${API}/api/watchlist`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ cve_id: cveId }),
+    });
+    const j = await r.json();
+    if (j.ok) {
+      document.getElementById("watchlist-add-id").value = "";
+      loadWatchlist();
+    } else {
+      alert(j.error || "Failed to add CVE");
+    }
+  } catch (e) { console.error(e); }
+});
 
 // ── Profiles ──────────────────────────────────────────────────────────────────
 
@@ -396,6 +610,42 @@ async function loadEpssChart() {
 
 document.getElementById("trend-limit").addEventListener("change", loadTrend);
 
+// ── Severity doughnut chart ───────────────────────────────────────────────────
+
+let _severityChart = null;
+
+async function loadSeverityChart() {
+  try {
+    const r = await fetch(`${API}/api/dashboard`);
+    const d = await r.json();
+    const totals = d.totals || {};
+    const labels  = ["Critical", "High", "Medium", "Low", "None/Unknown"];
+    const data    = [
+      totals.CRITICAL || 0,
+      totals.HIGH     || 0,
+      totals.MEDIUM   || 0,
+      totals.LOW      || 0,
+      (totals.NONE || 0) + (totals.UNKNOWN || 0),
+    ];
+    const colors = ["#dc2626","#ea580c","#d97706","#65a30d","#374151"];
+
+    const ctx = document.getElementById("severity-chart").getContext("2d");
+    if (_severityChart) _severityChart.destroy();
+    _severityChart = new Chart(ctx, {
+      type: "doughnut",
+      data: { labels, datasets: [{ data, backgroundColor: colors, borderWidth: 0 }] },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        cutout: "65%",
+        plugins: {
+          legend: { position: "bottom", labels: { color: "#94a3b8", font: { size: 10 }, boxWidth: 10, padding: 8 } },
+        },
+      },
+    });
+  } catch (e) { console.error("loadSeverityChart:", e); }
+}
+
 // ── Top risk CVEs ─────────────────────────────────────────────────────────────
 
 async function loadTopCves() {
@@ -425,6 +675,31 @@ async function loadTopCves() {
 }
 
 document.getElementById("btn-refresh-top").addEventListener("click", loadTopCves);
+
+// ── Keyword performance ───────────────────────────────────────────────────────
+
+async function loadKwPerf() {
+  try {
+    const r = await fetch(`${API}/api/keywords/perf`);
+    const rows = await r.json();
+    const tbody = document.getElementById("kw-perf-tbody");
+    tbody.innerHTML = "";
+    rows.forEach(kw => {
+      tbody.insertAdjacentHTML("beforeend", `
+        <tr>
+          <td>${escHtml(kw.keyword)}</td>
+          <td class="num">${kw.total}</td>
+          <td class="num">${kw.avg_cvss != null ? kw.avg_cvss.toFixed(1) : "—"}</td>
+          <td class="num">${kw.avg_epss != null ? kw.avg_epss.toFixed(2) + "%" : "—"}</td>
+          <td class="num">${kw.kev_count || 0}</td>
+          <td>${escHtml(kw.last_scan || "—")}</td>
+        </tr>
+      `);
+    });
+  } catch (e) { console.error("loadKwPerf:", e); }
+}
+
+document.getElementById("btn-refresh-kw-perf").addEventListener("click", loadKwPerf);
 
 // ── Live scan log (SSE) ───────────────────────────────────────────────────────
 
@@ -462,6 +737,29 @@ document.getElementById("btn-clear-log").addEventListener("click", () => { _logE
 // Start SSE log automatically
 _startSseLog();
 
+// ── Auto-refresh ──────────────────────────────────────────────────────────────
+
+let _autoRefreshTimer = null;
+
+function _resetAutoRefresh() {
+  if (_autoRefreshTimer) clearInterval(_autoRefreshTimer);
+  _autoRefreshTimer = null;
+  const enabled  = document.getElementById("chk-auto-refresh").checked;
+  const interval = parseInt(document.getElementById("sel-refresh-interval").value, 10) * 1000;
+  if (enabled) {
+    _autoRefreshTimer = setInterval(() => {
+      loadDashboard();
+      loadTopCves();
+      loadTrend();
+      loadSeverityChart();
+      loadKwPerf();
+    }, interval);
+  }
+}
+
+document.getElementById("chk-auto-refresh").addEventListener("change", _resetAutoRefresh);
+document.getElementById("sel-refresh-interval").addEventListener("change", _resetAutoRefresh);
+
 // ── Trigger scan ─────────────────────────────────────────────────────────────
 
 const btnScan    = document.getElementById("btn-trigger-scan");
@@ -481,6 +779,13 @@ async function pollScanStatus() {
     }
   } catch { /* ignore */ }
 }
+
+document.getElementById("btn-export-all").addEventListener("click", () => {
+  const a = document.createElement("a");
+  a.href = `${API}/api/cves/export-all`;
+  a.download = "";
+  a.click();
+});
 
 btnScan.addEventListener("click", async () => {
   btnScan.disabled = true;
@@ -913,7 +1218,7 @@ async function doBrowseSearchPaged(page = 0) {
     const nextRows = await rNext.json();
     const hasMore = nextRows.length > 0;
 
-    renderBrowseResults();
+    await renderBrowseResults();
     renderPagination(page, hasMore);
   } catch (e) {
     console.error("doBrowseSearchPaged:", e);
@@ -951,4 +1256,6 @@ loadDashboard();
 loadTopCves();
 loadTrend();
 loadEpssChart();
+loadSeverityChart();
+loadKwPerf();
 renderSavedSearches();

@@ -13,6 +13,7 @@
     <div class="nav-links">
       <a href="#overview" class="nav-link active" data-section="overview">Overview</a>
       <a href="#browse" class="nav-link" data-section="browse">Browse CVEs</a>
+      <a href="#watchlist" class="nav-link" data-section="watchlist">Watchlist</a>
       <a href="#history" class="nav-link" data-section="history">Scan History</a>
       <a href="#profiles" class="nav-link" data-section="profiles">Profiles</a>
       <a href="#digest" class="nav-link" data-section="digest">Digest Queue</a>
@@ -32,6 +33,16 @@
       <div class="page-title-row">
         <h1 class="page-title">Security Overview</h1>
         <div class="page-actions">
+          <label class="auto-refresh-label">
+            <input type="checkbox" id="chk-auto-refresh" />
+            Auto-refresh
+            <select id="sel-refresh-interval" class="input-sm" style="width:auto;padding:.25rem .5rem">
+              <option value="60">1 min</option>
+              <option value="300" selected>5 min</option>
+              <option value="600">10 min</option>
+            </select>
+          </label>
+          <button class="btn-sm" id="btn-export-all" title="Export all CVEs across all keywords to CSV">⬇ Export All</button>
           <span id="scan-status-text" class="scan-status-text"></span>
           <button class="btn-primary" id="btn-trigger-scan">▶ Run Scan</button>
         </div>
@@ -65,7 +76,7 @@
         </div>
       </div>
 
-      <!-- Trend chart + Top CVEs -->
+      <!-- Trend chart + Severity doughnut + EPSS -->
       <div class="panel-row" style="margin-bottom:1.5rem">
         <div class="panel" style="flex:2">
           <div class="panel-header">
@@ -79,10 +90,14 @@
           <div class="chart-wrap"><canvas id="trend-chart"></canvas></div>
         </div>
         <div class="panel" style="flex:1">
+          <div class="panel-header"><h2>Severity Breakdown</h2></div>
+          <div class="chart-wrap chart-wrap-sm"><canvas id="severity-chart"></canvas></div>
+        </div>
+        <div class="panel" style="flex:1">
           <div class="panel-header">
             <h2>EPSS Distribution</h2>
           </div>
-          <div class="chart-wrap"><canvas id="epss-chart"></canvas></div>
+          <div class="chart-wrap chart-wrap-sm"><canvas id="epss-chart"></canvas></div>
         </div>
       </div>
 
@@ -142,6 +157,30 @@
         </div>
       </div>
 
+      <!-- Keyword performance -->
+      <div class="panel" style="margin-top:1.5rem">
+        <div class="panel-header">
+          <h2>Keyword Performance</h2>
+          <span class="panel-hint">Avg CVSS, EPSS, KEV count, last scan time per keyword</span>
+          <button class="btn-sm" id="btn-refresh-kw-perf">↻</button>
+        </div>
+        <div class="table-wrap">
+          <table id="kw-perf-table">
+            <thead>
+              <tr>
+                <th>Keyword</th>
+                <th class="num">Total CVEs</th>
+                <th class="num">Avg CVSS</th>
+                <th class="num">Avg EPSS</th>
+                <th class="num">KEV</th>
+                <th>Last Scan</th>
+              </tr>
+            </thead>
+            <tbody id="kw-perf-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+
       <!-- Live scan log -->
       <div class="panel" style="margin-top:1.5rem" id="scan-log-panel">
         <div class="panel-header">
@@ -173,6 +212,11 @@
         </select>
         <input id="br-date-from" class="input-sm" type="date" title="Published from" />
         <input id="br-date-to" class="input-sm" type="date" title="Published to" />
+        <select id="br-reviewed" class="input-sm">
+          <option value="">Any review status</option>
+          <option value="unreviewed">Unreviewed only</option>
+          <option value="reviewed">Reviewed only</option>
+        </select>
         <button class="btn-primary" id="btn-browse-search">Search</button>
         <button class="btn-sm" id="btn-browse-export">Export CSV</button>
       </div>
@@ -188,6 +232,7 @@
               <th>KEV</th>
               <th>Keyword</th>
               <th>Published</th>
+              <th>Reviewed</th>
               <th>Description</th>
             </tr>
           </thead>
@@ -204,8 +249,51 @@
         <div class="detail-panel">
           <button class="detail-close" id="btn-detail-close">✕</button>
           <div id="detail-content"></div>
+          <div class="detail-actions">
+            <button class="btn-sm" id="btn-detail-watchlist">☆ Add to Watchlist</button>
+            <button class="btn-sm" id="btn-detail-reviewed">✓ Mark Reviewed</button>
+            <span id="detail-action-msg" class="form-msg" style="margin-left:.5rem"></span>
+          </div>
+          <div class="form-group" style="margin-top:.75rem">
+            <label class="form-label">Notes</label>
+            <textarea class="textarea-sm" id="detail-notes" rows="2" placeholder="Internal notes about this CVE…"></textarea>
+            <button class="btn-sm" style="margin-top:.4rem" id="btn-detail-save-notes">Save notes</button>
+          </div>
         </div>
       </div>
+    </div>
+  </section>
+
+  <!-- WATCHLIST -->
+  <section id="section-watchlist" class="section">
+    <div class="container">
+      <div class="page-title-row">
+        <h1 class="page-title">Watchlist</h1>
+        <div class="page-actions">
+          <input class="input-sm" id="watchlist-add-id" placeholder="CVE-YYYY-NNNNN" style="width:180px" />
+          <button class="btn-primary" id="btn-watchlist-add">+ Add CVE</button>
+        </div>
+      </div>
+      <p class="section-hint">Pin specific CVE IDs for easy monitoring. Live severity and EPSS data is shown for pinned CVEs.</p>
+      <div class="table-wrap">
+        <table id="watchlist-table">
+          <thead>
+            <tr>
+              <th>CVE ID</th>
+              <th>Keyword</th>
+              <th>Severity</th>
+              <th class="num">CVSS</th>
+              <th class="num">EPSS</th>
+              <th>KEV</th>
+              <th>Added</th>
+              <th>Notes</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="watchlist-tbody"></tbody>
+        </table>
+      </div>
+      <div id="watchlist-empty" class="muted" style="padding:1rem 0;display:none">No CVEs on your watchlist yet. Search in Browse CVEs and use the detail panel to add one.</div>
     </div>
   </section>
 
@@ -217,6 +305,7 @@
         <table id="history-table">
           <thead>
             <tr>
+              <th></th>
               <th>Started</th>
               <th>Finished</th>
               <th>Keywords</th>

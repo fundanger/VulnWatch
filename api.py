@@ -464,8 +464,88 @@ def api_save_config():
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 
+# ── Watchlist ─────────────────────────────────────────────────────────────────
+
+@app.route("/api/watchlist")
+def api_watchlist_get():
+    return jsonify(database.watchlist_get())
+
+
+@app.route("/api/watchlist", methods=["POST"])
+@_require_auth
+def api_watchlist_add():
+    data = request.get_json(force=True) or {}
+    cve_id = data.get("cve_id", "").strip()
+    if not cve_id:
+        return jsonify({"error": "cve_id required"}), 400
+    database.watchlist_add(cve_id, data.get("keyword", ""), data.get("notes", ""))
+    return jsonify({"ok": True})
+
+
+@app.route("/api/watchlist/<path:cve_id>", methods=["DELETE"])
+@_require_auth
+def api_watchlist_remove(cve_id: str):
+    database.watchlist_remove(cve_id)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/watchlist/<path:cve_id>/notes", methods=["POST"])
+@_require_auth
+def api_watchlist_notes(cve_id: str):
+    data = request.get_json(force=True) or {}
+    database.watchlist_update_notes(cve_id, data.get("notes", ""))
+    return jsonify({"ok": True})
+
+
+# ── CVE Reviews ───────────────────────────────────────────────────────────────
+
+@app.route("/api/review", methods=["POST"])
+@_require_auth
+def api_review_set():
+    data = request.get_json(force=True) or {}
+    cve_id = data.get("cve_id", "").strip()
+    if not cve_id:
+        return jsonify({"error": "cve_id required"}), 400
+    database.review_set(cve_id, bool(data.get("reviewed", False)), data.get("notes", ""))
+    return jsonify({"ok": True})
+
+
+@app.route("/api/review/<path:cve_id>")
+def api_review_get(cve_id: str):
+    r = database.review_get(cve_id)
+    return jsonify(r or {})
+
+
+@app.route("/api/reviews")
+def api_reviews_all():
+    return jsonify(database.reviews_get_all())
+
+
+# ── Keyword performance ───────────────────────────────────────────────────────
+
+@app.route("/api/keywords/perf")
+def api_keyword_perf():
+    return jsonify(database.get_keyword_perf())
+
+
+# ── Export all CVEs ───────────────────────────────────────────────────────────
+
+@app.route("/api/cves/export-all")
+def api_export_all():
+    csv_str = database.export_all_cves_csv()
+    return app.response_class(
+        csv_str,
+        mimetype="text/csv",
+        headers={"Content-Disposition": f"attachment; filename=cve_export_all_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.csv"},
+    )
+
+
+# ── Entry point ───────────────────────────────────────────────────────────────
+
 def create_app() -> Flask:
     database.bootstrap()
+    database.bootstrap_watchlist()
+    database.bootstrap_reviews()
     return app
 
 
@@ -477,4 +557,6 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     database.bootstrap()
+    database.bootstrap_watchlist()
+    database.bootstrap_reviews()
     app.run(host=args.host, port=args.port, debug=args.debug)

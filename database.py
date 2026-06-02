@@ -647,3 +647,185 @@ def digest_send_now(profile_name: str) -> int:
         return 0
     digest_mark_sent(profile_name)
     return len(pending)
+
+
+# ── CVE Watchlist ─────────────────────────────────────────────────────────────
+
+def bootstrap_watchlist() -> None:
+    """Create cve_watchlist table if it doesn't exist."""
+    engine = _get_engine()
+    with engine.connect() as conn:
+        trans = conn.begin()
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS cve_watchlist (
+                cve_id    TEXT NOT NULL PRIMARY KEY,
+                keyword   TEXT,
+                added_at  TEXT NOT NULL,
+                notes     TEXT DEFAULT ''
+            )
+        """))
+        trans.commit()
+
+
+def watchlist_add(cve_id: str, keyword: str = "", notes: str = "") -> None:
+    now = datetime.now().isoformat(timespec="seconds")
+    with _connect() as conn:
+        if _IS_SQLITE:
+            conn.execute(text(
+                "INSERT OR IGNORE INTO cve_watchlist (cve_id, keyword, added_at, notes) "
+                "VALUES (:cid, :kw, :ts, :notes)"
+            ), {"cid": cve_id, "kw": keyword, "ts": now, "notes": notes})
+        else:
+            conn.execute(text(
+                "INSERT INTO cve_watchlist (cve_id, keyword, added_at, notes) "
+                "VALUES (:cid, :kw, :ts, :notes) ON CONFLICT (cve_id) DO NOTHING"
+            ), {"cid": cve_id, "kw": keyword, "ts": now, "notes": notes})
+
+
+def watchlist_remove(cve_id: str) -> None:
+    with _connect() as conn:
+        conn.execute(text("DELETE FROM cve_watchlist WHERE cve_id=:cid"), {"cid": cve_id})
+
+
+def watchlist_update_notes(cve_id: str, notes: str) -> None:
+    with _connect() as conn:
+        conn.execute(text("UPDATE cve_watchlist SET notes=:notes WHERE cve_id=:cid"),
+                     {"notes": notes, "cid": cve_id})
+
+
+def watchlist_get() -> list[dict]:
+    with _connect() as conn:
+        rows = conn.execute(text(
+            "SELECT w.cve_id, w.keyword, w.added_at, w.notes FROM cve_watchlist w ORDER BY w.added_at DESC"
+        )).fetchall()
+        result = []
+        tables = list_cve_tables()
+        for row in rows:
+            d = _row_to_dict(row)
+            # Try to fetch live CVE data from the matching keyword table
+            kw = d.get("keyword", "")
+            if kw and kw in tables:
+                live = conn.execute(text(
+                    f'SELECT severity, cvss_score, epss_score, kev, description FROM "{kw}" WHERE cve_id=:cid'
+                ), {"cid": d["cve_id"]}).fetchone()
+                if live:
+                    d.update(_row_to_dict(live))
+            result.append(d)
+        return result
+
+
+# ── CVE review / notes ────────────────────────────────────────────────────────
+
+def bootstrap_reviews() -> None:
+    """Create cve_reviews table if it doesn't exist."""
+    engine = _get_engine()
+    with engine.connect() as conn:
+        trans = conn.begin()
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS cve_reviews (
+                cve_id      TEXT NOT NULL PRIMARY KEY,
+                reviewed    INTEGER DEFAULT 0,
+                notes       TEXT DEFAULT '',
+                reviewed_at TEXT
+            )
+        """))
+        trans.commit()
+
+
+def review_set(cve_id: str, reviewed: bool, notes: str = "") -> None:
+    now = datetime.now().isoformat(timespec="seconds") if reviewed else None
+    with _connect() as conn:
+        if _IS_SQLITE:
+            conn.execute(text(
+                "INSERT INTO cve_reviews (cve_id, reviewed, notes, reviewed_at) "
+                "VALUES (:cid, :rev, :notes, :ts) "
+                "ON CONFLICT(cve_id) DO UPDATE SET reviewed=excluded.reviewed, "
+                "notes=excluded.notes, reviewed_at=excluded.reviewed_at"
+            ), {"cid": cve_id, "rev": int(reviewed), "notes": notes, "ts": now})
+        else:
+            conn.execute(text(
+                "INSERT INTO cve_reviews (cve_id, reviewed, notes, reviewed_at) "
+                "VALUES (:cid, :rev, :notes, :ts) "
+                "ON CONFLICT(cve_id) DO UPDATE SET reviewed=EXCLUDED.reviewed, "
+                "notes=EXCLUDED.notes, reviewed_at=EXCLUDED.reviewed_at"
+            ), {"cid": cve_id, "rev": int(reviewed), "notes": notes, "ts": now})
+
+
+def review_get(cve_id: str) -> dict | None:
+    with _connect() as conn:
+        row = conn.execute(text(
+            "SELECT * FROM cve_reviews WHERE cve_id=:cid"
+        ), {"cid": cve_id}).fetchone()
+        return _row_to_dict(row) if row else None
+
+
+def reviews_get_all() -> list[dict]:
+    with _connect() as conn:
+        rows = conn.execute(text(
+            "SELECT * FROM cve_reviews ORDER BY reviewed_at DESC"
+        )).fetchall()
+        return [_row_to_dict(r) for r in rows]
+
+
+# ── Keyword performance stats ─────────────────────────────────────────────────
+
+def get_keyword_perf() -> list[dict]:
+    """Per-keyword: last scan time, total CVEs, avg CVSS, avg EPSS, KEV count."""
+    tables = list_cve_tables()
+    result = []
+    with _connect() as conn:
+        for tbl in tables:
+            try:
+                row = conn.execute(text(
+                    f'SELECT COUNT(*) as total, '
+                    f'AVG(cvss_score) as avg_cvss, '
+                    f'AVG(epss_score) as avg_epss, '
+                    f'SUM(kev) as kev_count '
+                    f'FROM "{tbl}"'
+                )).fetchone()
+                d = _row_to_dict(row)
+
+                # Last scan that touched this keyword
+                last_row = conn.execute(text(
+                    "SELECT MAX(started_at) as last_scan FROM scan_history "
+                    "WHERE keywords LIKE :kw"
+                ), {"kw": f"%{tbl}%"}).fetchone()
+
+                result.append({
+                    "keyword":   tbl,
+                    "total":     d["total"] or 0,
+                    "avg_cvss":  round(d["avg_cvss"], 2) if d["avg_cvss"] else None,
+                    "avg_epss":  round(d["avg_epss"] * 100, 2) if d["avg_epss"] else None,
+                    "kev_count": int(d["kev_count"] or 0),
+                    "last_scan": (last_row[0] or "")[:16] if last_row else "",
+                })
+            except Exception:
+                pass
+    return result
+
+
+# ── All-tables CSV export ─────────────────────────────────────────────────────
+
+def export_all_cves_csv() -> str:
+    """Return a CSV string of every CVE across all keyword tables."""
+    import io
+    tables = list_cve_tables()
+    buf = io.StringIO()
+    writer = None
+    rank_expr = _severity_rank_expr()
+    with _connect() as conn:
+        for tbl in tables:
+            try:
+                rows = conn.execute(text(
+                    f'SELECT *, "{tbl}" as keyword_table FROM "{tbl}" '
+                    f'ORDER BY {rank_expr}, publish_date DESC'
+                )).fetchall()
+                for row in rows:
+                    d = _row_to_dict(row)
+                    if writer is None:
+                        writer = csv.DictWriter(buf, fieldnames=list(d.keys()))
+                        writer.writeheader()
+                    writer.writerow(d)
+            except Exception:
+                pass
+    return buf.getvalue()
