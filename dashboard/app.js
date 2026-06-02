@@ -14,6 +14,7 @@ function showSection(name) {
 }
 
 navLinks.forEach(l => l.addEventListener("click", e => {
+  if (!l.dataset.section) return; // external link (Docs)
   e.preventDefault();
   const sec = l.dataset.section;
   showSection(sec);
@@ -21,6 +22,7 @@ navLinks.forEach(l => l.addEventListener("click", e => {
   if (sec === "history")   loadHistory();
   if (sec === "profiles")  loadProfiles();
   if (sec === "browse")    loadBrowseTables();
+  if (sec === "settings")  loadSettings();
 }));
 
 // ── Health check ─────────────────────────────────────────────────────────────
@@ -305,6 +307,270 @@ function escHtml(str) {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
+}
+
+// ── Trigger scan ─────────────────────────────────────────────────────────────
+
+const btnScan    = document.getElementById("btn-trigger-scan");
+const scanStatus = document.getElementById("scan-status-text");
+
+async function pollScanStatus() {
+  try {
+    const r = await fetch(`${API}/api/scan/status`);
+    const j = await r.json();
+    if (j.running) {
+      scanStatus.textContent = "Scan running…";
+      scanStatus.className = "scan-status-text running";
+      btnScan.disabled = true;
+    } else {
+      scanStatus.textContent = "";
+      btnScan.disabled = false;
+    }
+  } catch { /* ignore */ }
+}
+
+btnScan.addEventListener("click", async () => {
+  btnScan.disabled = true;
+  scanStatus.textContent = "Queuing scan…";
+  scanStatus.className = "scan-status-text running";
+  try {
+    const r = await fetch(`${API}/api/scan`, { method: "POST" });
+    const j = await r.json();
+    if (r.status === 409) {
+      scanStatus.textContent = "Already running";
+    } else if (j.ok) {
+      scanStatus.textContent = "Scan queued";
+      setTimeout(pollScanStatus, 1500);
+    } else {
+      scanStatus.textContent = j.message || "Error";
+      btnScan.disabled = false;
+    }
+  } catch (e) {
+    scanStatus.textContent = "Request failed";
+    btnScan.disabled = false;
+  }
+});
+
+setInterval(pollScanStatus, 5000);
+
+// ── Settings ──────────────────────────────────────────────────────────────────
+
+const FIELD_META = {
+  "DEFAULT__apiKey":         { label: "NVD API Key",           placeholder: "optional — avoids rate limits" },
+  "DEFAULT__checkFrequency": { label: "Check interval (sec)",  placeholder: "3600" },
+  "DEFAULT__minSeverity":    { label: "Global min severity",   placeholder: "NONE / LOW / MEDIUM / HIGH / CRITICAL" },
+  "DEFAULT__webhookUrl":     { label: "Webhook URL",           placeholder: "https://..." },
+  "DEFAULT__slackWebhook":   { label: "Slack webhook URL",     placeholder: "https://hooks.slack.com/..." },
+  "EMAIL__senderEmail":      { label: "Sender Gmail",          placeholder: "you@gmail.com" },
+  "EMAIL__senderPassword":   { label: "Gmail App Password",    placeholder: "xxxx xxxx xxxx xxxx", password: true },
+  "EMAIL__recipientEmail":   { label: "Recipient email(s)",    placeholder: "a@x.com, b@x.com" },
+  "EMAIL__subjectLine":      { label: "Email subject",         placeholder: "CVE Alert" },
+  "JIRA__url":               { label: "Jira base URL",         placeholder: "https://myorg.atlassian.net" },
+  "JIRA__user":              { label: "Jira account email",    placeholder: "me@myorg.com" },
+  "JIRA__token":             { label: "Jira API token",        placeholder: "", password: true },
+  "JIRA__project_key":       { label: "Jira project key",      placeholder: "SEC" },
+  "JIRA__issue_type":        { label: "Jira issue type",       placeholder: "Bug" },
+  "SERVICENOW__instance":    { label: "ServiceNow instance",   placeholder: "myorg.service-now.com" },
+  "SERVICENOW__user":        { label: "ServiceNow username",   placeholder: "" },
+  "SERVICENOW__password":    { label: "ServiceNow password",   placeholder: "", password: true },
+  "SERVICENOW__category":    { label: "Incident category",     placeholder: "Security" },
+};
+
+let _settingsData = {};
+
+function buildSettingsField(id, field) {
+  const meta = FIELD_META[id] || { label: id, placeholder: "" };
+  const container = document.getElementById(`fg-${id}`);
+  if (!container) return;
+
+  const locked = field.locked;
+  const labelEl = document.createElement("label");
+  labelEl.className = "form-label";
+  labelEl.textContent = meta.label;
+  if (locked) {
+    const badge = document.createElement("span");
+    badge.className = "locked-badge";
+    badge.textContent = "ENV";
+    labelEl.appendChild(document.createTextNode(" "));
+    labelEl.appendChild(badge);
+  }
+
+  const input = document.createElement("input");
+  input.className = "input-sm";
+  input.id = `cfg-${id}`;
+  input.type = (meta.password && !locked) ? "password" : "text";
+  input.placeholder = meta.placeholder;
+  input.value = field.value || "";
+  input.disabled = locked;
+  if (locked) input.title = "Set via environment variable — edit your .env file to change this.";
+
+  container.appendChild(labelEl);
+  container.appendChild(input);
+}
+
+async function loadSettings() {
+  try {
+    const r = await fetch(`${API}/api/config`);
+    _settingsData = await r.json();
+    for (const [id, field] of Object.entries(_settingsData)) {
+      if (id === "DEFAULT__keywords") {
+        const ta = document.getElementById("cfg-DEFAULT__keywords");
+        if (ta) ta.value = field.value || "";
+        continue;
+      }
+      buildSettingsField(id, field);
+    }
+  } catch (e) {
+    console.error("loadSettings:", e);
+  }
+}
+
+document.getElementById("settings-form").addEventListener("submit", async e => {
+  e.preventDefault();
+  const msg = document.getElementById("settings-msg");
+  msg.textContent = "Saving…";
+  msg.className = "form-msg";
+
+  const payload = {};
+  for (const id of Object.keys(_settingsData)) {
+    const el = document.getElementById(`cfg-${id}`);
+    if (!el || el.disabled) continue;
+    payload[id] = el.value;
+  }
+
+  try {
+    const r = await fetch(`${API}/api/config`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const j = await r.json();
+    if (j.ok) {
+      msg.textContent = "Saved!";
+      msg.className = "form-msg ok";
+    } else {
+      msg.textContent = j.error || "Save failed";
+      msg.className = "form-msg err";
+    }
+  } catch (err) {
+    msg.textContent = "Request failed";
+    msg.className = "form-msg err";
+  }
+  setTimeout(() => { msg.textContent = ""; }, 3000);
+});
+
+// ── Profiles (full CRUD) ──────────────────────────────────────────────────────
+
+let _editingProfile = null; // null = new, string = existing name
+
+function _openProfileEditor(profile = null) {
+  _editingProfile = profile ? profile.name : null;
+  document.getElementById("profile-editor-title").textContent = profile ? `Edit — ${escHtml(profile.name)}` : "New Profile";
+  document.getElementById("pf-name").value       = profile?.name       || "";
+  document.getElementById("pf-name").disabled    = !!profile; // name is the PK — can't rename
+  document.getElementById("pf-keywords").value   = profile?.keywords   || "";
+  document.getElementById("pf-severity").value   = profile?.min_severity || "MEDIUM";
+  document.getElementById("pf-recipients").value = profile?.recipients  || "";
+  document.getElementById("pf-webhook").value    = profile?.webhook_url || "";
+  document.getElementById("pf-slack").value      = profile?.slack_webhook || "";
+  const digest = profile?.digest_mode
+    ? (profile.digest_schedule || "daily")
+    : "off";
+  document.getElementById("pf-digest").value = digest;
+  document.getElementById("btn-profile-delete").style.display = profile ? "" : "none";
+  document.getElementById("profile-msg").textContent = "";
+  document.getElementById("profile-editor").classList.add("visible");
+}
+
+function _closeProfileEditor() {
+  _editingProfile = null;
+  document.getElementById("profile-editor").classList.remove("visible");
+}
+
+document.getElementById("btn-profile-new").addEventListener("click", () => _openProfileEditor());
+document.getElementById("btn-profile-cancel").addEventListener("click", _closeProfileEditor);
+
+document.getElementById("btn-profile-save").addEventListener("click", async () => {
+  const msg = document.getElementById("profile-msg");
+  const name = document.getElementById("pf-name").value.trim();
+  if (!name) { msg.textContent = "Name is required."; msg.className = "form-msg err"; return; }
+
+  const digestVal = document.getElementById("pf-digest").value;
+  const body = {
+    name,
+    keywords:        document.getElementById("pf-keywords").value.trim(),
+    min_severity:    document.getElementById("pf-severity").value,
+    recipients:      document.getElementById("pf-recipients").value.trim(),
+    webhook_url:     document.getElementById("pf-webhook").value.trim(),
+    slack_webhook:   document.getElementById("pf-slack").value.trim(),
+    digest_mode:     digestVal !== "off" ? 1 : 0,
+    digest_schedule: digestVal !== "off" ? digestVal : "daily",
+  };
+
+  try {
+    const r = await fetch(`${API}/api/profiles`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const j = await r.json();
+    if (j.ok) {
+      msg.textContent = "Saved!"; msg.className = "form-msg ok";
+      loadProfiles();
+      setTimeout(_closeProfileEditor, 800);
+    } else {
+      msg.textContent = j.error || "Save failed"; msg.className = "form-msg err";
+    }
+  } catch (err) {
+    msg.textContent = "Request failed"; msg.className = "form-msg err";
+  }
+});
+
+document.getElementById("btn-profile-delete").addEventListener("click", async () => {
+  if (!_editingProfile) return;
+  if (!confirm(`Delete profile "${_editingProfile}"?`)) return;
+  const msg = document.getElementById("profile-msg");
+  try {
+    const r = await fetch(`${API}/api/profiles/${encodeURIComponent(_editingProfile)}`, { method: "DELETE" });
+    const j = await r.json();
+    if (j.ok) {
+      loadProfiles();
+      _closeProfileEditor();
+    } else {
+      msg.textContent = j.error || "Delete failed"; msg.className = "form-msg err";
+    }
+  } catch (err) {
+    msg.textContent = "Request failed"; msg.className = "form-msg err";
+  }
+});
+
+async function loadProfiles() {
+  try {
+    const r = await fetch(`${API}/api/profiles`);
+    const rows = await r.json();
+    const tbody = document.getElementById("profiles-tbody");
+    tbody.innerHTML = "";
+    rows.forEach(p => {
+      const digest = p.digest_mode
+        ? (p.digest_schedule || "daily").charAt(0).toUpperCase() + (p.digest_schedule || "daily").slice(1)
+        : "Immediate";
+      const tr = document.createElement("tr");
+      tr.className = "clickable";
+      tr.innerHTML = `
+        <td>${escHtml(p.name)}</td>
+        <td>${escHtml(p.min_severity || "NONE")}</td>
+        <td><small>${escHtml(truncate(p.recipients || "", 40))}</small></td>
+        <td>${escHtml(digest)}</td>
+        <td>${p.webhook_url || p.slack_webhook ? "Yes" : "—"}</td>
+        <td><button class="btn-sm">Edit</button></td>
+      `;
+      tr.querySelector("button").addEventListener("click", e => { e.stopPropagation(); _openProfileEditor(p); });
+      tr.addEventListener("click", () => _openProfileEditor(p));
+      tbody.appendChild(tr);
+    });
+  } catch (e) {
+    console.error("loadProfiles:", e);
+  }
 }
 
 // ── Initial load ──────────────────────────────────────────────────────────────

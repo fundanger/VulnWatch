@@ -36,16 +36,25 @@ CONFIG_PATH = Path(__file__).parent / "config.ini"
 # ── Config helpers ─────────────────────────────────────────────────────────────
 
 FIELDS = [
-    # (section, key, label, placeholder, password?)
-    ("DEFAULT", "apiKey",         "NVD API Key",            "optional",                     False),
-    ("DEFAULT", "checkFrequency", "Check interval (sec)",   "3600",                          False),
-    ("DEFAULT", "minSeverity",    "Global min severity",    "NONE / LOW / MEDIUM / HIGH / CRITICAL", False),
-    ("DEFAULT", "webhookUrl",     "Webhook URL",            "https://...",                   False),
-    ("DEFAULT", "slackWebhook",   "Slack webhook URL",      "https://hooks.slack.com/...",   False),
-    ("EMAIL",   "senderEmail",    "Sender Gmail",           "you@gmail.com",                 False),
-    ("EMAIL",   "senderPassword", "Gmail App Password",     "xxxx xxxx xxxx xxxx",           True),
-    ("EMAIL",   "recipientEmail", "Recipient email(s)",     "a@x.com, b@x.com",              False),
-    ("EMAIL",   "subjectLine",    "Email subject",          "CVE Alert",                     False),
+    # (section, key, label, placeholder, password?, group_header)
+    ("DEFAULT", "apiKey",          "NVD API Key",           "optional — avoids rate limits",        False, "NVD / Scan"),
+    ("DEFAULT", "checkFrequency",  "Check interval (sec)",  "3600",                                 False, None),
+    ("DEFAULT", "minSeverity",     "Global min severity",   "NONE / LOW / MEDIUM / HIGH / CRITICAL",False, None),
+    ("EMAIL",   "senderEmail",     "Sender Gmail",          "you@gmail.com",                        False, "Email"),
+    ("EMAIL",   "senderPassword",  "Gmail App Password",    "xxxx xxxx xxxx xxxx",                  True,  None),
+    ("EMAIL",   "recipientEmail",  "Recipient email(s)",    "a@x.com, b@x.com",                     False, None),
+    ("EMAIL",   "subjectLine",     "Email subject",         "CVE Alert",                            False, None),
+    ("DEFAULT", "webhookUrl",      "Webhook URL",           "https://...",                          False, "Webhook / Slack"),
+    ("DEFAULT", "slackWebhook",    "Slack webhook URL",     "https://hooks.slack.com/...",          False, None),
+    ("JIRA",    "url",             "Jira base URL",         "https://myorg.atlassian.net",          False, "Jira (optional)"),
+    ("JIRA",    "user",            "Jira account email",    "me@myorg.com",                         False, None),
+    ("JIRA",    "token",           "Jira API token",        "",                                     True,  None),
+    ("JIRA",    "project_key",     "Jira project key",      "SEC",                                  False, None),
+    ("JIRA",    "issue_type",      "Jira issue type",       "Bug",                                  False, None),
+    ("SERVICENOW", "instance",     "ServiceNow instance",   "myorg.service-now.com",                False, "ServiceNow (optional)"),
+    ("SERVICENOW", "user",         "ServiceNow username",   "",                                     False, None),
+    ("SERVICENOW", "password",     "ServiceNow password",   "",                                     True,  None),
+    ("SERVICENOW", "category",     "Incident category",     "Security",                             False, None),
 ]
 
 REQUIRED = [

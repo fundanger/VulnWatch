@@ -14,6 +14,7 @@ Environment variables:
 from __future__ import annotations
 
 import argparse
+import configparser
 import json
 import os
 from datetime import datetime
@@ -214,6 +215,101 @@ def api_trigger_scan():
 def api_scan_status():
     jobs = _scheduler.get_jobs()
     return jsonify({"running": bool(jobs), "queued": len(jobs)})
+
+
+# ── Config API ────────────────────────────────────────────────────────────────
+
+_CONFIG_PATH = _HERE / "config.ini"
+
+# Fields exposed to the dashboard: (section, key, sensitive?)
+_CONFIG_FIELDS = [
+    ("DEFAULT",     "apiKey",         False),
+    ("DEFAULT",     "checkFrequency", False),
+    ("DEFAULT",     "minSeverity",    False),
+    ("DEFAULT",     "keywords",       False),
+    ("DEFAULT",     "webhookUrl",     False),
+    ("DEFAULT",     "slackWebhook",   False),
+    ("EMAIL",       "senderEmail",    False),
+    ("EMAIL",       "senderPassword", True),
+    ("EMAIL",       "recipientEmail", False),
+    ("EMAIL",       "subjectLine",    False),
+    ("JIRA",        "url",            False),
+    ("JIRA",        "user",           False),
+    ("JIRA",        "token",          True),
+    ("JIRA",        "project_key",    False),
+    ("JIRA",        "issue_type",     False),
+    ("SERVICENOW",  "instance",       False),
+    ("SERVICENOW",  "user",           False),
+    ("SERVICENOW",  "password",       True),
+    ("SERVICENOW",  "category",       False),
+]
+
+# Env vars that override config.ini (values are read-only in the UI)
+_ENV_OVERRIDES = {
+    ("DEFAULT",    "apiKey"):         "NVD_API_KEY",
+    ("DEFAULT",    "webhookUrl"):     "CVE_WEBHOOK_URL",
+    ("DEFAULT",    "slackWebhook"):   "CVE_SLACK_WEBHOOK",
+    ("EMAIL",      "senderEmail"):    "CVE_SENDER_EMAIL",
+    ("EMAIL",      "senderPassword"): "CVE_SENDER_PASSWORD",
+    ("EMAIL",      "recipientEmail"): "CVE_RECIPIENT_EMAIL",
+    ("JIRA",       "url"):            "JIRA_URL",
+    ("JIRA",       "user"):           "JIRA_USER",
+    ("JIRA",       "token"):          "JIRA_TOKEN",
+    ("JIRA",       "project_key"):    "JIRA_PROJECT_KEY",
+    ("JIRA",       "issue_type"):     "JIRA_ISSUE_TYPE",
+    ("SERVICENOW", "instance"):       "SNOW_INSTANCE",
+    ("SERVICENOW", "user"):           "SNOW_USER",
+    ("SERVICENOW", "password"):       "SNOW_PASSWORD",
+    ("SERVICENOW", "category"):       "SNOW_CATEGORY",
+}
+
+
+def _read_config() -> configparser.ConfigParser:
+    cfg = configparser.ConfigParser()
+    cfg.read(_CONFIG_PATH)
+    return cfg
+
+
+@app.route("/api/config")
+def api_get_config():
+    cfg = _read_config()
+    result = {}
+    for section, key, sensitive in _CONFIG_FIELDS:
+        env_key = _ENV_OVERRIDES.get((section, key))
+        env_val = os.environ.get(env_key, "").strip() if env_key else ""
+        if env_val:
+            value = env_val if not sensitive else "••••••••"
+            locked = True
+        else:
+            value = cfg.get(section, key, fallback="")
+            if sensitive and value:
+                value = "••••••••"
+            locked = False
+        result[f"{section}__{key}"] = {"value": value, "locked": locked, "sensitive": sensitive}
+    return jsonify(result)
+
+
+@app.route("/api/config", methods=["POST"])
+@_require_auth
+def api_save_config():
+    data = request.get_json(force=True) or {}
+    cfg = _read_config()
+    for section, key, _sensitive in _CONFIG_FIELDS:
+        field_id = f"{section}__{key}"
+        if field_id not in data:
+            continue
+        env_key = _ENV_OVERRIDES.get((section, key))
+        if env_key and os.environ.get(env_key, "").strip():
+            continue  # env var takes precedence — don't overwrite ini
+        value = str(data[field_id])
+        if value == "••••••••":
+            continue  # placeholder — user didn't change the password field
+        if section != "DEFAULT" and not cfg.has_section(section):
+            cfg.add_section(section)
+        cfg[section][key] = value
+    with open(_CONFIG_PATH, "w") as fh:
+        cfg.write(fh)
+    return jsonify({"ok": True})
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────

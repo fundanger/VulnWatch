@@ -14,6 +14,7 @@
       <a href="#browse" class="nav-link" data-section="browse">Browse CVEs</a>
       <a href="#history" class="nav-link" data-section="history">Scan History</a>
       <a href="#profiles" class="nav-link" data-section="profiles">Profiles</a>
+      <a href="#settings" class="nav-link" data-section="settings">Settings</a>
       <a href="/docs" class="nav-link" target="_self">Docs</a>
     </div>
     <div class="nav-status">
@@ -25,7 +26,13 @@
   <!-- OVERVIEW -->
   <section id="section-overview" class="section active">
     <div class="container">
-      <h1 class="page-title">Security Overview</h1>
+      <div class="page-title-row">
+        <h1 class="page-title">Security Overview</h1>
+        <div class="page-actions">
+          <span id="scan-status-text" class="scan-status-text"></span>
+          <button class="btn-primary" id="btn-trigger-scan">▶ Run Scan</button>
+        </div>
+      </div>
 
       <div class="stat-grid">
         <div class="stat-card">
@@ -166,21 +173,168 @@
   <section id="section-profiles" class="section">
     <div class="container">
       <h1 class="page-title">Notification Profiles</h1>
-      <div class="table-wrap" style="margin-bottom:2rem">
-        <table id="profiles-table">
-          <thead>
-            <tr>
-              <th>Name</th>
-              <th>Min Severity</th>
-              <th>Recipients</th>
-              <th>Digest</th>
-              <th>Webhook</th>
-            </tr>
-          </thead>
-          <tbody id="profiles-tbody"></tbody>
-        </table>
+      <p class="section-hint">Each profile runs its own keyword scan with independent recipients, severity threshold, and notification channels.</p>
+
+      <div class="split-layout">
+        <!-- Profile list -->
+        <div class="split-main">
+          <div class="panel">
+            <div class="panel-header">
+              <h2>Profiles</h2>
+              <button class="btn-sm" id="btn-profile-new">+ New profile</button>
+            </div>
+            <div class="table-wrap">
+              <table id="profiles-table">
+                <thead>
+                  <tr>
+                    <th>Name</th>
+                    <th>Min Severity</th>
+                    <th>Recipients</th>
+                    <th>Digest</th>
+                    <th>Webhook</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody id="profiles-tbody"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <!-- Profile editor -->
+        <div class="split-side" id="profile-editor">
+          <div class="panel">
+            <div class="panel-header">
+              <h2 id="profile-editor-title">New Profile</h2>
+            </div>
+            <div class="form-body">
+              <div class="form-group">
+                <label class="form-label">Profile name</label>
+                <input class="input-sm" id="pf-name" placeholder="e.g. Security Team" />
+              </div>
+              <div class="form-group">
+                <label class="form-label">Keywords <span class="form-hint">(one per line; append ::HIGH to override severity)</span></label>
+                <textarea class="input-sm textarea-sm" id="pf-keywords" rows="4" placeholder="Apache Knox&#10;log4j::CRITICAL&#10;OpenSSL"></textarea>
+              </div>
+              <div class="form-group">
+                <label class="form-label">Min severity</label>
+                <select class="input-sm" id="pf-severity">
+                  <option value="NONE">NONE (all)</option>
+                  <option value="LOW">LOW+</option>
+                  <option value="MEDIUM" selected>MEDIUM+</option>
+                  <option value="HIGH">HIGH+</option>
+                  <option value="CRITICAL">CRITICAL only</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label class="form-label">Recipients <span class="form-hint">(comma-separated)</span></label>
+                <input class="input-sm" id="pf-recipients" placeholder="a@example.com, b@example.com" />
+              </div>
+              <div class="form-group">
+                <label class="form-label">Webhook URL <span class="form-hint">(optional)</span></label>
+                <input class="input-sm" id="pf-webhook" placeholder="https://..." />
+              </div>
+              <div class="form-group">
+                <label class="form-label">Slack webhook <span class="form-hint">(optional)</span></label>
+                <input class="input-sm" id="pf-slack" placeholder="https://hooks.slack.com/..." />
+              </div>
+              <div class="form-group">
+                <label class="form-label">Digest mode</label>
+                <select class="input-sm" id="pf-digest">
+                  <option value="off">Off — immediate alerts</option>
+                  <option value="hourly">Hourly digest</option>
+                  <option value="daily">Daily digest</option>
+                  <option value="weekly">Weekly digest</option>
+                </select>
+              </div>
+              <div class="form-actions">
+                <button class="btn-primary" id="btn-profile-save">Save profile</button>
+                <button class="btn-sm" id="btn-profile-cancel">Cancel</button>
+                <button class="btn-danger" id="btn-profile-delete" style="display:none">Delete</button>
+              </div>
+              <div id="profile-msg" class="form-msg"></div>
+            </div>
+          </div>
+        </div>
       </div>
-      <p class="muted">Manage profiles via the TUI or config API.</p>
+    </div>
+  </section>
+
+  <!-- SETTINGS -->
+  <section id="section-settings" class="section">
+    <div class="container">
+      <h1 class="page-title">Settings</h1>
+      <p class="section-hint">Changes are saved to <code>config.ini</code>. Fields marked <span class="locked-badge">ENV</span> are set via environment variable and cannot be edited here.</p>
+
+      <form id="settings-form" autocomplete="off">
+        <!-- NVD / Scan -->
+        <div class="settings-group">
+          <div class="settings-group-title">NVD / Scan</div>
+          <div class="settings-grid">
+            <div class="form-group" id="fg-DEFAULT__apiKey"></div>
+            <div class="form-group" id="fg-DEFAULT__checkFrequency"></div>
+            <div class="form-group" id="fg-DEFAULT__minSeverity"></div>
+          </div>
+        </div>
+
+        <!-- Keywords -->
+        <div class="settings-group">
+          <div class="settings-group-title">Keywords</div>
+          <div class="form-group">
+            <label class="form-label">Keywords <span class="form-hint">(one per line; append ::HIGH to override per-keyword severity)</span></label>
+            <textarea class="input-sm textarea-sm" id="cfg-DEFAULT__keywords" rows="6"
+              placeholder="Apache Knox&#10;log4j::CRITICAL&#10;OpenSSL::MEDIUM"></textarea>
+          </div>
+        </div>
+
+        <!-- Email -->
+        <div class="settings-group">
+          <div class="settings-group-title">Email</div>
+          <div class="settings-grid">
+            <div class="form-group" id="fg-EMAIL__senderEmail"></div>
+            <div class="form-group" id="fg-EMAIL__senderPassword"></div>
+            <div class="form-group" id="fg-EMAIL__recipientEmail"></div>
+            <div class="form-group" id="fg-EMAIL__subjectLine"></div>
+          </div>
+        </div>
+
+        <!-- Webhook / Slack -->
+        <div class="settings-group">
+          <div class="settings-group-title">Webhook / Slack</div>
+          <div class="settings-grid">
+            <div class="form-group" id="fg-DEFAULT__webhookUrl"></div>
+            <div class="form-group" id="fg-DEFAULT__slackWebhook"></div>
+          </div>
+        </div>
+
+        <!-- Jira -->
+        <div class="settings-group">
+          <div class="settings-group-title">Jira <span class="form-hint">(optional)</span></div>
+          <div class="settings-grid">
+            <div class="form-group" id="fg-JIRA__url"></div>
+            <div class="form-group" id="fg-JIRA__user"></div>
+            <div class="form-group" id="fg-JIRA__token"></div>
+            <div class="form-group" id="fg-JIRA__project_key"></div>
+            <div class="form-group" id="fg-JIRA__issue_type"></div>
+          </div>
+        </div>
+
+        <!-- ServiceNow -->
+        <div class="settings-group">
+          <div class="settings-group-title">ServiceNow <span class="form-hint">(optional)</span></div>
+          <div class="settings-grid">
+            <div class="form-group" id="fg-SERVICENOW__instance"></div>
+            <div class="form-group" id="fg-SERVICENOW__user"></div>
+            <div class="form-group" id="fg-SERVICENOW__password"></div>
+            <div class="form-group" id="fg-SERVICENOW__category"></div>
+          </div>
+        </div>
+
+        <div class="form-actions">
+          <button type="submit" class="btn-primary" id="btn-settings-save">Save settings</button>
+          <span id="settings-msg" class="form-msg"></span>
+        </div>
+      </form>
     </div>
   </section>
 

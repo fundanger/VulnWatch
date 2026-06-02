@@ -330,8 +330,141 @@ tbody tr.clickable { cursor: pointer; }
 
 .muted { color: var(--muted); font-size: 13px; }
 
+/* ── Page title row (title + actions) ────────────────────────────────────── */
+
+.page-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 1.5rem;
+  flex-wrap: wrap;
+  gap: .75rem;
+}
+.page-title-row .page-title { margin-bottom: 0; }
+.page-actions { display: flex; align-items: center; gap: .75rem; }
+
+.scan-status-text { font-size: 12px; color: var(--muted); }
+.scan-status-text.running { color: var(--medium); }
+
+/* ── Section hint ────────────────────────────────────────────────────────── */
+
+.section-hint { color: var(--muted); font-size: 13px; margin-bottom: 1.5rem; }
+.section-hint code { color: var(--text); background: var(--surface2); padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+
+/* ── Split layout (profiles) ─────────────────────────────────────────────── */
+
+.split-layout { display: flex; gap: 1.5rem; align-items: flex-start; }
+.split-main   { flex: 2; min-width: 0; }
+.split-side   {
+  flex: 1;
+  min-width: 300px;
+  display: none; /* hidden until .visible */
+}
+.split-side.visible { display: block; }
+
+/* ── Form components ─────────────────────────────────────────────────────── */
+
+.form-group { margin-bottom: 1rem; }
+.form-label {
+  display: block;
+  font-size: 12px;
+  color: var(--muted);
+  margin-bottom: .35rem;
+  text-transform: uppercase;
+  letter-spacing: .5px;
+}
+.form-hint { font-size: 11px; color: var(--muted); text-transform: none; letter-spacing: 0; }
+
+.textarea-sm {
+  width: 100%;
+  resize: vertical;
+  font-family: inherit;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  padding: .4rem .75rem;
+  font-size: 13px;
+  outline: none;
+  transition: border-color .15s;
+}
+.textarea-sm:focus { border-color: var(--accent); }
+
+.form-actions { display: flex; align-items: center; gap: .75rem; margin-top: 1.25rem; flex-wrap: wrap; }
+
+.form-msg { font-size: 12px; color: var(--muted); }
+.form-msg.ok  { color: var(--success); }
+.form-msg.err { color: var(--critical); }
+
+.btn-danger {
+  background: transparent;
+  color: var(--critical);
+  border: 1px solid var(--critical);
+  border-radius: 6px;
+  padding: .4rem 1rem;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background .15s;
+  margin-left: auto;
+}
+.btn-danger:hover { background: var(--critical); color: #fff; }
+
+/* ── Settings ─────────────────────────────────────────────────────────────── */
+
+.settings-group {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 1.25rem 1.5rem;
+  margin-bottom: 1.5rem;
+}
+
+.settings-group-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 1rem;
+  padding-bottom: .5rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.settings-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: .75rem 1.5rem;
+}
+
+.locked-badge {
+  display: inline-block;
+  padding: 0 5px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .5px;
+  background: var(--surface2);
+  color: var(--muted);
+  border: 1px solid var(--border);
+  vertical-align: middle;
+}
+
+input:disabled, .textarea-sm:disabled {
+  opacity: .45;
+  cursor: not-allowed;
+}
+
+/* ── Profile editor panel ───────────────────────────────────────────────── */
+
+.form-body { padding: .25rem 0; }
+
+@media (max-width: 900px) {
+  .split-layout { flex-direction: column; }
+  .split-side { min-width: 0; width: 100%; }
+}
+
 @media (max-width: 768px) {
   .panel-row { flex-direction: column; }
   .stat-grid { grid-template-columns: repeat(2, 1fr); }
   .nav-links { display: none; }
+  .settings-grid { grid-template-columns: 1fr; }
 }
