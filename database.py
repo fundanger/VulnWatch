@@ -1192,6 +1192,384 @@ def saved_views_get() -> list[dict]:
         return result
 
 
+# ── Exploit intelligence ──────────────────────────────────────────────────────
+# Stores known exploit / PoC references per CVE, enriched from public sources.
+
+def bootstrap_exploit_intel() -> None:
+    engine = _get_engine()
+    with engine.connect() as conn:
+        trans = conn.begin()
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS exploit_intel (
+                cve_id        TEXT NOT NULL PRIMARY KEY,
+                has_exploit   INTEGER DEFAULT 0,
+                exploit_refs  TEXT DEFAULT '',
+                poc_url       TEXT DEFAULT '',
+                source        TEXT DEFAULT '',
+                checked_at    TEXT NOT NULL,
+                updated_at    TEXT NOT NULL
+            )
+        """ if _IS_SQLITE else """
+            CREATE TABLE IF NOT EXISTS exploit_intel (
+                cve_id        TEXT NOT NULL PRIMARY KEY,
+                has_exploit   INTEGER DEFAULT 0,
+                exploit_refs  TEXT DEFAULT '',
+                poc_url       TEXT DEFAULT '',
+                source        TEXT DEFAULT '',
+                checked_at    TEXT NOT NULL,
+                updated_at    TEXT NOT NULL
+            )
+        """))
+        trans.commit()
+
+
+def exploit_upsert(cve_id: str, has_exploit: bool, exploit_refs: list,
+                   poc_url: str = "", source: str = "") -> None:
+    now = datetime.now().isoformat(timespec="seconds")
+    refs_json = json.dumps(exploit_refs)
+    with _connect() as conn:
+        if _IS_SQLITE:
+            conn.execute(text(
+                "INSERT INTO exploit_intel (cve_id, has_exploit, exploit_refs, poc_url, source, checked_at, updated_at) "
+                "VALUES (:cid, :he, :refs, :poc, :src, :now, :now) "
+                "ON CONFLICT(cve_id) DO UPDATE SET has_exploit=excluded.has_exploit, "
+                "exploit_refs=excluded.exploit_refs, poc_url=excluded.poc_url, "
+                "source=excluded.source, updated_at=excluded.updated_at"
+            ), {"cid": cve_id, "he": int(has_exploit), "refs": refs_json,
+                "poc": poc_url, "src": source, "now": now})
+        else:
+            conn.execute(text(
+                "INSERT INTO exploit_intel (cve_id, has_exploit, exploit_refs, poc_url, source, checked_at, updated_at) "
+                "VALUES (:cid, :he, :refs, :poc, :src, :now, :now) "
+                "ON CONFLICT(cve_id) DO UPDATE SET has_exploit=EXCLUDED.has_exploit, "
+                "exploit_refs=EXCLUDED.exploit_refs, poc_url=EXCLUDED.poc_url, "
+                "source=EXCLUDED.source, updated_at=EXCLUDED.updated_at"
+            ), {"cid": cve_id, "he": int(has_exploit), "refs": refs_json,
+                "poc": poc_url, "src": source, "now": now})
+
+
+def exploit_get(cve_id: str) -> dict | None:
+    with _connect() as conn:
+        row = conn.execute(text(
+            "SELECT * FROM exploit_intel WHERE cve_id=:cid"
+        ), {"cid": cve_id}).fetchone()
+        if not row:
+            return None
+        d = _row_to_dict(row)
+        try:
+            d["exploit_refs"] = json.loads(d["exploit_refs"] or "[]")
+        except Exception:
+            d["exploit_refs"] = []
+        return d
+
+
+def exploit_get_all(has_exploit_only: bool = False) -> list[dict]:
+    with _connect() as conn:
+        if has_exploit_only:
+            rows = conn.execute(text(
+                "SELECT * FROM exploit_intel WHERE has_exploit=1 ORDER BY updated_at DESC"
+            )).fetchall()
+        else:
+            rows = conn.execute(text(
+                "SELECT * FROM exploit_intel ORDER BY updated_at DESC"
+            )).fetchall()
+        result = []
+        for r in rows:
+            d = _row_to_dict(r)
+            try:
+                d["exploit_refs"] = json.loads(d["exploit_refs"] or "[]")
+            except Exception:
+                d["exploit_refs"] = []
+            result.append(d)
+        return result
+
+
+# ── Asset inventory ───────────────────────────────────────────────────────────
+
+def bootstrap_assets() -> None:
+    engine = _get_engine()
+    with engine.connect() as conn:
+        trans = conn.begin()
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS assets (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                name        TEXT NOT NULL,
+                cpe         TEXT DEFAULT '',
+                tags        TEXT DEFAULT '',
+                owner       TEXT DEFAULT '',
+                environment TEXT DEFAULT '',
+                created_at  TEXT NOT NULL,
+                updated_at  TEXT NOT NULL
+            )
+        """ if _IS_SQLITE else """
+            CREATE TABLE IF NOT EXISTS assets (
+                id          SERIAL PRIMARY KEY,
+                name        TEXT NOT NULL,
+                cpe         TEXT DEFAULT '',
+                tags        TEXT DEFAULT '',
+                owner       TEXT DEFAULT '',
+                environment TEXT DEFAULT '',
+                created_at  TEXT NOT NULL,
+                updated_at  TEXT NOT NULL
+            )
+        """))
+        trans.commit()
+
+
+def asset_save(name: str, cpe: str = "", tags: str = "",
+               owner: str = "", environment: str = "",
+               asset_id: int | None = None) -> int:
+    now = datetime.now().isoformat(timespec="seconds")
+    with _connect() as conn:
+        if asset_id:
+            conn.execute(text(
+                "UPDATE assets SET name=:name, cpe=:cpe, tags=:tags, owner=:owner, "
+                "environment=:env, updated_at=:now WHERE id=:id"
+            ), {"name": name, "cpe": cpe, "tags": tags, "owner": owner,
+                "env": environment, "now": now, "id": asset_id})
+            return asset_id
+        result = conn.execute(text(
+            "INSERT INTO assets (name, cpe, tags, owner, environment, created_at, updated_at) "
+            "VALUES (:name, :cpe, :tags, :owner, :env, :now, :now)"
+        ), {"name": name, "cpe": cpe, "tags": tags, "owner": owner,
+            "env": environment, "now": now})
+        return result.lastrowid if _IS_SQLITE else conn.execute(text("SELECT lastval()")).fetchone()[0]
+
+
+def asset_delete(asset_id: int) -> None:
+    with _connect() as conn:
+        conn.execute(text("DELETE FROM assets WHERE id=:id"), {"id": asset_id})
+
+
+def assets_get_all() -> list[dict]:
+    with _connect() as conn:
+        rows = conn.execute(text(
+            "SELECT * FROM assets ORDER BY name"
+        )).fetchall()
+        return [_row_to_dict(r) for r in rows]
+
+
+def assets_match_cve(cpe_string: str) -> list[dict]:
+    """Return assets whose CPE pattern overlaps with the given CVE CPE string."""
+    if not cpe_string:
+        return []
+    assets = assets_get_all()
+    matches = []
+    cve_cpes = [c.strip().lower() for c in cpe_string.split(",") if c.strip()]
+    for asset in assets:
+        asset_cpes = [c.strip().lower() for c in (asset.get("cpe") or "").split(",") if c.strip()]
+        for ac in asset_cpes:
+            # Wildcard-style: match on vendor:product prefix (first 4 CPE components)
+            ac_parts = ac.split(":")
+            for cc in cve_cpes:
+                cc_parts = cc.split(":")
+                # Match if first 5 parts align (cpe:2.3:type:vendor:product)
+                if len(ac_parts) >= 5 and len(cc_parts) >= 5 and ac_parts[:5] == cc_parts[:5]:
+                    matches.append(asset)
+                    break
+            else:
+                continue
+            break
+    return matches
+
+
+# ── Internal CVSS override ────────────────────────────────────────────────────
+
+def bootstrap_cvss_overrides() -> None:
+    engine = _get_engine()
+    with engine.connect() as conn:
+        trans = conn.begin()
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS cvss_overrides (
+                cve_id          TEXT NOT NULL PRIMARY KEY,
+                internal_score  REAL,
+                internal_sev    TEXT DEFAULT '',
+                rationale       TEXT DEFAULT '',
+                overridden_by   TEXT DEFAULT '',
+                overridden_at   TEXT NOT NULL
+            )
+        """ if _IS_SQLITE else """
+            CREATE TABLE IF NOT EXISTS cvss_overrides (
+                cve_id          TEXT NOT NULL PRIMARY KEY,
+                internal_score  REAL,
+                internal_sev    TEXT DEFAULT '',
+                rationale       TEXT DEFAULT '',
+                overridden_by   TEXT DEFAULT '',
+                overridden_at   TEXT NOT NULL
+            )
+        """))
+        trans.commit()
+
+
+def cvss_override_set(cve_id: str, internal_score: float | None,
+                      internal_sev: str = "", rationale: str = "",
+                      overridden_by: str = "") -> None:
+    now = datetime.now().isoformat(timespec="seconds")
+    with _connect() as conn:
+        if _IS_SQLITE:
+            conn.execute(text(
+                "INSERT INTO cvss_overrides (cve_id, internal_score, internal_sev, rationale, overridden_by, overridden_at) "
+                "VALUES (:cid, :sc, :sev, :rat, :by, :now) "
+                "ON CONFLICT(cve_id) DO UPDATE SET internal_score=excluded.internal_score, "
+                "internal_sev=excluded.internal_sev, rationale=excluded.rationale, "
+                "overridden_by=excluded.overridden_by, overridden_at=excluded.overridden_at"
+            ), {"cid": cve_id, "sc": internal_score, "sev": internal_sev,
+                "rat": rationale, "by": overridden_by, "now": now})
+        else:
+            conn.execute(text(
+                "INSERT INTO cvss_overrides (cve_id, internal_score, internal_sev, rationale, overridden_by, overridden_at) "
+                "VALUES (:cid, :sc, :sev, :rat, :by, :now) "
+                "ON CONFLICT(cve_id) DO UPDATE SET internal_score=EXCLUDED.internal_score, "
+                "internal_sev=EXCLUDED.internal_sev, rationale=EXCLUDED.rationale, "
+                "overridden_by=EXCLUDED.overridden_by, overridden_at=EXCLUDED.overridden_at"
+            ), {"cid": cve_id, "sc": internal_score, "sev": internal_sev,
+                "rat": rationale, "by": overridden_by, "now": now})
+
+
+def cvss_override_get(cve_id: str) -> dict | None:
+    with _connect() as conn:
+        row = conn.execute(text(
+            "SELECT * FROM cvss_overrides WHERE cve_id=:cid"
+        ), {"cid": cve_id}).fetchone()
+        return _row_to_dict(row) if row else None
+
+
+def cvss_override_delete(cve_id: str) -> None:
+    with _connect() as conn:
+        conn.execute(text("DELETE FROM cvss_overrides WHERE cve_id=:cid"), {"cid": cve_id})
+
+
+def cvss_overrides_get_all() -> list[dict]:
+    with _connect() as conn:
+        rows = conn.execute(text(
+            "SELECT * FROM cvss_overrides ORDER BY overridden_at DESC"
+        )).fetchall()
+        return [_row_to_dict(r) for r in rows]
+
+
+# ── Users / RBAC ──────────────────────────────────────────────────────────────
+# Roles: viewer (read-only), analyst (read + triage/review), lead (full access)
+
+_VALID_ROLES = {"viewer", "analyst", "lead"}
+
+
+def bootstrap_users() -> None:
+    engine = _get_engine()
+    with engine.connect() as conn:
+        trans = conn.begin()
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS users (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                username   TEXT NOT NULL UNIQUE,
+                api_key    TEXT NOT NULL UNIQUE,
+                role       TEXT NOT NULL DEFAULT 'analyst',
+                email      TEXT DEFAULT '',
+                created_at TEXT NOT NULL,
+                active     INTEGER DEFAULT 1
+            )
+        """ if _IS_SQLITE else """
+            CREATE TABLE IF NOT EXISTS users (
+                id         SERIAL PRIMARY KEY,
+                username   TEXT NOT NULL UNIQUE,
+                api_key    TEXT NOT NULL UNIQUE,
+                role       TEXT NOT NULL DEFAULT 'analyst',
+                email      TEXT DEFAULT '',
+                created_at TEXT NOT NULL,
+                active     INTEGER DEFAULT 1
+            )
+        """))
+        trans.commit()
+
+
+def user_create(username: str, role: str = "analyst", email: str = "") -> dict:
+    import secrets
+    if role not in _VALID_ROLES:
+        raise ValueError(f"Invalid role: {role}")
+    api_key = secrets.token_hex(32)
+    now = datetime.now().isoformat(timespec="seconds")
+    with _connect() as conn:
+        if _IS_SQLITE:
+            result = conn.execute(text(
+                "INSERT OR IGNORE INTO users (username, api_key, role, email, created_at) "
+                "VALUES (:u, :k, :r, :e, :now)"
+            ), {"u": username, "k": api_key, "r": role, "e": email, "now": now})
+        else:
+            result = conn.execute(text(
+                "INSERT INTO users (username, api_key, role, email, created_at) "
+                "VALUES (:u, :k, :r, :e, :now) ON CONFLICT (username) DO NOTHING"
+            ), {"u": username, "k": api_key, "r": role, "e": email, "now": now})
+        if result.rowcount == 0:
+            raise ValueError(f"Username '{username}' already exists")
+    return {"username": username, "api_key": api_key, "role": role}
+
+
+def user_update(username: str, role: str | None = None,
+                email: str | None = None, active: bool | None = None) -> None:
+    parts, params = [], {"u": username}
+    if role is not None:
+        if role not in _VALID_ROLES:
+            raise ValueError(f"Invalid role: {role}")
+        parts.append("role=:role"); params["role"] = role
+    if email is not None:
+        parts.append("email=:email"); params["email"] = email
+    if active is not None:
+        parts.append("active=:active"); params["active"] = int(active)
+    if not parts:
+        return
+    with _connect() as conn:
+        conn.execute(text(f"UPDATE users SET {', '.join(parts)} WHERE username=:u"), params)
+
+
+def user_delete(username: str) -> None:
+    with _connect() as conn:
+        conn.execute(text("DELETE FROM users WHERE username=:u"), {"u": username})
+
+
+def user_get_by_key(api_key: str) -> dict | None:
+    with _connect() as conn:
+        row = conn.execute(text(
+            "SELECT * FROM users WHERE api_key=:k AND active=1"
+        ), {"k": api_key}).fetchone()
+        return _row_to_dict(row) if row else None
+
+
+def users_get_all() -> list[dict]:
+    with _connect() as conn:
+        rows = conn.execute(text(
+            "SELECT id, username, role, email, created_at, active FROM users ORDER BY username"
+        )).fetchall()  # NOTE: api_key intentionally excluded from list
+        return [_row_to_dict(r) for r in rows]
+
+
+# ── SLA escalation tracking ───────────────────────────────────────────────────
+
+def get_sla_due_soon(hours: int = 24) -> list[dict]:
+    """Return triage entries whose due_date is within `hours` hours from now (not yet breached)."""
+    from datetime import timedelta
+    now = datetime.now()
+    window_end = (now + timedelta(hours=hours)).isoformat()[:10]
+    today = now.isoformat()[:10]
+    with _connect() as conn:
+        rows = conn.execute(text(
+            "SELECT * FROM cve_triage WHERE due_date != '' AND due_date >= :today AND due_date <= :end "
+            "AND status NOT IN ('closed','mitigated','wont_fix','false_positive') "
+            "ORDER BY due_date"
+        ), {"today": today, "end": window_end}).fetchall()
+        return [_row_to_dict(r) for r in rows]
+
+
+def escalation_log_insert(cve_id: str, assignee: str, due_date: str,
+                           channel: str, success: bool, error: str = "") -> None:
+    """Record that an SLA escalation alert was sent."""
+    now = datetime.now().isoformat(timespec="seconds")
+    with _connect() as conn:
+        conn.execute(text(
+            "INSERT INTO notification_log (sent_at, channel, profile, cve_count, recipients, success, error) "
+            "VALUES (:ts, :ch, :pr, 1, :rcpt, :ok, :err)"
+        ), dict(ts=now, ch=f"sla-escalation/{channel}", pr="",
+                rcpt=assignee, ok=int(success), err=error))
+
+
 # ── Scan health stats ─────────────────────────────────────────────────────────
 
 def get_scan_health(limit: int = 20) -> dict:

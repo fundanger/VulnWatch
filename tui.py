@@ -144,7 +144,7 @@ class SettingsScreen(Screen):
                 "Set environment variables to override sensitive fields at runtime.",
                 id="security-warning",
             )
-            for section, key, label, placeholder, is_password in FIELDS:
+            for section, key, label, placeholder, is_password, _group in FIELDS:
                 env_key = ENV_OVERRIDES.get((section, key))
                 env_val = os.environ.get(env_key, "").strip() if env_key else ""
                 effective = env_val or _get_field_value(section, key)
@@ -667,7 +667,7 @@ class SetupWizard(Screen):
                 "in config.ini — keep that file private and out of version control.",
                 id="security-warning",
             )
-            for section, key, label, placeholder, is_password in FIELDS:
+            for section, key, label, placeholder, is_password, _group in FIELDS:
                 yield Label(label)
                 yield Input(placeholder=placeholder, password=is_password,
                             id=f"wizard-{section}-{key}")

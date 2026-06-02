@@ -28,6 +28,8 @@ navLinks.forEach(l => l.addEventListener("click", e => {
   if (sec === "analytics")  loadAnalytics();
   if (sec === "notifylog")  loadNotifyLog();
   if (sec === "triage")     loadTriage();
+  if (sec === "assets")     loadAssets();
+  if (sec === "users")      loadUsers();
 }));
 
 // ── Health check ─────────────────────────────────────────────────────────────
@@ -2105,6 +2107,525 @@ document.addEventListener("keydown", e => {
     if (chip) chip.click();
   }
 });
+
+// ── Exploit intelligence ──────────────────────────────────────────────────────
+
+async function _loadExploitIntel(row) {
+  const panel   = document.getElementById("exploit-intel-panel");
+  const content = document.getElementById("exploit-intel-content");
+  panel.style.display = "";
+  content.innerHTML = '<span class="muted">Loading…</span>';
+  try {
+    const r = await fetch(`${API}/api/exploit/${encodeURIComponent(row.cve_id)}`);
+    const d = await r.json();
+    if (!d || !d.cve_id) {
+      content.innerHTML = '<span class="muted">No exploit data yet — click Check for Exploits.</span>';
+      return;
+    }
+    const refs = (d.exploit_refs || []).map(u =>
+      `<a href="${escHtml(u)}" target="_blank" rel="noopener" class="exploit-ref">${escHtml(u.slice(0, 70))}${u.length > 70 ? "…" : ""}</a>`
+    ).join("");
+    const badge = d.has_exploit
+      ? `<span class="badge badge-CRITICAL">PoC / Exploit Known</span>`
+      : `<span class="badge" style="background:var(--surface3);color:var(--text2)">No known exploit</span>`;
+    content.innerHTML = `
+      <div style="display:flex;align-items:center;gap:.5rem;margin-bottom:.4rem">
+        ${badge}
+        <span class="muted" style="font-size:11px">Source: ${escHtml(d.source || "unknown")} · Checked: ${escHtml((d.checked_at||"").slice(0,16))}</span>
+      </div>
+      ${refs ? `<div class="exploit-refs-list">${refs}</div>` : ""}
+    `;
+  } catch { content.innerHTML = '<span class="muted">Failed to load.</span>'; }
+}
+
+document.getElementById("btn-detail-enrich-exploit").addEventListener("click", async () => {
+  if (!_detailRow) return;
+  const msg = document.getElementById("exploit-enrich-msg");
+  const btn = document.getElementById("btn-detail-enrich-exploit");
+  btn.disabled = true;
+  msg.textContent = "Searching…"; msg.className = "form-msg";
+  try {
+    const r = await fetch(`${API}/api/exploit/enrich/${encodeURIComponent(_detailRow.cve_id)}`, { method: "POST" });
+    const d = await r.json();
+    msg.textContent = d.has_exploit ? `Found ${d.exploit_refs.length} reference(s)!` : "No exploits found.";
+    msg.className = d.has_exploit ? "form-msg ok" : "form-msg";
+    await _loadExploitIntel(_detailRow);
+  } catch { msg.textContent = "Search failed"; msg.className = "form-msg err"; }
+  btn.disabled = false;
+  setTimeout(() => { msg.textContent = ""; }, 4000);
+});
+
+// ── MITRE ATT&CK mapping ──────────────────────────────────────────────────────
+
+async function _loadAttackMapping(row) {
+  const panel   = document.getElementById("attack-panel");
+  const content = document.getElementById("attack-content");
+  if (!row.cwe) { panel.style.display = "none"; return; }
+  try {
+    const r = await fetch(`${API}/api/attack/map?cwe=${encodeURIComponent(row.cwe)}`);
+    const techs = await r.json();
+    if (!techs.length) { panel.style.display = "none"; return; }
+    panel.style.display = "";
+    content.innerHTML = techs.map(t => `
+      <span class="attack-chip" title="CWE: ${escHtml(t.cwe)}">
+        <a href="https://attack.mitre.org/techniques/${escHtml(t.id.replace(".","/"))}" target="_blank" rel="noopener">
+          <span class="attack-id">${escHtml(t.id)}</span>
+          <span class="attack-name">${escHtml(t.name)}</span>
+        </a>
+        <span class="attack-tactic">${escHtml(t.tactic)}</span>
+      </span>
+    `).join("");
+  } catch { panel.style.display = "none"; }
+}
+
+// ── Affected assets correlation ───────────────────────────────────────────────
+
+async function _loadAffectedAssets(row) {
+  const panel   = document.getElementById("affected-assets-panel");
+  const content = document.getElementById("affected-assets-content");
+  if (!row.cpe) { panel.style.display = "none"; return; }
+  try {
+    const r = await fetch(`${API}/api/assets/match?cpe=${encodeURIComponent(row.cpe)}`);
+    const assets = await r.json();
+    if (!assets.length) { panel.style.display = "none"; return; }
+    panel.style.display = "";
+    content.innerHTML = assets.map(a => `
+      <span class="asset-chip env-${escHtml((a.environment||"other").toLowerCase())}">
+        <strong>${escHtml(a.name)}</strong>
+        ${a.environment ? `<span class="asset-env">${escHtml(a.environment)}</span>` : ""}
+        ${a.owner ? `<span class="asset-owner">${escHtml(a.owner)}</span>` : ""}
+      </span>
+    `).join("");
+  } catch { panel.style.display = "none"; }
+}
+
+// ── Related CVEs (chaining) ───────────────────────────────────────────────────
+
+async function _loadRelatedCves(row) {
+  const panel   = document.getElementById("related-cves-panel");
+  const content = document.getElementById("related-cves-content");
+  if (!row.cwe && !row.cpe) { panel.style.display = "none"; return; }
+  try {
+    const params = new URLSearchParams({ cve_id: row.cve_id, limit: 8 });
+    if (row.cwe) params.set("cwe", row.cwe);
+    if (row.cpe) params.set("cpe", row.cpe);
+    const r = await fetch(`${API}/api/cve/related?${params}`);
+    const rows = await r.json();
+    if (!rows.length) { panel.style.display = "none"; return; }
+    panel.style.display = "";
+    content.innerHTML = `<div class="related-cves-list">${rows.map(rc => `
+      <div class="related-cve-row clickable" data-cve="${escHtml(rc.cve_id)}" data-kw="${escHtml(rc._keyword||rc.keyword||"")}">
+        <code>${escHtml(rc.cve_id)}</code>
+        ${sevBadge(rc.severity)}
+        <span class="num">${scoreStr(rc.cvss_score)}</span>
+        <span class="muted" style="font-size:11px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escHtml(truncate(rc.description, 60))}</span>
+      </div>
+    `).join("")}</div>`;
+    content.querySelectorAll(".related-cve-row").forEach(el => {
+      el.addEventListener("click", () => openDetail(rows.find(r => r.cve_id === el.dataset.cve) || rows[0]));
+    });
+  } catch { panel.style.display = "none"; }
+}
+
+// ── Internal CVSS override ────────────────────────────────────────────────────
+
+async function _loadCvssOverride(row) {
+  try {
+    const r = await fetch(`${API}/api/cvss-override/${encodeURIComponent(row.cve_id)}`);
+    const d = await r.json();
+    document.getElementById("detail-override-score").value     = d.internal_score != null ? d.internal_score : "";
+    document.getElementById("detail-override-sev").value       = d.internal_sev   || "";
+    document.getElementById("detail-override-rationale").value = d.rationale      || "";
+  } catch {
+    document.getElementById("detail-override-score").value     = "";
+    document.getElementById("detail-override-sev").value       = "";
+    document.getElementById("detail-override-rationale").value = "";
+  }
+}
+
+document.getElementById("btn-detail-override-save").addEventListener("click", async () => {
+  if (!_detailRow) return;
+  const msg   = document.getElementById("detail-override-msg");
+  const score = document.getElementById("detail-override-score").value;
+  try {
+    const r = await fetch(`${API}/api/cvss-override`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        cve_id:         _detailRow.cve_id,
+        internal_score: score !== "" ? parseFloat(score) : null,
+        internal_sev:   document.getElementById("detail-override-sev").value,
+        rationale:      document.getElementById("detail-override-rationale").value,
+        overridden_by:  "",
+      }),
+    });
+    const j = await r.json();
+    if (j.ok) { msg.textContent = "Override saved!"; msg.className = "form-msg ok"; }
+    else       { msg.textContent = j.error || "Failed"; msg.className = "form-msg err"; }
+  } catch { msg.textContent = "Request failed"; msg.className = "form-msg err"; }
+  setTimeout(() => { msg.textContent = ""; }, 2500);
+});
+
+document.getElementById("btn-detail-override-clear").addEventListener("click", async () => {
+  if (!_detailRow) return;
+  const msg = document.getElementById("detail-override-msg");
+  try {
+    await fetch(`${API}/api/cvss-override/${encodeURIComponent(_detailRow.cve_id)}`, { method: "DELETE" });
+    document.getElementById("detail-override-score").value     = "";
+    document.getElementById("detail-override-sev").value       = "";
+    document.getElementById("detail-override-rationale").value = "";
+    msg.textContent = "Override cleared."; msg.className = "form-msg ok";
+  } catch { msg.textContent = "Failed"; msg.className = "form-msg err"; }
+  setTimeout(() => { msg.textContent = ""; }, 2500);
+});
+
+// ── Patch tracking ────────────────────────────────────────────────────────────
+
+async function _loadPatchInfo(row) {
+  try {
+    const r = await fetch(`${API}/api/triage/${encodeURIComponent(row.cve_id)}`);
+    const d = await r.json();
+    document.getElementById("detail-patch-version").value = d.patched_version || "";
+    document.getElementById("detail-patch-date").value    = d.patched_at      || "";
+    document.getElementById("detail-patch-by").value      = d.patched_by      || "";
+  } catch {
+    document.getElementById("detail-patch-version").value = "";
+    document.getElementById("detail-patch-date").value    = "";
+    document.getElementById("detail-patch-by").value      = "";
+  }
+}
+
+document.getElementById("btn-detail-patch-save").addEventListener("click", async () => {
+  if (!_detailRow) return;
+  const msg = document.getElementById("detail-patch-msg");
+  try {
+    const r = await fetch(`${API}/api/triage/${encodeURIComponent(_detailRow.cve_id)}/patch`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        patched_version: document.getElementById("detail-patch-version").value.trim(),
+        patched_at:      document.getElementById("detail-patch-date").value,
+        patched_by:      document.getElementById("detail-patch-by").value.trim(),
+      }),
+    });
+    const j = await r.json();
+    if (j.ok) { msg.textContent = "Patch info saved!"; msg.className = "form-msg ok"; }
+    else       { msg.textContent = j.error || "Failed"; msg.className = "form-msg err"; }
+  } catch { msg.textContent = "Request failed"; msg.className = "form-msg err"; }
+  setTimeout(() => { msg.textContent = ""; }, 2500);
+});
+
+// ── Extend openDetail to load new panels ─────────────────────────────────────
+// Wrap the existing openDetail so new panels load alongside the existing ones.
+
+const _origOpenDetail = openDetail;
+openDetail = async function(row) {
+  await _origOpenDetail(row);
+  // Load all new enrichment panels in parallel
+  await Promise.all([
+    _loadExploitIntel(row),
+    _loadAttackMapping(row),
+    _loadAffectedAssets(row),
+    _loadRelatedCves(row),
+    _loadCvssOverride(row),
+    _loadPatchInfo(row),
+  ]);
+};
+
+// ── Asset management ──────────────────────────────────────────────────────────
+
+let _editingAsset = null;
+
+function _openAssetEditor(asset = null) {
+  _editingAsset = asset || null;
+  document.getElementById("asset-editor-title").textContent = asset ? `Edit — ${escHtml(asset.name)}` : "New Asset";
+  document.getElementById("asset-edit-id").value   = asset?.id || "";
+  document.getElementById("asset-name").value      = asset?.name || "";
+  document.getElementById("asset-cpe").value       = asset?.cpe  || "";
+  document.getElementById("asset-env").value       = asset?.environment || "production";
+  document.getElementById("asset-owner").value     = asset?.owner || "";
+  document.getElementById("asset-tags").value      = asset?.tags  || "";
+  document.getElementById("btn-asset-delete").style.display = asset ? "" : "none";
+  document.getElementById("asset-msg").textContent = "";
+  document.getElementById("asset-editor").classList.add("visible");
+}
+
+function _closeAssetEditor() {
+  _editingAsset = null;
+  document.getElementById("asset-editor").classList.remove("visible");
+}
+
+async function loadAssets() {
+  try {
+    const r    = await fetch(`${API}/api/assets`);
+    const rows = await r.json();
+    const tbody   = document.getElementById("assets-tbody");
+    const emptyEl = document.getElementById("assets-empty");
+    tbody.innerHTML = "";
+    if (!rows.length) { emptyEl.style.display = ""; return; }
+    emptyEl.style.display = "none";
+    rows.forEach(a => {
+      const tr = document.createElement("tr");
+      tr.className = "clickable";
+      tr.innerHTML = `
+        <td><strong>${escHtml(a.name)}</strong></td>
+        <td><span class="asset-env-badge env-${escHtml((a.environment||"other").toLowerCase())}">${escHtml(a.environment||"—")}</span></td>
+        <td>${escHtml(a.owner||"—")}</td>
+        <td><small>${escHtml(a.tags||"—")}</small></td>
+        <td><small class="muted">${escHtml(truncate(a.cpe||"—", 60))}</small></td>
+        <td><button class="btn-sm">Edit</button></td>
+      `;
+      tr.querySelector("button").addEventListener("click", e => { e.stopPropagation(); _openAssetEditor(a); });
+      tr.addEventListener("click", () => _openAssetEditor(a));
+      tbody.appendChild(tr);
+    });
+  } catch (e) { console.error("loadAssets:", e); }
+}
+
+document.getElementById("btn-asset-new").addEventListener("click", () => _openAssetEditor());
+document.getElementById("btn-asset-cancel").addEventListener("click", _closeAssetEditor);
+
+document.getElementById("btn-asset-save").addEventListener("click", async () => {
+  const msg  = document.getElementById("asset-msg");
+  const name = document.getElementById("asset-name").value.trim();
+  if (!name) { msg.textContent = "Name is required."; msg.className = "form-msg err"; return; }
+  const body = {
+    name,
+    cpe:         document.getElementById("asset-cpe").value.trim(),
+    environment: document.getElementById("asset-env").value,
+    owner:       document.getElementById("asset-owner").value.trim(),
+    tags:        document.getElementById("asset-tags").value.trim(),
+  };
+  const editId = document.getElementById("asset-edit-id").value;
+  if (editId) body.id = parseInt(editId, 10);
+  try {
+    const r = await fetch(`${API}/api/assets`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const j = await r.json();
+    if (j.ok) { msg.textContent = "Saved!"; msg.className = "form-msg ok"; loadAssets(); setTimeout(_closeAssetEditor, 600); }
+    else { msg.textContent = j.error || "Failed"; msg.className = "form-msg err"; }
+  } catch { msg.textContent = "Request failed"; msg.className = "form-msg err"; }
+});
+
+document.getElementById("btn-asset-delete").addEventListener("click", async () => {
+  if (!_editingAsset) return;
+  if (!confirm(`Delete asset "${_editingAsset.name}"?`)) return;
+  await fetch(`${API}/api/assets/${_editingAsset.id}`, { method: "DELETE" });
+  loadAssets();
+  _closeAssetEditor();
+});
+
+// ── User management (RBAC) ────────────────────────────────────────────────────
+
+let _editingUser = null;
+
+function _openUserEditor(user = null) {
+  _editingUser = user || null;
+  document.getElementById("user-editor-title").textContent = user ? `Edit — ${escHtml(user.username)}` : "New User";
+  document.getElementById("user-username").value   = user?.username || "";
+  document.getElementById("user-username").disabled = !!user;
+  document.getElementById("user-role").value       = user?.role || "analyst";
+  document.getElementById("user-email").value      = user?.email || "";
+  document.getElementById("btn-user-delete").style.display = user ? "" : "none";
+  document.getElementById("btn-user-save").textContent     = user ? "Update user" : "Create user";
+  document.getElementById("user-msg").textContent  = "";
+  document.getElementById("user-key-display").style.display = "none";
+  document.getElementById("user-editor").classList.add("visible");
+}
+
+function _closeUserEditor() {
+  _editingUser = null;
+  document.getElementById("user-editor").classList.remove("visible");
+}
+
+async function loadUsers() {
+  try {
+    const r    = await fetch(`${API}/api/users`);
+    if (r.status === 401 || r.status === 403) {
+      document.getElementById("users-tbody").innerHTML =
+        `<tr><td colspan="6" class="muted" style="padding:.75rem">Requires lead role or API_SECRET to view users.</td></tr>`;
+      document.getElementById("users-empty").style.display = "none";
+      return;
+    }
+    const rows = await r.json();
+    const tbody   = document.getElementById("users-tbody");
+    const emptyEl = document.getElementById("users-empty");
+    tbody.innerHTML = "";
+    if (!rows.length) { emptyEl.style.display = ""; return; }
+    emptyEl.style.display = "none";
+    rows.forEach(u => {
+      const tr = document.createElement("tr");
+      tr.className = "clickable";
+      tr.innerHTML = `
+        <td><strong>${escHtml(u.username)}</strong></td>
+        <td><span class="role-badge role-${escHtml(u.role)}">${escHtml(u.role)}</span></td>
+        <td>${escHtml(u.email || "—")}</td>
+        <td>${escHtml((u.created_at || "").slice(0, 10))}</td>
+        <td>${u.active ? '<span style="color:var(--success)">✓</span>' : '<span class="muted">Revoked</span>'}</td>
+        <td><button class="btn-sm">Edit</button></td>
+      `;
+      tr.querySelector("button").addEventListener("click", e => { e.stopPropagation(); _openUserEditor(u); });
+      tr.addEventListener("click", () => _openUserEditor(u));
+      tbody.appendChild(tr);
+    });
+  } catch (e) { console.error("loadUsers:", e); }
+}
+
+document.getElementById("btn-user-new").addEventListener("click", () => _openUserEditor());
+document.getElementById("btn-user-cancel").addEventListener("click", _closeUserEditor);
+
+document.getElementById("btn-user-save").addEventListener("click", async () => {
+  const msg  = document.getElementById("user-msg");
+  const keyDisplay = document.getElementById("user-key-display");
+  keyDisplay.style.display = "none";
+
+  if (_editingUser) {
+    // Update existing user
+    try {
+      const r = await fetch(`${API}/api/users/${encodeURIComponent(_editingUser.username)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          role:  document.getElementById("user-role").value,
+          email: document.getElementById("user-email").value.trim(),
+        }),
+      });
+      const j = await r.json();
+      if (j.ok) { msg.textContent = "Updated!"; msg.className = "form-msg ok"; loadUsers(); setTimeout(_closeUserEditor, 600); }
+      else { msg.textContent = j.error || "Failed"; msg.className = "form-msg err"; }
+    } catch { msg.textContent = "Request failed"; msg.className = "form-msg err"; }
+    return;
+  }
+
+  // Create new user
+  const username = document.getElementById("user-username").value.trim();
+  if (!username) { msg.textContent = "Username is required."; msg.className = "form-msg err"; return; }
+  try {
+    const r = await fetch(`${API}/api/users`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        username,
+        role:  document.getElementById("user-role").value,
+        email: document.getElementById("user-email").value.trim(),
+      }),
+    });
+    const j = await r.json();
+    if (j.ok) {
+      msg.textContent = "User created!"; msg.className = "form-msg ok";
+      loadUsers();
+      // Show the API key — it won't be retrievable later
+      document.getElementById("user-key-value").textContent = j.api_key;
+      keyDisplay.style.display = "";
+    } else {
+      msg.textContent = j.error || "Failed"; msg.className = "form-msg err";
+    }
+  } catch { msg.textContent = "Request failed"; msg.className = "form-msg err"; }
+});
+
+document.getElementById("btn-user-delete").addEventListener("click", async () => {
+  if (!_editingUser) return;
+  if (!confirm(`Revoke access for "${_editingUser.username}"? They will not be able to authenticate.`)) return;
+  await fetch(`${API}/api/users/${encodeURIComponent(_editingUser.username)}`, { method: "DELETE" });
+  loadUsers();
+  _closeUserEditor();
+});
+
+document.getElementById("btn-copy-key").addEventListener("click", () => {
+  const key = document.getElementById("user-key-value").textContent;
+  navigator.clipboard.writeText(key).then(() => {
+    document.getElementById("btn-copy-key").textContent = "Copied!";
+    setTimeout(() => { document.getElementById("btn-copy-key").textContent = "Copy"; }, 2000);
+  });
+});
+
+// ── SLA escalation ────────────────────────────────────────────────────────────
+
+document.getElementById("btn-sla-escalate").addEventListener("click", async () => {
+  const msg = document.getElementById("sla-escalate-msg");
+  msg.textContent = "Sending SLA alerts…"; msg.className = "form-msg";
+  try {
+    const r = await fetch(`${API}/api/sla/escalate`, { method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ hours: 24 }) });
+    const j = await r.json();
+    if (j.ok) {
+      msg.textContent = j.sent > 0
+        ? `Sent ${j.sent} escalation alert(s).`
+        : j.message || "No items require escalation.";
+      msg.className = j.sent > 0 ? "form-msg ok" : "form-msg";
+    } else {
+      msg.textContent = j.error || "Failed"; msg.className = "form-msg err";
+    }
+  } catch { msg.textContent = "Request failed"; msg.className = "form-msg err"; }
+  setTimeout(() => { msg.textContent = ""; }, 6000);
+});
+
+// ── Update triage table to show patch info ────────────────────────────────────
+// Patch the loadTriage function to add the Patched column
+
+const _origLoadTriage = loadTriage;
+loadTriage = async function() {
+  const statusFilter = document.getElementById("triage-status-filter").value;
+  try {
+    const [triageRows, breachedRows] = await Promise.all([
+      fetch(`${API}/api/triage${statusFilter ? "?status=" + statusFilter : ""}`).then(r => r.json()),
+      fetch(`${API}/api/triage/sla/breached`).then(r => r.json()),
+    ]);
+
+    const banner = document.getElementById("sla-breach-banner");
+    if (breachedRows.length) {
+      banner.style.display = "";
+      banner.innerHTML = `<strong>⚠ ${breachedRows.length} SLA breach${breachedRows.length > 1 ? "es" : ""}:</strong> ` +
+        breachedRows.map(r => `<code>${escHtml(r.cve_id)}</code> (due ${escHtml(r.due_date)})`).join(", ");
+    } else {
+      banner.style.display = "none";
+    }
+
+    const tbody   = document.getElementById("triage-tbody");
+    const emptyEl = document.getElementById("triage-empty");
+    tbody.innerHTML = "";
+    if (!triageRows.length) { emptyEl.style.display = ""; return; }
+    emptyEl.style.display = "none";
+    const today = new Date().toISOString().slice(0, 10);
+
+    triageRows.forEach(row => {
+      const breached = row.due_date && row.due_date < today
+        && !["closed","mitigated","wont_fix","false_positive"].includes(row.status);
+      const slaBadge = !row.due_date ? "—"
+        : breached
+          ? `<span class="sla-badge sla-breached">Breached (${escHtml(row.due_date)})</span>`
+          : `<span class="sla-badge sla-ok">${escHtml(row.due_date)}</span>`;
+
+      const patchedCell = row.patched_version
+        ? `<span class="patch-badge">${escHtml(row.patched_version)}</span>${row.patched_at ? ` <span class="muted" style="font-size:11px">${escHtml(row.patched_at.slice(0,10))}</span>` : ""}`
+        : "—";
+
+      tbody.insertAdjacentHTML("beforeend", `
+        <tr>
+          <td><code>${escHtml(row.cve_id)}</code></td>
+          <td><span class="triage-badge triage-${row.status}">${_triageLabel(row.status)}</span></td>
+          <td>${escHtml(row.assignee || "—")}</td>
+          <td>${escHtml(row.due_date || "—")}</td>
+          <td>${slaBadge}</td>
+          <td>${patchedCell}</td>
+          <td>${escHtml((row.updated_at || "").slice(0, 16))}</td>
+        </tr>
+      `);
+    });
+  } catch (e) { console.error("loadTriage:", e); }
+
+  loadSuppressions();
+};
+
+// Re-bind the triage section controls to the new function
+document.getElementById("triage-status-filter").removeEventListener("change", _origLoadTriage);
+document.getElementById("btn-triage-refresh").removeEventListener("click", _origLoadTriage);
+document.getElementById("triage-status-filter").addEventListener("change", loadTriage);
+document.getElementById("btn-triage-refresh").addEventListener("click", loadTriage);
 
 // ── Initial load ──────────────────────────────────────────────────────────────
 

@@ -19,6 +19,8 @@
       <a href="#profiles" class="nav-link" data-section="profiles">Profiles</a>
       <a href="#digest" class="nav-link" data-section="digest">Digest Queue</a>
       <a href="#triage" class="nav-link" data-section="triage">Triage</a>
+      <a href="#assets" class="nav-link" data-section="assets">Assets</a>
+      <a href="#users" class="nav-link" data-section="users">Users</a>
       <a href="#notifylog" class="nav-link" data-section="notifylog">Notify Log</a>
       <a href="#settings" class="nav-link" data-section="settings">Settings</a>
       <a href="/docs" class="nav-link" target="_self">Docs</a>
@@ -367,6 +369,81 @@
 
           <!-- CVSS vector breakdown -->
           <div id="cvss-vector-breakdown" class="cvss-breakdown" style="display:none;margin-top:.75rem"></div>
+
+          <!-- Exploit intelligence -->
+          <div id="exploit-intel-panel" style="margin-top:.75rem;display:none">
+            <div class="detail-section-title">Exploit Intelligence</div>
+            <div id="exploit-intel-content"></div>
+            <button class="btn-sm" id="btn-detail-enrich-exploit" style="margin-top:.4rem" title="Search GitHub + NVD refs for known exploits">⚡ Check for Exploits</button>
+            <span id="exploit-enrich-msg" class="form-msg" style="margin-left:.5rem"></span>
+          </div>
+
+          <!-- ATT&CK technique mapping -->
+          <div id="attack-panel" style="margin-top:.75rem;display:none">
+            <div class="detail-section-title">MITRE ATT&amp;CK Techniques</div>
+            <div id="attack-content" class="attack-chips"></div>
+          </div>
+
+          <!-- Affected assets -->
+          <div id="affected-assets-panel" style="margin-top:.75rem;display:none">
+            <div class="detail-section-title">Affected Assets</div>
+            <div id="affected-assets-content"></div>
+          </div>
+
+          <!-- Related CVEs (chaining) -->
+          <div id="related-cves-panel" style="margin-top:.75rem;display:none">
+            <div class="detail-section-title">Related CVEs (same CWE / product)</div>
+            <div id="related-cves-content"></div>
+          </div>
+
+          <!-- Internal CVSS override -->
+          <div style="margin-top:.75rem">
+            <div class="detail-section-title">Internal Risk Override</div>
+            <div class="triage-row">
+              <div class="form-group" style="margin-bottom:0;flex:1">
+                <label class="form-label">Internal score <span class="form-hint">0–10</span></label>
+                <input class="input-sm" id="detail-override-score" type="number" min="0" max="10" step="0.1" placeholder="NVD score" style="width:100%" />
+              </div>
+              <div class="form-group" style="margin-bottom:0;flex:1">
+                <label class="form-label">Effective severity</label>
+                <select class="input-sm" id="detail-override-sev" style="width:100%">
+                  <option value="">— same as NVD —</option>
+                  <option value="CRITICAL">CRITICAL</option>
+                  <option value="HIGH">HIGH</option>
+                  <option value="MEDIUM">MEDIUM</option>
+                  <option value="LOW">LOW</option>
+                </select>
+              </div>
+              <div class="form-group" style="margin-bottom:0;flex:2">
+                <label class="form-label">Rationale</label>
+                <input class="input-sm" id="detail-override-rationale" placeholder="e.g. air-gapped network, mitigating controls…" style="width:100%" />
+              </div>
+              <button class="btn-sm" id="btn-detail-override-save" style="align-self:flex-end">Save override</button>
+              <button class="btn-sm btn-danger-sm" id="btn-detail-override-clear" style="align-self:flex-end" title="Remove override, revert to NVD score">✕</button>
+            </div>
+            <div id="detail-override-msg" class="form-msg" style="margin-top:.3rem"></div>
+          </div>
+
+          <!-- Patch tracking -->
+          <div style="margin-top:.75rem">
+            <div class="detail-section-title">Patch Tracking</div>
+            <div class="triage-row">
+              <div class="form-group" style="margin-bottom:0;flex:2">
+                <label class="form-label">Patched version</label>
+                <input class="input-sm" id="detail-patch-version" placeholder="e.g. 2.3.1, n/a…" style="width:100%" />
+              </div>
+              <div class="form-group" style="margin-bottom:0;flex:1">
+                <label class="form-label">Patched date</label>
+                <input class="input-sm" id="detail-patch-date" type="date" style="width:100%" />
+              </div>
+              <div class="form-group" style="margin-bottom:0;flex:1">
+                <label class="form-label">Patched by</label>
+                <input class="input-sm" id="detail-patch-by" placeholder="name…" style="width:100%" />
+              </div>
+              <button class="btn-sm" id="btn-detail-patch-save" style="align-self:flex-end">Save patch</button>
+            </div>
+            <div id="detail-patch-msg" class="form-msg" style="margin-top:.3rem"></div>
+          </div>
 
           <div class="form-group" style="margin-top:.75rem">
             <label class="form-label">Notes</label>
@@ -725,6 +802,8 @@
             <option value="closed">Closed</option>
           </select>
           <button class="btn-sm" id="btn-triage-refresh">↻ Refresh</button>
+          <button class="btn-sm" id="btn-sla-escalate" title="Email assignees for SLA breaches and items due within 24h">⚠ Send SLA Alerts</button>
+          <span id="sla-escalate-msg" class="form-msg"></span>
         </div>
       </div>
       <p class="section-hint">Assign CVEs to team members, set remediation status, and track SLA deadlines. Use the detail overlay in Browse to set triage for a CVE.</p>
@@ -741,6 +820,7 @@
               <th>Assignee</th>
               <th>Due Date</th>
               <th>SLA</th>
+              <th>Patched</th>
               <th>Updated</th>
             </tr>
           </thead>
@@ -772,6 +852,162 @@
           </table>
         </div>
         <div id="suppression-empty" class="muted" style="padding:.75rem 0;display:none">No suppressed CVEs.</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ASSETS -->
+  <section id="section-assets" class="section">
+    <div class="container">
+      <div class="page-title-row">
+        <h1 class="page-title">Asset Inventory</h1>
+        <div class="page-actions">
+          <button class="btn-primary" id="btn-asset-new">+ New Asset</button>
+        </div>
+      </div>
+      <p class="section-hint">Define internal assets with CPE identifiers. CVE detail views will show which assets are affected by each vulnerability.</p>
+
+      <div class="split-layout">
+        <div class="split-main">
+          <div class="panel">
+            <div class="table-wrap">
+              <table id="assets-table">
+                <thead>
+                  <tr>
+                    <th>Name</th>
+                    <th>Environment</th>
+                    <th>Owner</th>
+                    <th>Tags</th>
+                    <th>CPE</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody id="assets-tbody"></tbody>
+              </table>
+            </div>
+            <div id="assets-empty" class="muted" style="padding:1rem 0;display:none">No assets yet. Add assets to enable CVE-to-asset correlation.</div>
+          </div>
+        </div>
+
+        <div class="split-side" id="asset-editor">
+          <div class="panel">
+            <div class="panel-header">
+              <h2 id="asset-editor-title">New Asset</h2>
+            </div>
+            <div class="form-body">
+              <input type="hidden" id="asset-edit-id" />
+              <div class="form-group">
+                <label class="form-label">Asset name</label>
+                <input class="input-sm" id="asset-name" placeholder="e.g. web-prod-01" />
+              </div>
+              <div class="form-group">
+                <label class="form-label">CPE <span class="form-hint">Comma-separated CPE 2.3 strings</span></label>
+                <textarea class="input-sm textarea-sm" id="asset-cpe" rows="3"
+                  placeholder="cpe:2.3:a:apache:log4j:2.14.1:*:*:*:*:*:*:*&#10;cpe:2.3:a:openssl:openssl:3.0.0:*:*:*:*:*:*:*"></textarea>
+              </div>
+              <div class="form-group">
+                <label class="form-label">Environment</label>
+                <select class="input-sm" id="asset-env">
+                  <option value="production">Production</option>
+                  <option value="staging">Staging</option>
+                  <option value="development">Development</option>
+                  <option value="dmz">DMZ</option>
+                  <option value="internal">Internal</option>
+                  <option value="other">Other</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label class="form-label">Owner</label>
+                <input class="input-sm" id="asset-owner" placeholder="team or email…" />
+              </div>
+              <div class="form-group">
+                <label class="form-label">Tags <span class="form-hint">comma-separated</span></label>
+                <input class="input-sm" id="asset-tags" placeholder="web, public-facing, java…" />
+              </div>
+              <div class="form-actions">
+                <button class="btn-primary" id="btn-asset-save">Save asset</button>
+                <button class="btn-sm" id="btn-asset-cancel">Cancel</button>
+                <button class="btn-danger" id="btn-asset-delete" style="display:none">Delete</button>
+              </div>
+              <div id="asset-msg" class="form-msg"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- USERS -->
+  <section id="section-users" class="section">
+    <div class="container">
+      <div class="page-title-row">
+        <h1 class="page-title">User Management</h1>
+        <div class="page-actions">
+          <button class="btn-primary" id="btn-user-new">+ New User</button>
+        </div>
+      </div>
+      <p class="section-hint">Manage API access with role-based control. <strong>Viewer</strong> — read-only. <strong>Analyst</strong> — triage, review, suppress. <strong>Lead</strong> — full access including user management. Supply a per-user Bearer token instead of the global API_SECRET.</p>
+
+      <div class="split-layout">
+        <div class="split-main">
+          <div class="panel">
+            <div class="table-wrap">
+              <table id="users-table">
+                <thead>
+                  <tr>
+                    <th>Username</th>
+                    <th>Role</th>
+                    <th>Email</th>
+                    <th>Created</th>
+                    <th>Active</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody id="users-tbody"></tbody>
+              </table>
+            </div>
+            <div id="users-empty" class="muted" style="padding:1rem 0;display:none">No users yet. The global API_SECRET environment variable still works as the legacy auth method.</div>
+          </div>
+        </div>
+
+        <div class="split-side" id="user-editor">
+          <div class="panel">
+            <div class="panel-header">
+              <h2 id="user-editor-title">New User</h2>
+            </div>
+            <div class="form-body">
+              <div class="form-group">
+                <label class="form-label">Username</label>
+                <input class="input-sm" id="user-username" placeholder="e.g. alice" />
+              </div>
+              <div class="form-group">
+                <label class="form-label">Role</label>
+                <select class="input-sm" id="user-role">
+                  <option value="viewer">Viewer — read-only</option>
+                  <option value="analyst" selected>Analyst — triage + review</option>
+                  <option value="lead">Lead — full access</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label class="form-label">Email <span class="form-hint">used for SLA escalation alerts</span></label>
+                <input class="input-sm" id="user-email" placeholder="alice@example.com" type="email" />
+              </div>
+              <div class="form-actions">
+                <button class="btn-primary" id="btn-user-save">Create user</button>
+                <button class="btn-sm" id="btn-user-cancel">Cancel</button>
+                <button class="btn-danger" id="btn-user-delete" style="display:none">Revoke</button>
+              </div>
+              <div id="user-msg" class="form-msg"></div>
+              <!-- API key display after creation -->
+              <div id="user-key-display" style="display:none;margin-top:1rem">
+                <div class="settings-group-title" style="color:var(--success)">User created — save this API key now</div>
+                <p class="form-hint" style="margin:.4rem 0">This key is shown only once. The user supplies it as a Bearer token.</p>
+                <code id="user-key-value" class="api-key-display"></code>
+                <button class="btn-sm" id="btn-copy-key" style="margin-top:.5rem">Copy</button>
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   </section>
