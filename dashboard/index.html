@@ -1150,6 +1150,55 @@
               </div>
             </div>
           </div>
+
+          <!-- Scanner import -->
+          <div class="panel" id="scanner-import-panel" style="margin-top:1.5rem">
+            <div class="panel-header" style="cursor:pointer" id="scanner-import-toggle">
+              <h2 style="margin:0;font-size:1rem">Import Scanner Output</h2>
+              <span class="muted" style="font-size:.85rem">paste output or drag-drop a file to create/update an asset and keywords</span>
+              <button class="btn-sm" style="margin-left:auto" id="scanner-import-chevron">▼ Expand</button>
+            </div>
+            <div id="scanner-import-body" style="display:none;padding:1rem 1.25rem 1.25rem">
+              <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:.75rem;margin-bottom:1rem">
+                <div class="form-group" style="margin:0">
+                  <label class="form-label">Asset name</label>
+                  <input class="input-sm" id="import-asset-name" placeholder="hostname or label" style="width:100%" />
+                </div>
+                <div class="form-group" style="margin:0">
+                  <label class="form-label">Environment</label>
+                  <select class="input-sm" id="import-asset-env" style="width:100%">
+                    <option value="production">Production</option>
+                    <option value="staging">Staging</option>
+                    <option value="development">Development</option>
+                    <option value="dmz">DMZ</option>
+                    <option value="internal">Internal</option>
+                    <option value="other">Other</option>
+                  </select>
+                </div>
+                <div class="form-group" style="margin:0">
+                  <label class="form-label">Owner <span class="form-hint">optional</span></label>
+                  <input class="input-sm" id="import-asset-owner" placeholder="team or email" style="width:100%" />
+                </div>
+                <div class="form-group" style="margin:0">
+                  <label class="form-label">Tags <span class="form-hint">optional, comma-sep</span></label>
+                  <input class="input-sm" id="import-asset-tags" placeholder="web, linux…" style="width:100%" />
+                </div>
+              </div>
+              <div id="scanner-drop-zone"
+                   style="border:2px dashed var(--border);border-radius:8px;padding:1rem;min-height:120px;position:relative;transition:border-color .2s">
+                <textarea id="scanner-import-text"
+                  style="width:100%;min-height:100px;background:transparent;border:none;outline:none;resize:vertical;font-family:monospace;font-size:.8rem;color:var(--text);line-height:1.5"
+                  placeholder="Paste keyword list or JSON output from scan_environment.py / scan_environment.sh / Scan-Environment.ps1 here — or drag and drop the output file"></textarea>
+              </div>
+              <div style="display:flex;align-items:center;gap:.75rem;margin-top:.75rem">
+                <button class="btn-primary" id="btn-scanner-import">Import</button>
+                <label class="btn-sm" style="cursor:pointer">
+                  Browse file… <input type="file" id="scanner-import-file" accept=".txt,.json,.log" style="display:none" />
+                </label>
+                <span id="scanner-import-msg" class="form-msg" style="margin:0"></span>
+              </div>
+            </div>
+          </div>
         </div>
       </section>
 

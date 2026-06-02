@@ -1626,3 +1626,26 @@ tbody.row-animate tr:nth-child(10) { animation-delay:220ms; }
     transition-duration: .01ms !important;
   }
 }
+
+/* ── Docs: script view/download buttons ───────────────────────────────────── */
+.docs-toggle-btn, .docs-dl-btn {
+  font-size: .75rem;
+  padding: .25rem .6rem;
+  border-radius: 5px;
+  cursor: pointer;
+  text-decoration: none;
+  display: inline-block;
+  transition: background .15s;
+}
+.docs-toggle-btn {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  color: var(--text);
+}
+.docs-toggle-btn:hover { background: var(--surface3); }
+.docs-dl-btn {
+  background: var(--accent);
+  border: 1px solid transparent;
+  color: #fff;
+}
+.docs-dl-btn:hover { opacity: .85; }

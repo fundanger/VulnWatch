@@ -2491,6 +2491,133 @@ document.getElementById("btn-asset-delete").addEventListener("click", async () =
   _closeAssetEditor();
 });
 
+// ── Scanner output import ─────────────────────────────────────────────────────
+
+(function () {
+  const toggle  = document.getElementById("scanner-import-toggle");
+  const body    = document.getElementById("scanner-import-body");
+  const chevron = document.getElementById("scanner-import-chevron");
+  toggle.addEventListener("click", () => {
+    const open = body.style.display !== "none";
+    body.style.display    = open ? "none" : "";
+    chevron.textContent   = open ? "▼ Expand" : "▲ Collapse";
+  });
+
+  const dropZone = document.getElementById("scanner-drop-zone");
+  const textarea = document.getElementById("scanner-import-text");
+  const fileInput = document.getElementById("scanner-import-file");
+
+  dropZone.addEventListener("dragover", e => { e.preventDefault(); dropZone.style.borderColor = "var(--accent)"; });
+  dropZone.addEventListener("dragleave", () => { dropZone.style.borderColor = ""; });
+  dropZone.addEventListener("drop", e => {
+    e.preventDefault();
+    dropZone.style.borderColor = "";
+    const file = e.dataTransfer.files[0];
+    if (file) _readFile(file);
+  });
+  fileInput.addEventListener("change", () => { if (fileInput.files[0]) _readFile(fileInput.files[0]); });
+
+  function _readFile(file) {
+    const reader = new FileReader();
+    reader.onload = ev => { textarea.value = ev.target.result; };
+    reader.readAsText(file);
+  }
+
+  document.getElementById("btn-scanner-import").addEventListener("click", _doImport);
+
+  async function _doImport() {
+    const msg  = document.getElementById("scanner-import-msg");
+    const raw  = textarea.value.trim();
+    if (!raw) { msg.textContent = "Nothing to import."; msg.className = "form-msg err"; return; }
+
+    const assetName = document.getElementById("import-asset-name").value.trim();
+    const env       = document.getElementById("import-asset-env").value;
+    const owner     = document.getElementById("import-asset-owner").value.trim();
+    const tags      = document.getElementById("import-asset-tags").value.trim();
+
+    msg.textContent = "Importing…"; msg.className = "form-msg";
+
+    let keywords = [];
+    let cpes     = [];
+
+    // Detect JSON (scan_environment.py --json) vs plain keyword list
+    if (raw.startsWith("[") || raw.startsWith("{")) {
+      try {
+        const parsed = JSON.parse(raw);
+        const items  = Array.isArray(parsed) ? parsed : (parsed.items || parsed.software || []);
+        items.forEach(item => {
+          if (item.name) {
+            const ver = item.version ? ` ${item.version.split(".").slice(0, 2).join(".")}` : "";
+            const sev = item.severity_hint || "HIGH";
+            keywords.push(`${item.name}${ver}::${sev}`);
+          }
+          if (item.cpe) cpes.push(item.cpe);
+        });
+      } catch {
+        msg.textContent = "Invalid JSON."; msg.className = "form-msg err"; return;
+      }
+    } else {
+      // Plain keyword list — one entry per line, skip blank/comment lines
+      keywords = raw.split("\n").map(l => l.trim()).filter(l => l && !l.startsWith("#"));
+      // Extract any CPE strings embedded in the output
+      raw.split("\n").forEach(l => { const m = l.match(/cpe:2\.3:[^\s]+/); if (m) cpes.push(m[0]); });
+    }
+
+    if (!keywords.length) { msg.textContent = "No keywords found in input."; msg.className = "form-msg err"; return; }
+
+    try {
+      // 1. Create/update asset if a name was provided
+      if (assetName) {
+        const existing = await (await fetch(`${API}/api/assets`)).json();
+        const found    = existing.find(a => a.name.toLowerCase() === assetName.toLowerCase());
+        const body     = {
+          name: assetName, environment: env,
+          ...(owner && { owner }),
+          ...(tags  && { tags }),
+          ...(cpes.length && { cpe: [...new Set(cpes)].join(",") }),
+          last_scanned_at: new Date().toISOString(),
+          scan_source: "dashboard-import",
+        };
+        if (found) body.id = found.id;
+        await fetch(`${API}/api/assets`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-CSRF-Token": _csrfToken() },
+          body: JSON.stringify(body),
+        });
+        loadAssets();
+      }
+
+      // 2. Merge keywords — fetch existing, dedup by product name (scanner wins on version)
+      const cfgR    = await fetch(`${API}/api/config`);
+      const cfg     = await cfgR.json();
+      const existing = (cfg.keywords || "").split("\n").map(l => l.trim()).filter(Boolean);
+      const existMap = {};
+      existing.forEach(k => {
+        const base = k.split("::")[0].replace(/\s+\d[\d.]*$/, "").trim().toLowerCase();
+        existMap[base] = k;
+      });
+      keywords.forEach(k => {
+        const base = k.split("::")[0].replace(/\s+\d[\d.]*$/, "").trim().toLowerCase();
+        existMap[base] = k;
+      });
+      const merged = Object.values(existMap).sort();
+
+      await fetch(`${API}/api/config`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-CSRF-Token": _csrfToken() },
+        body: JSON.stringify({ DEFAULT__keywords: merged.join("\n") }),
+      });
+
+      msg.textContent = `Imported ${keywords.length} keyword${keywords.length !== 1 ? "s" : ""}${assetName ? `, asset "${assetName}" saved` : ""}.`;
+      msg.className   = "form-msg ok";
+      textarea.value  = "";
+    } catch (e) {
+      msg.textContent = `Import failed: ${e.message}`;
+      msg.className   = "form-msg err";
+    }
+  }
+})();
+
 // ── User management (RBAC) ────────────────────────────────────────────────────
 
 let _editingUser = null;

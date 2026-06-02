@@ -192,6 +192,24 @@ def serve_root_static(filename):
     return send_from_directory(_DASHBOARD_DIR, filename)
 
 
+@app.route("/scanners/scan_environment.py")
+def download_scanner_py():
+    return send_from_directory(_HERE, "scan_environment.py",
+                               as_attachment=True, mimetype="text/plain")
+
+
+@app.route("/scanners/scan_environment.sh")
+def download_scanner_sh():
+    return send_from_directory(_HERE, "scan_environment.sh",
+                               as_attachment=True, mimetype="text/plain")
+
+
+@app.route("/scanners/Scan-Environment.ps1")
+def download_scanner_ps1():
+    return send_from_directory(_HERE, "Scan-Environment.ps1",
+                               as_attachment=True, mimetype="text/plain")
+
+
 # ── Health & metrics ──────────────────────────────────────────────────────────
 
 @app.route("/health")

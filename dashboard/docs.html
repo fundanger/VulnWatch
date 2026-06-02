@@ -716,7 +716,13 @@ python api.py --port 8080        <span class="cm"># custom port</span></code></p
         </p>
 
         <h3 class="docs-h3" id="scanner-python">Python — <code>scan_environment.py</code></h3>
-        <p>Cross-platform (Windows / Linux / macOS). Recommended when Python 3.10+ is available.</p>
+        <p>Cross-platform (Windows / Linux / macOS). Recommended when Python 3.10+ is available.
+          <span style="float:right;display:inline-flex;gap:.5rem">
+            <button class="docs-toggle-btn" onclick="toggleScript('script-py',this)">View script</button>
+            <a href="/scanners/scan_environment.py" download class="docs-dl-btn">Download</a>
+          </span>
+        </p>
+        <pre id="script-py" style="display:none;max-height:400px;overflow:auto"><code id="script-py-code" class="lang-python">Loading…</code></pre>
         <pre><code><span class="cm"># Print keyword list to stdout</span>
 python scan_environment.py
 
@@ -746,7 +752,13 @@ python scan_environment.py --out keywords.txt</code></pre>
         </table>
 
         <h3 class="docs-h3" id="scanner-bash">Bash — <code>scan_environment.sh</code></h3>
-        <p>Linux and macOS. No Python required — pure bash with <code>curl</code> for uploads.</p>
+        <p>Linux and macOS. No Python required — pure bash with <code>curl</code> for uploads.
+          <span style="float:right;display:inline-flex;gap:.5rem">
+            <button class="docs-toggle-btn" onclick="toggleScript('script-sh',this)">View script</button>
+            <a href="/scanners/scan_environment.sh" download class="docs-dl-btn">Download</a>
+          </span>
+        </p>
+        <pre id="script-sh" style="display:none;max-height:400px;overflow:auto"><code id="script-sh-code" class="lang-bash">Loading…</code></pre>
         <pre><code>chmod +x scan_environment.sh
 
 <span class="cm"># Print keyword list</span>
@@ -764,7 +776,13 @@ python scan_environment.py --out keywords.txt</code></pre>
         <code>--out</code>).</p>
 
         <h3 class="docs-h3" id="scanner-ps1">PowerShell — <code>Scan-Environment.ps1</code></h3>
-        <p>Windows only. No external dependencies — uses WMI, .NET APIs, and the Windows registry.</p>
+        <p>Windows only. No external dependencies — uses WMI, .NET APIs, and the Windows registry.
+          <span style="float:right;display:inline-flex;gap:.5rem">
+            <button class="docs-toggle-btn" onclick="toggleScript('script-ps1',this)">View script</button>
+            <a href="/scanners/Scan-Environment.ps1" download class="docs-dl-btn">Download</a>
+          </span>
+        </p>
+        <pre id="script-ps1" style="display:none;max-height:400px;overflow:auto"><code id="script-ps1-code" class="lang-powershell">Loading…</code></pre>
         <pre><code><span class="cm"># Print keyword list</span>
 .\Scan-Environment.ps1
 
@@ -893,6 +911,33 @@ Docker 24.0::HIGH</code></pre>
 
     window.addEventListener("scroll", updateToc, { passive: true });
     updateToc();
+
+    // Script view/hide toggle
+    const _scriptUrls = {
+      "script-py":  "/scanners/scan_environment.py",
+      "script-sh":  "/scanners/scan_environment.sh",
+      "script-ps1": "/scanners/Scan-Environment.ps1",
+    };
+    const _scriptCache = {};
+    async function toggleScript(id, btn) {
+      const pre  = document.getElementById(id);
+      const code = document.getElementById(id + "-code");
+      if (pre.style.display !== "none") {
+        pre.style.display = "none";
+        btn.textContent = "View script";
+        return;
+      }
+      if (!_scriptCache[id]) {
+        btn.textContent = "Loading…";
+        try {
+          const text = await (await fetch(_scriptUrls[id])).text();
+          _scriptCache[id] = text.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+        } catch { btn.textContent = "View script"; return; }
+      }
+      code.innerHTML    = _scriptCache[id];
+      pre.style.display = "";
+      btn.textContent   = "Hide script";
+    }
   </script>
 </body>
 </html>
