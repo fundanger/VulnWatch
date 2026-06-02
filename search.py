@@ -26,6 +26,22 @@ SEVERITY_ORDER = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3, "NONE": 4, "U
 
 _CONFIG_PATH = Path(__file__).parent / "config.ini"
 
+# Last successful NVD API contact — updated on every successful page fetch
+_last_nvd_success: datetime | None = None
+_last_nvd_error:   str | None      = None
+
+
+def get_nvd_health() -> dict:
+    """Return NVD API health info for the /api/scan/health endpoint."""
+    return {
+        "last_nvd_success": _last_nvd_success.isoformat() if _last_nvd_success else None,
+        "last_nvd_error":   _last_nvd_error,
+        "nvd_stale": (
+            (datetime.now() - _last_nvd_success).total_seconds() > 7200
+            if _last_nvd_success else None
+        ),
+    }
+
 
 def _load_config():
     import configparser
@@ -122,17 +138,22 @@ def _parse_dt(raw: str) -> str:
 # ── NVD fetch with pagination & retry ────────────────────────────────────────
 
 def _fetch_page(keyword: str, start: int, headers: dict, retries: int = 4) -> dict:
+    global _last_nvd_success, _last_nvd_error
     url = _keyword_url(keyword, start)
     for attempt in range(1, retries + 1):
         try:
             resp = requests.get(url, headers=headers, timeout=30)
             if resp.status_code in (429, 403):
                 # Rate limited — back off longer than the standard retry
+                _last_nvd_error = f"HTTP {resp.status_code} rate-limited"
                 time.sleep(30 * attempt)
                 continue
             resp.raise_for_status()
+            _last_nvd_success = datetime.now()
+            _last_nvd_error   = None
             return resp.json()
-        except (requests.RequestException, ValueError):
+        except (requests.RequestException, ValueError) as exc:
+            _last_nvd_error = str(exc)
             if attempt == retries:
                 raise
             time.sleep(2 ** attempt)

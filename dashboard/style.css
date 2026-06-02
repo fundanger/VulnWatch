@@ -1660,3 +1660,39 @@ tbody.row-animate tr:nth-child(10) { animation-delay:220ms; }
   color: #fff;
 }
 .docs-dl-btn:hover { opacity: .85; }
+
+/* ── Severity upgrade diff ────────────────────────────────────────────────── */
+.upgrade-banner {
+  display: flex;
+  align-items: center;
+  gap: .5rem;
+  padding: .5rem .75rem;
+  background: rgba(217,119,6,.12);
+  border: 1px solid rgba(217,119,6,.35);
+  border-radius: 6px;
+  font-size: .8rem;
+  margin-bottom: .75rem;
+  flex-wrap: wrap;
+}
+.upgrade-icon { font-size: 1rem; }
+.upgrade-from {
+  display: inline-block;
+  padding: .1rem .4rem;
+  border-radius: 4px;
+  background: var(--surface3);
+  font-size: .75rem;
+  font-weight: 700;
+  text-decoration: line-through;
+  opacity: .7;
+}
+.upgrade-score-diff {
+  color: var(--warning, #f59e0b);
+  font-weight: 600;
+  margin-left: .25rem;
+}
+.badge-upgraded {
+  font-size: 11px;
+  color: var(--warning, #f59e0b);
+  cursor: default;
+  vertical-align: middle;
+}

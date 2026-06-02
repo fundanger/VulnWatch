@@ -309,6 +309,8 @@ document.getElementById("btn-browse-export").addEventListener("click", () => {
 // ── CVE Detail overlay ────────────────────────────────────────────────────────
 
 let _detailRow = null;
+// Track suppressed CVE IDs in memory so we don't re-prompt per session
+const _suppressedIds = new Set();
 
 async function openDetail(row) {
   _detailRow = row;
@@ -327,7 +329,24 @@ async function openDetail(row) {
   const titleEl = document.getElementById("detail-panel-title");
   if (titleEl) titleEl.textContent = row.cve_id;
 
+  // Severity upgrade diff — show if current differs from last-alerted values
+  const alertedSev   = row.alerted_severity || "";
+  const alertedScore = row.alerted_score    != null ? row.alerted_score : null;
+  const sevUpgraded  = alertedSev && alertedSev !== (row.severity || "").toUpperCase() &&
+                       alertedSev !== (row.severity || "");
+  const scoreUpgraded = alertedScore != null && row.cvss_score != null &&
+                        (row.cvss_score - alertedScore) >= 1.0;
+  const upgradeBanner = (sevUpgraded || scoreUpgraded)
+    ? `<div class="upgrade-banner">
+        <span class="upgrade-icon">⬆</span>
+        <strong>Severity upgraded</strong>
+        ${sevUpgraded   ? `<span class="upgrade-from">${escHtml(alertedSev)}</span> → ${sevBadge(row.severity)}` : ""}
+        ${scoreUpgraded ? `<span class="upgrade-score-diff">CVSS ${escHtml(String(alertedScore))} → ${escHtml(scoreStr(row.cvss_score))}</span>` : ""}
+      </div>`
+    : "";
+
   document.getElementById("detail-content").innerHTML = `
+    ${upgradeBanner}
     <dl class="dl">
       <dt>Severity</dt>   <dd>${sevBadge(row.severity)} ${scoreStr(row.cvss_score)} CVSS</dd>
       <dt>EPSS</dt>       <dd>${escHtml(epss)}</dd>
@@ -922,9 +941,11 @@ const FIELD_META = {
   "SERVICENOW__user":        { label: "ServiceNow username",      placeholder: "" },
   "SERVICENOW__password":    { label: "ServiceNow password",      placeholder: "", password: true },
   "SERVICENOW__category":    { label: "Incident category",        placeholder: "Security" },
-  "DEFAULT__teamsWebhook":   { label: "Teams incoming webhook URL", placeholder: "https://outlook.office.com/webhook/…" },
-  "DEFAULT__pagerdutyKey":   { label: "PagerDuty routing key",    placeholder: "", password: true },
-  "DEFAULT__opsgenieKey":    { label: "Opsgenie API key",         placeholder: "", password: true },
+  "DEFAULT__teamsWebhook":      { label: "Teams incoming webhook URL",       placeholder: "https://outlook.office.com/webhook/…" },
+  "DEFAULT__pagerdutyKey":      { label: "PagerDuty routing key",            placeholder: "", password: true },
+  "DEFAULT__opsgenieKey":       { label: "Opsgenie API key",                 placeholder: "", password: true },
+  "REPORT__reportSchedule":     { label: "Report schedule",                  placeholder: "off / daily / weekly" },
+  "REPORT__reportRecipients":   { label: "Report recipient email(s)",        placeholder: "ciso@org.com, team@org.com" },
 };
 
 let _settingsData = {};
@@ -999,6 +1020,10 @@ document.getElementById("settings-form").addEventListener("submit", async e => {
     if (j.ok) {
       msg.textContent = "Saved!";
       msg.className = "form-msg ok";
+      // Re-apply report schedule if it changed
+      if (payload["REPORT__reportSchedule"] !== undefined) {
+        fetch(`${API}/api/report/schedule`, { method: "POST", headers: { "X-CSRF-Token": _csrfToken() } }).catch(() => {});
+      }
     } else {
       msg.textContent = j.error || "Save failed";
       msg.className = "form-msg err";
@@ -1649,7 +1674,7 @@ async function _origRenderBrowse() {
     tr.innerHTML = `
       <td><input type="checkbox" class="chk-row" data-cve="${escHtml(row.cve_id)}" ${checked ? "checked" : ""} /></td>
       <td><code>${escHtml(row.cve_id)}</code></td>
-      <td>${sevBadge(row.severity)}</td>
+      <td>${sevBadge(row.severity)}${row.alerted_severity && row.alerted_severity !== (row.severity||"").toUpperCase() && row.alerted_severity !== row.severity ? ` <span class="badge-upgraded" title="Upgraded from ${escHtml(row.alerted_severity)}">⬆</span>` : ""}</td>
       <td class="num">${scoreStr(row.cvss_score)}</td>
       <td class="num">${epssStr(row.epss_score)}</td>
       <td>${kevBadge(row.kev)}</td>
@@ -1998,6 +2023,7 @@ async function loadSuppressions() {
     if (!rows.length) { emptyEl.style.display = ""; return; }
     emptyEl.style.display = "none";
     rows.forEach(row => {
+      _suppressedIds.add(row.cve_id);
       const tr = document.createElement("tr");
       tr.innerHTML = `
         <td><code>${escHtml(row.cve_id)}</code></td>
@@ -2121,6 +2147,23 @@ async function loadScanHealth() {
     document.getElementById("health-avg-dur").textContent      = d.avg_duration_sec ? `${d.avg_duration_sec}s` : "—";
     document.getElementById("health-error-rate").textContent   = d.error_rate != null ? `${d.error_rate}%` : "—";
     document.getElementById("health-total").textContent        = d.total ?? "—";
+
+    // NVD API health
+    const nvd      = d.nvd || {};
+    const nvdEl    = document.getElementById("health-nvd-status");
+    const staleBanner = document.getElementById("health-nvd-stale-banner");
+    if (nvd.last_nvd_success) {
+      const ago = Math.round((Date.now() - new Date(nvd.last_nvd_success).getTime()) / 60000);
+      nvdEl.textContent = ago < 60 ? `${ago}m ago` : `${Math.round(ago/60)}h ago`;
+      nvdEl.style.color = nvd.nvd_stale ? "var(--critical)" : "var(--success)";
+    } else if (nvd.last_nvd_error) {
+      nvdEl.textContent = "Error";
+      nvdEl.style.color = "var(--critical)";
+    } else {
+      nvdEl.textContent = "No scan yet";
+      nvdEl.style.color = "";
+    }
+    if (staleBanner) staleBanner.style.display = nvd.nvd_stale ? "" : "none";
 
     // Mini sparkline: new CVEs per scan
     const scans = d.scans || [];
@@ -2453,23 +2496,47 @@ async function _loadPatchInfo(row) {
 
 document.getElementById("btn-detail-patch-save").addEventListener("click", async () => {
   if (!_detailRow) return;
-  const msg = document.getElementById("detail-patch-msg");
+  const msg     = document.getElementById("detail-patch-msg");
+  const version = document.getElementById("detail-patch-version").value.trim();
   try {
     const r = await fetch(`${API}/api/triage/${encodeURIComponent(_detailRow.cve_id)}/patch`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "X-CSRF-Token": _csrfToken() },
       body: JSON.stringify({
-        patched_version: document.getElementById("detail-patch-version").value.trim(),
+        patched_version: version,
         patched_at:      document.getElementById("detail-patch-date").value,
         patched_by:      document.getElementById("detail-patch-by").value.trim(),
       }),
     });
     const j = await r.json();
-    if (j.ok) { msg.textContent = "Patch info saved!"; msg.className = "form-msg ok"; }
-    else       { msg.textContent = j.error || "Failed"; msg.className = "form-msg err"; }
+    if (j.ok) {
+      msg.textContent = "Patch info saved!"; msg.className = "form-msg ok";
+      // Offer to auto-suppress future alerts now that a patch exists
+      if (version && !_suppressedIds.has(_detailRow.cve_id)) {
+        const suppress = confirm(
+          `${_detailRow.cve_id} is marked as patched (${version}).\n\nAlso suppress future alerts for this CVE?`
+        );
+        if (suppress) {
+          await fetch(`${API}/api/suppressions`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "X-CSRF-Token": _csrfToken() },
+            body: JSON.stringify({
+              cve_id:  _detailRow.cve_id,
+              keyword: _detailRow.keyword || "",
+              reason:  `Patched: ${version}`,
+            }),
+          });
+          _suppressedIds.add(_detailRow.cve_id);
+          msg.textContent = "Patch saved + suppressed."; msg.className = "form-msg ok";
+        }
+      }
+    } else {
+      msg.textContent = j.error || "Failed"; msg.className = "form-msg err";
+    }
   } catch { msg.textContent = "Request failed"; msg.className = "form-msg err"; }
-  setTimeout(() => { msg.textContent = ""; }, 2500);
+  setTimeout(() => { msg.textContent = ""; }, 3000);
 });
+
 
 // ── Extend openDetail to load new panels ─────────────────────────────────────
 // Wrap the existing openDetail so new panels load alongside the existing ones.

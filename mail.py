@@ -22,13 +22,14 @@ def send_email(
     recipients: list[str],
     subject: str,
     body: str,
+    html: str | None = None,
 ) -> None:
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
     msg["From"] = sender
     msg["To"] = ", ".join(recipients)
     msg.attach(MIMEText(body, "plain"))
-    msg.attach(MIMEText(_to_html(body), "html"))
+    msg.attach(MIMEText(html if html is not None else _to_html(body), "html"))
 
     with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
         server.login(sender, password)

@@ -529,12 +529,14 @@ _CONFIG_PATH = _HERE / "config.ini"
 
 # Fields exposed to the dashboard: (section, key, sensitive?)
 _CONFIG_FIELDS = [
-    ("DEFAULT",     "apiKey",         False),
-    ("DEFAULT",     "checkFrequency", False),
-    ("DEFAULT",     "minSeverity",    False),
-    ("DEFAULT",     "keywords",       False),
-    ("DEFAULT",     "webhookUrl",     False),
-    ("DEFAULT",     "slackWebhook",   False),
+    ("DEFAULT",     "apiKey",            False),
+    ("DEFAULT",     "checkFrequency",    False),
+    ("DEFAULT",     "minSeverity",       False),
+    ("DEFAULT",     "keywords",          False),
+    ("DEFAULT",     "webhookUrl",        False),
+    ("DEFAULT",     "slackWebhook",      False),
+    ("REPORT",      "reportSchedule",    False),
+    ("REPORT",      "reportRecipients",  False),
     ("EMAIL",       "senderEmail",    False),
     ("EMAIL",       "senderPassword", True),
     ("EMAIL",       "recipientEmail", False),
@@ -959,8 +961,11 @@ def api_view_delete(name: str):
 
 @app.route("/api/scan/health")
 def api_scan_health():
+    import search as _search
     limit = min(int(request.args.get("limit", 20)), 100)
-    return jsonify(database.get_scan_health(limit))
+    data = database.get_scan_health(limit)
+    data["nvd"] = _search.get_nvd_health()
+    return jsonify(data)
 
 
 # ── CVSS vector parse ─────────────────────────────────────────────────────────
@@ -2207,6 +2212,67 @@ def _send_opsgenie(api_key: str, cve: dict) -> None:
 
 
 
+# ── Scheduled HTML report email ───────────────────────────────────────────────
+
+def _send_scheduled_report() -> None:
+    """Email the HTML security report on schedule. Called by APScheduler."""
+    cfg = _read_config()
+    schedule    = cfg.get("REPORT", "reportSchedule",   fallback="off").strip().lower()
+    rcpt_raw    = cfg.get("REPORT", "reportRecipients", fallback="").strip()
+    sender      = os.environ.get("CVE_SENDER_EMAIL",    "").strip() or cfg.get("EMAIL", "senderEmail",    fallback="").strip()
+    password    = os.environ.get("CVE_SENDER_PASSWORD", "").strip() or cfg.get("EMAIL", "senderPassword", fallback="").strip()
+    recipients  = [r.strip() for r in rcpt_raw.split(",") if r.strip()]
+
+    if schedule == "off" or not recipients or not sender or not password:
+        return
+
+    try:
+        import mail as _mail
+        # Build the HTML report body inline (reuse api_report_html logic)
+        from flask import Response
+        with app.test_request_context():
+            resp: Response = api_report_html()
+        html_body = resp.get_data(as_text=True)
+
+        subject = f"CVE Security Report — {datetime.now(timezone.utc).strftime('%Y-%m-%d')}"
+        _mail.send_email(
+            sender=sender, password=password,
+            recipients=recipients, subject=subject,
+            body=subject, html=html_body,
+        )
+        database.notify_log_insert("email", cve_count=0, recipients=rcpt_raw, success=True)
+        _log.info("Scheduled report sent to %s", rcpt_raw)
+    except Exception as exc:
+        _log.error("Scheduled report failed: %s", exc)
+        database.notify_log_insert("email", cve_count=0, recipients=rcpt_raw, success=False, error=str(exc))
+
+
+def _schedule_report_job() -> None:
+    """Add or replace the APScheduler job for the report based on current config."""
+    cfg      = _read_config()
+    schedule = cfg.get("REPORT", "reportSchedule", fallback="off").strip().lower()
+    job_id   = "scheduled_report"
+
+    # Remove old job if present
+    if _scheduler.get_job(job_id):
+        _scheduler.remove_job(job_id)
+
+    if schedule == "daily":
+        _scheduler.add_job(_send_scheduled_report, "cron", hour=7, minute=0, id=job_id)
+        _log.info("Scheduled report job registered: daily at 07:00")
+    elif schedule == "weekly":
+        _scheduler.add_job(_send_scheduled_report, "cron", day_of_week="mon", hour=7, minute=0, id=job_id)
+        _log.info("Scheduled report job registered: weekly Mon 07:00")
+
+
+@app.route("/api/report/schedule", methods=["POST"])
+@_require_auth
+def api_report_schedule_update():
+    """Re-register the report job after config changes."""
+    _schedule_report_job()
+    return jsonify({"ok": True})
+
+
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 def _bootstrap_all():
@@ -2231,6 +2297,7 @@ def _bootstrap_all():
 
 def create_app() -> Flask:
     _bootstrap_all()
+    _schedule_report_job()
     return app
 
 
@@ -2242,4 +2309,5 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     _bootstrap_all()
+    _schedule_report_job()
     app.run(host=args.host, port=args.port, debug=args.debug)
