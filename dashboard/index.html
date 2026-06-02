@@ -14,9 +14,11 @@
       <a href="#overview" class="nav-link active" data-section="overview">Overview</a>
       <a href="#browse" class="nav-link" data-section="browse">Browse CVEs</a>
       <a href="#watchlist" class="nav-link" data-section="watchlist">Watchlist</a>
+      <a href="#analytics" class="nav-link" data-section="analytics">Analytics</a>
       <a href="#history" class="nav-link" data-section="history">Scan History</a>
       <a href="#profiles" class="nav-link" data-section="profiles">Profiles</a>
       <a href="#digest" class="nav-link" data-section="digest">Digest Queue</a>
+      <a href="#notifylog" class="nav-link" data-section="notifylog">Notify Log</a>
       <a href="#settings" class="nav-link" data-section="settings">Settings</a>
       <a href="/docs" class="nav-link" target="_self">Docs</a>
       <button class="btn-theme" id="btn-theme" title="Toggle theme">☀</button>
@@ -181,6 +183,32 @@
         </div>
       </div>
 
+      <!-- Schedule status -->
+      <div class="panel" style="margin-top:1.5rem">
+        <div class="panel-header">
+          <h2>Schedule</h2>
+          <span class="panel-hint">Next scan countdown based on check interval in config</span>
+        </div>
+        <div class="schedule-row">
+          <div class="schedule-item">
+            <div class="schedule-label">Last scan</div>
+            <div class="schedule-value" id="sched-last">—</div>
+          </div>
+          <div class="schedule-item">
+            <div class="schedule-label">Check interval</div>
+            <div class="schedule-value" id="sched-interval">—</div>
+          </div>
+          <div class="schedule-item">
+            <div class="schedule-label">Next scan in</div>
+            <div class="schedule-value" id="sched-next"><span id="sched-countdown">—</span></div>
+          </div>
+          <div class="schedule-item">
+            <div class="schedule-label">NVD API key</div>
+            <div class="schedule-value" id="sched-apikey">—</div>
+          </div>
+        </div>
+      </div>
+
       <!-- Live scan log -->
       <div class="panel" style="margin-top:1.5rem" id="scan-log-panel">
         <div class="panel-header">
@@ -197,6 +225,17 @@
   <section id="section-browse" class="section">
     <div class="container">
       <h1 class="page-title">Browse CVEs</h1>
+
+      <!-- Quick filter chips -->
+      <div class="quick-filters" id="quick-filters">
+        <span class="quick-label">Quick:</span>
+        <button class="qf-chip" data-sev="CRITICAL" data-kev="">CRITICAL only</button>
+        <button class="qf-chip" data-sev="HIGH" data-kev="">HIGH+</button>
+        <button class="qf-chip" data-sev="" data-kev="1">KEV only</button>
+        <button class="qf-chip" data-sev="CRITICAL" data-kev="1">CRITICAL KEV</button>
+        <button class="qf-chip" data-epss="0.5">EPSS &gt; 50%</button>
+        <button class="qf-chip" data-reviewed="unreviewed">Unreviewed</button>
+      </div>
 
       <div class="filter-bar">
         <select id="br-table" class="input-sm">
@@ -225,6 +264,7 @@
         <table id="browse-table">
           <thead>
             <tr>
+              <th><input type="checkbox" id="chk-select-all" title="Select all" /></th>
               <th>CVE ID</th>
               <th>Severity</th>
               <th>CVSS</th>
@@ -239,6 +279,16 @@
           <tbody id="browse-tbody"></tbody>
         </table>
       </div>
+      <!-- Bulk actions bar -->
+      <div class="bulk-bar" id="bulk-bar" style="display:none">
+        <span id="bulk-count" class="bulk-count">0 selected</span>
+        <button class="btn-sm" id="btn-bulk-reviewed">✓ Mark Reviewed</button>
+        <button class="btn-sm" id="btn-bulk-watchlist">☆ Add to Watchlist</button>
+        <button class="btn-sm" id="btn-bulk-export">⬇ Export Selected</button>
+        <button class="btn-sm" id="btn-bulk-compare" title="Compare up to 3">⇄ Compare</button>
+        <button class="btn-sm" id="btn-bulk-clear">✕ Clear</button>
+      </div>
+
       <div class="browse-footer">
         <div id="browse-status" class="status-bar"></div>
         <div class="pagination" id="browse-pagination"></div>
@@ -250,8 +300,12 @@
           <button class="detail-close" id="btn-detail-close">✕</button>
           <div id="detail-content"></div>
           <div class="detail-actions">
-            <button class="btn-sm" id="btn-detail-watchlist">☆ Add to Watchlist</button>
+            <button class="btn-sm" id="btn-detail-watchlist">☆ Watchlist</button>
             <button class="btn-sm" id="btn-detail-reviewed">✓ Mark Reviewed</button>
+            <button class="btn-sm" id="btn-detail-send-slack" title="Send to Slack">⇒ Slack</button>
+            <button class="btn-sm" id="btn-detail-send-webhook" title="Send to Webhook">⇒ Webhook</button>
+            <button class="btn-sm" id="btn-detail-send-jira" title="Create Jira ticket">⇒ Jira</button>
+            <button class="btn-sm" id="btn-detail-send-snow" title="Create ServiceNow incident">⇒ ServiceNow</button>
             <span id="detail-action-msg" class="form-msg" style="margin-left:.5rem"></span>
           </div>
           <div class="form-group" style="margin-top:.75rem">
@@ -519,6 +573,80 @@
           <span id="settings-msg" class="form-msg"></span>
         </div>
       </form>
+    </div>
+  </section>
+
+  <!-- CVE Comparison overlay -->
+  <div id="compare-overlay" class="detail-overlay hidden">
+    <div class="detail-panel" style="max-width:1100px">
+      <button class="detail-close" id="btn-compare-close">✕</button>
+      <h2 style="margin-bottom:1rem">CVE Comparison</h2>
+      <div id="compare-grid" class="compare-grid"></div>
+    </div>
+  </div>
+
+  <!-- ANALYTICS -->
+  <section id="section-analytics" class="section">
+    <div class="container">
+      <h1 class="page-title">Analytics</h1>
+
+      <div class="panel-row" style="margin-bottom:1.5rem">
+        <div class="panel" style="flex:1">
+          <div class="panel-header"><h2>CVE Age Distribution</h2></div>
+          <div class="chart-wrap"><canvas id="age-chart"></canvas></div>
+        </div>
+        <div class="panel" style="flex:1">
+          <div class="panel-header">
+            <h2>Severity Over Time</h2>
+            <span class="panel-hint">New CVEs per scan coloured by presence of critical/high</span>
+          </div>
+          <div class="chart-wrap"><canvas id="sev-time-chart"></canvas></div>
+        </div>
+      </div>
+
+      <!-- EPSS vs CVSS scatter -->
+      <div class="panel" style="margin-bottom:1.5rem">
+        <div class="panel-header">
+          <h2>EPSS vs CVSS Risk Landscape</h2>
+          <span class="panel-hint">Each dot is a CVE — KEV highlighted in purple, size = severity rank</span>
+          <button class="btn-sm" id="btn-refresh-scatter">↻</button>
+        </div>
+        <div class="chart-wrap" style="height:340px"><canvas id="scatter-chart"></canvas></div>
+      </div>
+
+      <!-- Discovery heatmap -->
+      <div class="panel">
+        <div class="panel-header">
+          <h2>Discovery Heatmap</h2>
+          <span class="panel-hint">New CVEs found per day (last 90 days)</span>
+          <button class="btn-sm" id="btn-refresh-heatmap">↻</button>
+        </div>
+        <div id="heatmap-container" class="heatmap-container"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- NOTIFICATION LOG -->
+  <section id="section-notifylog" class="section">
+    <div class="container">
+      <h1 class="page-title">Notification Log</h1>
+      <p class="section-hint">History of every email, Slack, webhook, Jira, and ServiceNow notification sent.</p>
+      <div class="table-wrap">
+        <table id="notifylog-table">
+          <thead>
+            <tr>
+              <th>Sent At</th>
+              <th>Channel</th>
+              <th>Profile</th>
+              <th class="num">CVEs</th>
+              <th>Recipients</th>
+              <th>Status</th>
+              <th>Error</th>
+            </tr>
+          </thead>
+          <tbody id="notifylog-tbody"></tbody>
+        </table>
+      </div>
     </div>
   </section>
 

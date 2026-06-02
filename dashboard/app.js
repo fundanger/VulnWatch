@@ -18,13 +18,15 @@ navLinks.forEach(l => l.addEventListener("click", e => {
   e.preventDefault();
   const sec = l.dataset.section;
   showSection(sec);
-  if (sec === "overview")   { loadDashboard(); loadTopCves(); loadTrend(); loadKwPerf(); }
+  if (sec === "overview")   { loadDashboard(); loadTopCves(); loadTrend(); loadKwPerf(); loadScheduleInfo(); }
   if (sec === "history")    loadHistory();
   if (sec === "profiles")   loadProfiles();
   if (sec === "browse")     loadBrowseTables();
   if (sec === "digest")     loadDigestQueue();
   if (sec === "settings")   loadSettings();
   if (sec === "watchlist")  loadWatchlist();
+  if (sec === "analytics")  loadAnalytics();
+  if (sec === "notifylog")  loadNotifyLog();
 }));
 
 // ── Health check ─────────────────────────────────────────────────────────────
@@ -170,7 +172,6 @@ async function doBrowseSearch() {
 let _reviewedMap = {};  // cve_id -> bool, cached per browse load
 
 async function _loadReviewedMap(rows) {
-  // Fetch all reviews once and index them
   try {
     const r = await fetch(`${API}/api/reviews`);
     const all = await r.json();
@@ -179,40 +180,9 @@ async function _loadReviewedMap(rows) {
   } catch {}
 }
 
-async function renderBrowseResults() {
-  await _loadReviewedMap(_browseRows);
-
-  const reviewFilter = document.getElementById("br-reviewed").value;
-  let rows = _browseRows;
-  if (reviewFilter === "reviewed")   rows = rows.filter(r => _reviewedMap[r.cve_id]);
-  if (reviewFilter === "unreviewed") rows = rows.filter(r => !_reviewedMap[r.cve_id]);
-
-  const tbody = document.getElementById("browse-tbody");
-  tbody.innerHTML = "";
-  rows.forEach((row, idx) => {
-    const reviewed = _reviewedMap[row.cve_id];
-    tbody.insertAdjacentHTML("beforeend", `
-      <tr class="clickable${reviewed ? " row-reviewed" : ""}" data-cve="${escHtml(row.cve_id)}" data-idx="${idx}">
-        <td><code>${escHtml(row.cve_id)}</code></td>
-        <td>${sevBadge(row.severity)}</td>
-        <td class="num">${scoreStr(row.cvss_score)}</td>
-        <td class="num">${epssStr(row.epss_score)}</td>
-        <td>${kevBadge(row.kev)}</td>
-        <td>${escHtml(row.keyword || "")}</td>
-        <td>${escHtml((row.publish_date || "").slice(0, 10))}</td>
-        <td>${reviewed ? `<span class="badge-reviewed">✓</span>` : ""}</td>
-        <td>${escHtml(truncate(row.description, 90))}</td>
-      </tr>
-    `);
-  });
-  document.getElementById("browse-tbody").querySelectorAll("tr[data-cve]").forEach(tr => {
-    tr.addEventListener("click", () => {
-      const idx = _browseRows.findIndex(r => r.cve_id === tr.dataset.cve);
-      if (idx >= 0) openDetail(_browseRows[idx]);
-    });
-  });
-  document.getElementById("browse-status").textContent = `${rows.length} result(s) — click a row for detail`;
-}
+// renderBrowseResults is defined below (after bulk/QF logic) as _origRenderBrowse,
+// but declared here so earlier code can reference it before the definition.
+async function renderBrowseResults() { await _origRenderBrowse(); }
 
 document.getElementById("br-reviewed").addEventListener("change", renderBrowseResults);
 
@@ -1250,6 +1220,431 @@ function renderPagination(page, hasMore) {
   }
 }
 
+// ── Schedule countdown ────────────────────────────────────────────────────────
+
+let _schedInfo = null;
+let _schedCountdownTimer = null;
+
+async function loadScheduleInfo() {
+  try {
+    const [si, cfg] = await Promise.all([
+      fetch(`${API}/api/schedule/info`).then(r => r.json()),
+      fetch(`${API}/api/config`).then(r => r.json()),
+    ]);
+    _schedInfo = si;
+    document.getElementById("sched-last").textContent     = (si.last_scan || "—").slice(0, 16);
+    const freq = si.check_frequency || 3600;
+    const h = Math.floor(freq / 3600), m = Math.floor((freq % 3600) / 60);
+    document.getElementById("sched-interval").textContent = h ? `${h}h ${m}m` : `${m}m`;
+
+    // API key status
+    const apiKeyField = cfg["DEFAULT__apiKey"];
+    const hasKey = apiKeyField && apiKeyField.value && apiKeyField.value !== "••••••••" && apiKeyField.value.trim() !== "";
+    document.getElementById("sched-apikey").innerHTML = hasKey
+      ? `<span class="badge" style="background:var(--success)">Configured</span>`
+      : `<span class="badge" style="background:var(--medium)">Not set — rate limited</span>`;
+
+    _tickCountdown();
+    if (_schedCountdownTimer) clearInterval(_schedCountdownTimer);
+    _schedCountdownTimer = setInterval(_tickCountdown, 1000);
+  } catch (e) { console.error("loadScheduleInfo:", e); }
+}
+
+function _tickCountdown() {
+  if (!_schedInfo) return;
+  const el = document.getElementById("sched-countdown");
+  if (!el) return;
+  const last = _schedInfo.last_finished || _schedInfo.last_scan;
+  if (!last) { el.textContent = "—"; return; }
+  const freq    = _schedInfo.check_frequency || 3600;
+  const elapsed = (Date.now() - new Date(last).getTime()) / 1000;
+  const remaining = Math.max(0, freq - elapsed);
+  if (remaining === 0) { el.textContent = "Due now"; return; }
+  const h = Math.floor(remaining / 3600);
+  const m = Math.floor((remaining % 3600) / 60);
+  const s = Math.floor(remaining % 60);
+  el.textContent = h ? `${h}h ${String(m).padStart(2,"0")}m ${String(s).padStart(2,"0")}s`
+                     : `${m}m ${String(s).padStart(2,"0")}s`;
+}
+
+// ── Per-CVE send actions (detail panel) ──────────────────────────────────────
+
+async function _sendCve(channel) {
+  if (!_detailRow) return;
+  const msg = document.getElementById("detail-action-msg");
+  msg.textContent = `Sending to ${channel}…`;
+  msg.className = "form-msg";
+  try {
+    const r = await fetch(`${API}/api/cve/send`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ channel, cve: _detailRow }),
+    });
+    const j = await r.json();
+    if (j.ok) { msg.textContent = `Sent to ${channel}!`; msg.className = "form-msg ok"; }
+    else       { msg.textContent = j.error || "Failed";   msg.className = "form-msg err"; }
+  } catch { msg.textContent = "Request failed"; msg.className = "form-msg err"; }
+  setTimeout(() => { msg.textContent = ""; }, 3000);
+}
+
+document.getElementById("btn-detail-send-slack").addEventListener("click",   () => _sendCve("slack"));
+document.getElementById("btn-detail-send-webhook").addEventListener("click", () => _sendCve("webhook"));
+document.getElementById("btn-detail-send-jira").addEventListener("click",    () => _sendCve("jira"));
+document.getElementById("btn-detail-send-snow").addEventListener("click",    () => _sendCve("servicenow"));
+
+// ── Bulk actions ──────────────────────────────────────────────────────────────
+
+let _selectedCves = new Set();
+
+function _updateBulkBar() {
+  const bar = document.getElementById("bulk-bar");
+  const cnt = document.getElementById("bulk-count");
+  if (_selectedCves.size > 0) {
+    bar.style.display = "flex";
+    cnt.textContent = `${_selectedCves.size} selected`;
+  } else {
+    bar.style.display = "none";
+  }
+}
+
+document.getElementById("chk-select-all").addEventListener("change", e => {
+  const checked = e.target.checked;
+  document.querySelectorAll(".chk-row").forEach(chk => {
+    chk.checked = checked;
+    const cveId = chk.dataset.cve;
+    if (checked) _selectedCves.add(cveId); else _selectedCves.delete(cveId);
+  });
+  _updateBulkBar();
+});
+
+document.getElementById("btn-bulk-clear").addEventListener("click", () => {
+  _selectedCves.clear();
+  document.querySelectorAll(".chk-row").forEach(c => { c.checked = false; });
+  document.getElementById("chk-select-all").checked = false;
+  _updateBulkBar();
+});
+
+document.getElementById("btn-bulk-reviewed").addEventListener("click", async () => {
+  for (const cveId of _selectedCves) {
+    await fetch(`${API}/api/review`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ cve_id: cveId, reviewed: true, notes: "" }),
+    }).catch(() => {});
+  }
+  _selectedCves.clear();
+  _updateBulkBar();
+  await renderBrowseResults();
+});
+
+document.getElementById("btn-bulk-watchlist").addEventListener("click", async () => {
+  for (const cveId of _selectedCves) {
+    const row = _browseRows.find(r => r.cve_id === cveId);
+    await fetch(`${API}/api/watchlist`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ cve_id: cveId, keyword: row?.keyword || "" }),
+    }).catch(() => {});
+  }
+  _selectedCves.clear();
+  _updateBulkBar();
+});
+
+document.getElementById("btn-bulk-export").addEventListener("click", () => {
+  const selected = _browseRows.filter(r => _selectedCves.has(r.cve_id));
+  if (!selected.length) return;
+  const headers = ["cve_id","severity","cvss_score","epss_score","kev","keyword","publish_date","cwe","description"];
+  const csv = [headers.join(","), ...selected.map(r =>
+    headers.map(h => `"${String(r[h] ?? "").replace(/"/g,'""')}"`).join(",")
+  )].join("\n");
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([csv], {type:"text/csv"}));
+  a.download = `cve_selected_${Date.now()}.csv`;
+  a.click();
+});
+
+document.getElementById("btn-bulk-compare").addEventListener("click", () => {
+  const selected = _browseRows.filter(r => _selectedCves.has(r.cve_id)).slice(0, 3);
+  if (selected.length < 2) { alert("Select 2 or 3 CVEs to compare."); return; }
+  openCompare(selected);
+});
+
+// ── CVE comparison view ───────────────────────────────────────────────────────
+
+function openCompare(rows) {
+  const grid = document.getElementById("compare-grid");
+  grid.innerHTML = "";
+  grid.style.gridTemplateColumns = `repeat(${rows.length}, 1fr)`;
+
+  rows.forEach(row => {
+    let refs = [];
+    try { refs = JSON.parse(row.references_json || "[]"); } catch {}
+    const col = document.createElement("div");
+    col.className = "compare-col";
+    col.innerHTML = `
+      <h3>${escHtml(row.cve_id)}</h3>
+      <dl class="dl">
+        <dt>Severity</dt>  <dd>${sevBadge(row.severity)} ${scoreStr(row.cvss_score)}</dd>
+        <dt>EPSS</dt>      <dd>${epssStr(row.epss_score)}</dd>
+        <dt>KEV</dt>       <dd>${row.kev ? kevBadge(1) : "No"}</dd>
+        <dt>Published</dt> <dd>${escHtml((row.publish_date||"").slice(0,10))}</dd>
+        <dt>CWE</dt>       <dd>${escHtml(row.cwe||"—")}</dd>
+        <dt>Keyword</dt>   <dd>${escHtml(row.keyword||"—")}</dd>
+      </dl>
+      <div class="desc" style="font-size:12px">${escHtml(row.description||"")}</div>
+      ${refs.length ? `<div class="refs" style="margin-top:.5rem"><strong>Refs</strong><br>${refs.slice(0,3).map(u=>`<a href="${escHtml(u)}" target="_blank" rel="noopener" style="font-size:11px">${escHtml(u.slice(0,60))}…</a>`).join("")}</div>` : ""}
+    `;
+    grid.appendChild(col);
+  });
+
+  document.getElementById("compare-overlay").classList.remove("hidden");
+}
+
+document.getElementById("btn-compare-close").addEventListener("click", () => {
+  document.getElementById("compare-overlay").classList.add("hidden");
+});
+document.getElementById("compare-overlay").addEventListener("click", e => {
+  if (e.target === e.currentTarget) e.currentTarget.classList.add("hidden");
+});
+
+// ── Quick filter chips ────────────────────────────────────────────────────────
+
+document.querySelectorAll(".qf-chip").forEach(btn => {
+  btn.addEventListener("click", () => {
+    // Apply chip filters to browse bar and search
+    const sev      = btn.dataset.sev;
+    const epss     = btn.dataset.epss;
+    const reviewed = btn.dataset.reviewed;
+
+    if (sev !== undefined)      document.getElementById("br-severity").value = sev || "NONE";
+    if (reviewed !== undefined) document.getElementById("br-reviewed").value  = reviewed || "";
+
+    // For EPSS filter we do a client-side post-filter by storing it and re-rendering
+    _qfEpssMin = epss ? parseFloat(epss) : null;
+
+    // Need a table selected
+    const table = document.getElementById("br-table").value;
+    if (!table) {
+      // Auto-select first table
+      const opts = document.getElementById("br-table").options;
+      if (opts.length > 1) document.getElementById("br-table").value = opts[1].value;
+    }
+    if (document.getElementById("br-table").value) doBrowseSearchPaged(0);
+  });
+});
+
+let _qfEpssMin = null;
+
+async function _origRenderBrowse() {
+  await _loadReviewedMap(_browseRows);
+
+  const reviewFilter = document.getElementById("br-reviewed").value;
+  let rows = _browseRows;
+  if (reviewFilter === "reviewed")   rows = rows.filter(r => _reviewedMap[r.cve_id]);
+  if (reviewFilter === "unreviewed") rows = rows.filter(r => !_reviewedMap[r.cve_id]);
+  if (_qfEpssMin != null) rows = rows.filter(r => (r.epss_score || 0) >= _qfEpssMin);
+
+  const tbody = document.getElementById("browse-tbody");
+  tbody.innerHTML = "";
+  rows.forEach((row) => {
+    const reviewed = _reviewedMap[row.cve_id];
+    const checked  = _selectedCves.has(row.cve_id);
+    const tr = document.createElement("tr");
+    tr.className = `clickable${reviewed ? " row-reviewed" : ""}`;
+    tr.dataset.cve = row.cve_id;
+    tr.innerHTML = `
+      <td><input type="checkbox" class="chk-row" data-cve="${escHtml(row.cve_id)}" ${checked ? "checked" : ""} /></td>
+      <td><code>${escHtml(row.cve_id)}</code></td>
+      <td>${sevBadge(row.severity)}</td>
+      <td class="num">${scoreStr(row.cvss_score)}</td>
+      <td class="num">${epssStr(row.epss_score)}</td>
+      <td>${kevBadge(row.kev)}</td>
+      <td>${escHtml(row.keyword || "")}</td>
+      <td>${escHtml((row.publish_date || "").slice(0, 10))}</td>
+      <td>${reviewed ? `<span class="badge-reviewed">✓</span>` : ""}</td>
+      <td>${escHtml(truncate(row.description, 90))}</td>
+    `;
+    // Checkbox toggle
+    tr.querySelector(".chk-row").addEventListener("change", e => {
+      e.stopPropagation();
+      if (e.target.checked) _selectedCves.add(row.cve_id); else _selectedCves.delete(row.cve_id);
+      _updateBulkBar();
+    });
+    tr.addEventListener("click", e => {
+      if (e.target.type === "checkbox") return;
+      openDetail(row);
+    });
+    tbody.appendChild(tr);
+  });
+  document.getElementById("browse-status").textContent = `${rows.length} result(s) — click a row for detail`;
+}
+
+// ── Analytics ─────────────────────────────────────────────────────────────────
+
+let _ageChart = null, _sevTimeChart = null, _scatterChart = null;
+
+async function loadAnalytics() {
+  await Promise.all([loadAgeChart(), loadSevTimeChart(), loadScatterChart(), loadHeatmap()]);
+}
+
+async function loadAgeChart() {
+  try {
+    const r = await fetch(`${API}/api/analytics/age`);
+    const rows = await r.json();
+    const ctx = document.getElementById("age-chart").getContext("2d");
+    if (_ageChart) _ageChart.destroy();
+    _ageChart = new Chart(ctx, {
+      type: "bar",
+      data: {
+        labels: rows.map(r => r.label),
+        datasets: [{ label: "CVEs", data: rows.map(r => r.count),
+          backgroundColor: ["rgba(124,58,237,.8)","rgba(217,119,6,.8)","rgba(220,38,38,.7)","rgba(55,65,81,.7)"],
+          borderRadius: 4 }],
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { display: false } },
+        scales: {
+          x: { ticks: { color: "#94a3b8", font: { size: 11 } }, grid: { color: "#2d2d4e" } },
+          y: { ticks: { color: "#94a3b8", font: { size: 11 } }, grid: { color: "#2d2d4e" } },
+        },
+      },
+    });
+  } catch (e) { console.error("loadAgeChart:", e); }
+}
+
+async function loadSevTimeChart() {
+  try {
+    const r = await fetch(`${API}/api/analytics/severity-over-time?limit=30`);
+    const rows = await r.json();
+    const ctx = document.getElementById("sev-time-chart").getContext("2d");
+    if (_sevTimeChart) _sevTimeChart.destroy();
+    _sevTimeChart = new Chart(ctx, {
+      type: "line",
+      data: {
+        labels: rows.map(r => (r.started_at||"").slice(5,16)),
+        datasets: [
+          { label: "New",      data: rows.map(r => r.new_cves||0),     borderColor: "#7c3aed", backgroundColor: "rgba(124,58,237,.15)", fill: true, tension: .3, pointRadius: 3 },
+          { label: "Upgraded", data: rows.map(r => r.updated_cves||0), borderColor: "#d97706", backgroundColor: "rgba(217,119,6,.1)",   fill: true, tension: .3, pointRadius: 3 },
+        ],
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { labels: { color: "#94a3b8", font: { size: 11 } } } },
+        scales: {
+          x: { ticks: { color: "#94a3b8", font: { size: 10 } }, grid: { color: "#2d2d4e" } },
+          y: { ticks: { color: "#94a3b8", font: { size: 10 } }, grid: { color: "#2d2d4e" } },
+        },
+      },
+    });
+  } catch (e) { console.error("loadSevTimeChart:", e); }
+}
+
+async function loadScatterChart() {
+  try {
+    const r = await fetch(`${API}/api/analytics/scatter?limit=500`);
+    const rows = await r.json();
+    // Split into KEV and non-KEV datasets
+    const sevRadius = { CRITICAL: 8, HIGH: 6, MEDIUM: 4, LOW: 3 };
+    const kevPts  = rows.filter(r => r.kev).map(r => ({ x: r.cvss_score, y: (r.epss_score||0)*100, r: sevRadius[r.severity]||4, label: r.cve_id }));
+    const normPts = rows.filter(r => !r.kev).map(r => ({ x: r.cvss_score, y: (r.epss_score||0)*100, r: sevRadius[r.severity]||3, label: r.cve_id }));
+
+    const ctx = document.getElementById("scatter-chart").getContext("2d");
+    if (_scatterChart) _scatterChart.destroy();
+    _scatterChart = new Chart(ctx, {
+      type: "bubble",
+      data: {
+        datasets: [
+          { label: "KEV",     data: kevPts,  backgroundColor: "rgba(147,51,234,.75)", borderColor: "#9333ea" },
+          { label: "Non-KEV", data: normPts, backgroundColor: "rgba(99,102,241,.35)", borderColor: "rgba(99,102,241,.6)" },
+        ],
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: {
+          legend: { labels: { color: "#94a3b8", font: { size: 11 } } },
+          tooltip: { callbacks: { label: ctx => `${ctx.raw.label || ""} CVSS:${ctx.raw.x} EPSS:${ctx.raw.y.toFixed(1)}%` } },
+        },
+        scales: {
+          x: { title: { display: true, text: "CVSS Score", color: "#94a3b8" }, ticks: { color: "#94a3b8" }, grid: { color: "#2d2d4e" }, min: 0, max: 10 },
+          y: { title: { display: true, text: "EPSS %",     color: "#94a3b8" }, ticks: { color: "#94a3b8" }, grid: { color: "#2d2d4e" }, min: 0 },
+        },
+      },
+    });
+  } catch (e) { console.error("loadScatterChart:", e); }
+}
+
+async function loadHeatmap() {
+  try {
+    const r = await fetch(`${API}/api/analytics/heatmap?days=90`);
+    const rows = await r.json();
+    const container = document.getElementById("heatmap-container");
+    container.innerHTML = "";
+    if (!rows.length) {
+      container.innerHTML = '<span class="muted">No scan data yet.</span>';
+      return;
+    }
+    const maxCount = Math.max(...rows.map(r => r.count), 1);
+    // Build a date→count map
+    const map = {};
+    rows.forEach(r => { map[r.date] = r.count; });
+
+    // Render last 90 days as a grid of day cells
+    const today = new Date();
+    const cells = [];
+    for (let i = 89; i >= 0; i--) {
+      const d = new Date(today);
+      d.setDate(d.getDate() - i);
+      const key = d.toISOString().slice(0, 10);
+      const cnt = map[key] || 0;
+      const intensity = cnt === 0 ? 0 : Math.max(0.15, cnt / maxCount);
+      cells.push({ date: key, count: cnt, intensity });
+    }
+
+    cells.forEach(c => {
+      const cell = document.createElement("div");
+      cell.className = "heatmap-cell";
+      cell.title = `${c.date}: ${c.count} new CVE${c.count !== 1 ? "s" : ""}`;
+      cell.style.backgroundColor = c.intensity === 0
+        ? "var(--surface2)"
+        : `rgba(124,58,237,${c.intensity.toFixed(2)})`;
+      container.appendChild(cell);
+    });
+  } catch (e) { console.error("loadHeatmap:", e); }
+}
+
+document.getElementById("btn-refresh-scatter").addEventListener("click", loadScatterChart);
+document.getElementById("btn-refresh-heatmap").addEventListener("click", loadHeatmap);
+
+// ── Notification log ──────────────────────────────────────────────────────────
+
+async function loadNotifyLog() {
+  try {
+    const r = await fetch(`${API}/api/notify/log?limit=200`);
+    const rows = await r.json();
+    const tbody = document.getElementById("notifylog-tbody");
+    tbody.innerHTML = "";
+    if (!rows.length) {
+      tbody.innerHTML = `<tr><td colspan="7" class="muted" style="padding:1rem">No notifications sent yet.</td></tr>`;
+      return;
+    }
+    rows.forEach(row => {
+      const ok = row.success;
+      tbody.insertAdjacentHTML("beforeend", `
+        <tr>
+          <td>${escHtml((row.sent_at||"").slice(0,16))}</td>
+          <td><span class="badge" style="background:var(--accent)">${escHtml(row.channel||"")}</span></td>
+          <td>${escHtml(row.profile||"—")}</td>
+          <td class="num">${row.cve_count ?? 0}</td>
+          <td><small>${escHtml(truncate(row.recipients||"",40))}</small></td>
+          <td>${ok ? `<span style="color:var(--success)">✓ OK</span>` : `<span style="color:var(--critical)">✗ Failed</span>`}</td>
+          <td><small style="color:var(--critical)">${escHtml(truncate(row.error||"",50))}</small></td>
+        </tr>
+      `);
+    });
+  } catch (e) { console.error("loadNotifyLog:", e); }
+}
+
 // ── Initial load ──────────────────────────────────────────────────────────────
 
 loadDashboard();
@@ -1258,4 +1653,5 @@ loadTrend();
 loadEpssChart();
 loadSeverityChart();
 loadKwPerf();
+loadScheduleInfo();
 renderSavedSearches();

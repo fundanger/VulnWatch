@@ -270,8 +270,10 @@ def api_notify_test():
             return jsonify({"ok": False, "error": "Email not configured"}), 400
         try:
             _mail.send_test_email(sender, password, recipients)
+            database.notify_log_insert("email", cve_count=0, recipients=rcpt_raw, success=True)
             return jsonify({"ok": True})
         except Exception as exc:
+            database.notify_log_insert("email", cve_count=0, recipients=rcpt_raw, success=False, error=str(exc))
             return jsonify({"ok": False, "error": str(exc)}), 500
 
     if channel == "slack":
@@ -283,8 +285,10 @@ def api_notify_test():
             return jsonify({"ok": False, "error": "Slack webhook not configured"}), 400
         try:
             _notify.send_slack(webhook, "CVE Emailer test message — Slack integration is working.")
+            database.notify_log_insert("slack", cve_count=0, success=True)
             return jsonify({"ok": True})
         except Exception as exc:
+            database.notify_log_insert("slack", cve_count=0, success=False, error=str(exc))
             return jsonify({"ok": False, "error": str(exc)}), 500
 
     if channel == "webhook":
@@ -296,8 +300,10 @@ def api_notify_test():
             return jsonify({"ok": False, "error": "Webhook URL not configured"}), 400
         try:
             _notify.send_webhook(webhook, [{"id": "TEST-0001", "description": "CVE Emailer test payload"}])
+            database.notify_log_insert("webhook", cve_count=0, success=True)
             return jsonify({"ok": True})
         except Exception as exc:
+            database.notify_log_insert("webhook", cve_count=0, success=False, error=str(exc))
             return jsonify({"ok": False, "error": str(exc)}), 500
 
     return jsonify({"ok": False, "error": f"Unknown channel: {channel}"}), 400
@@ -528,6 +534,129 @@ def api_keyword_perf():
     return jsonify(database.get_keyword_perf())
 
 
+# ── Notification log ──────────────────────────────────────────────────────────
+
+@app.route("/api/notify/log")
+def api_notify_log():
+    limit = min(int(request.args.get("limit", 200)), 500)
+    return jsonify(database.notify_log_get(limit))
+
+
+# ── Analytics ─────────────────────────────────────────────────────────────────
+
+@app.route("/api/analytics/age")
+def api_age_distribution():
+    return jsonify(database.get_age_distribution())
+
+
+@app.route("/api/analytics/scatter")
+def api_scatter():
+    limit = min(int(request.args.get("limit", 500)), 1000)
+    return jsonify(database.get_scatter_data(limit))
+
+
+@app.route("/api/analytics/heatmap")
+def api_heatmap():
+    days = min(int(request.args.get("days", 90)), 365)
+    return jsonify(database.get_discovery_heatmap(days))
+
+
+@app.route("/api/analytics/severity-over-time")
+def api_severity_over_time():
+    limit = min(int(request.args.get("limit", 30)), 100)
+    return jsonify(database.get_severity_over_time(limit))
+
+
+# ── Schedule info ─────────────────────────────────────────────────────────────
+
+@app.route("/api/schedule/info")
+def api_schedule_info():
+    import configparser as _cp
+    cfg = _cp.ConfigParser()
+    cfg.read(_CONFIG_PATH)
+    freq = int(os.environ.get("CVE_CHECK_FREQUENCY", "") or
+               cfg.get("DEFAULT", "checkFrequency", fallback="3600") or 3600)
+    info = database.get_schedule_info()
+    info["check_frequency"] = freq
+    return jsonify(info)
+
+
+# ── Send single CVE to channel from detail panel ──────────────────────────────
+
+@app.route("/api/cve/send", methods=["POST"])
+@_require_auth
+def api_cve_send():
+    data    = request.get_json(force=True) or {}
+    channel = data.get("channel", "slack")
+    cve     = data.get("cve", {})
+    if not cve.get("cve_id"):
+        return jsonify({"error": "cve.cve_id required"}), 400
+
+    cfg = _read_config()
+
+    if channel == "slack":
+        import notify as _notify
+        webhook = os.environ.get("CVE_SLACK_WEBHOOK", "").strip() or cfg.get("DEFAULT", "slackWebhook", fallback="")
+        if not webhook:
+            return jsonify({"ok": False, "error": "Slack webhook not configured"}), 400
+        try:
+            _notify.send_slack(webhook, f"CVE Alert: {cve['cve_id']} — {cve.get('severity','?')} "
+                               f"(CVSS {cve.get('cvss_score','?')}) — {cve.get('description','')[:200]}")
+            database.notify_log_insert("slack", cve_count=1, success=True)
+            return jsonify({"ok": True})
+        except Exception as exc:
+            database.notify_log_insert("slack", cve_count=1, success=False, error=str(exc))
+            return jsonify({"ok": False, "error": str(exc)}), 500
+
+    if channel == "webhook":
+        import notify as _notify
+        webhook = os.environ.get("CVE_WEBHOOK_URL", "").strip() or cfg.get("DEFAULT", "webhookUrl", fallback="")
+        if not webhook:
+            return jsonify({"ok": False, "error": "Webhook URL not configured"}), 400
+        try:
+            _notify.send_webhook(webhook, [cve])
+            database.notify_log_insert("webhook", cve_count=1, success=True)
+            return jsonify({"ok": True})
+        except Exception as exc:
+            database.notify_log_insert("webhook", cve_count=1, success=False, error=str(exc))
+            return jsonify({"ok": False, "error": str(exc)}), 500
+
+    if channel == "jira":
+        import notify as _notify
+        jira_url   = os.environ.get("JIRA_URL", "").strip()   or cfg.get("JIRA", "url",         fallback="")
+        jira_user  = os.environ.get("JIRA_USER", "").strip()  or cfg.get("JIRA", "user",        fallback="")
+        jira_token = os.environ.get("JIRA_TOKEN", "").strip() or cfg.get("JIRA", "token",       fallback="")
+        jira_proj  = os.environ.get("JIRA_PROJECT_KEY", "").strip() or cfg.get("JIRA", "project_key", fallback="")
+        jira_type  = os.environ.get("JIRA_ISSUE_TYPE", "").strip()  or cfg.get("JIRA", "issue_type",  fallback="Bug")
+        if not all([jira_url, jira_user, jira_token, jira_proj]):
+            return jsonify({"ok": False, "error": "Jira not fully configured"}), 400
+        try:
+            _notify.create_jira_issue(jira_url, jira_user, jira_token, jira_proj, jira_type, cve)
+            database.notify_log_insert("jira", cve_count=1, success=True)
+            return jsonify({"ok": True})
+        except Exception as exc:
+            database.notify_log_insert("jira", cve_count=1, success=False, error=str(exc))
+            return jsonify({"ok": False, "error": str(exc)}), 500
+
+    if channel == "servicenow":
+        import notify as _notify
+        snow_instance = os.environ.get("SNOW_INSTANCE", "").strip() or cfg.get("SERVICENOW", "instance", fallback="")
+        snow_user     = os.environ.get("SNOW_USER", "").strip()     or cfg.get("SERVICENOW", "user",     fallback="")
+        snow_pass     = os.environ.get("SNOW_PASSWORD", "").strip() or cfg.get("SERVICENOW", "password", fallback="")
+        snow_cat      = os.environ.get("SNOW_CATEGORY", "").strip() or cfg.get("SERVICENOW", "category", fallback="Security")
+        if not all([snow_instance, snow_user, snow_pass]):
+            return jsonify({"ok": False, "error": "ServiceNow not fully configured"}), 400
+        try:
+            _notify.create_snow_incident(snow_instance, snow_user, snow_pass, snow_cat, cve)
+            database.notify_log_insert("servicenow", cve_count=1, success=True)
+            return jsonify({"ok": True})
+        except Exception as exc:
+            database.notify_log_insert("servicenow", cve_count=1, success=False, error=str(exc))
+            return jsonify({"ok": False, "error": str(exc)}), 500
+
+    return jsonify({"ok": False, "error": f"Unknown channel: {channel}"}), 400
+
+
 # ── Export all CVEs ───────────────────────────────────────────────────────────
 
 @app.route("/api/cves/export-all")
@@ -542,10 +671,15 @@ def api_export_all():
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 
-def create_app() -> Flask:
+def _bootstrap_all():
     database.bootstrap()
     database.bootstrap_watchlist()
     database.bootstrap_reviews()
+    database.bootstrap_notify_log()
+
+
+def create_app() -> Flask:
+    _bootstrap_all()
     return app
 
 
@@ -556,7 +690,5 @@ if __name__ == "__main__":
     parser.add_argument("--debug", action="store_true")
     args = parser.parse_args()
 
-    database.bootstrap()
-    database.bootstrap_watchlist()
-    database.bootstrap_reviews()
+    _bootstrap_all()
     app.run(host=args.host, port=args.port, debug=args.debug)

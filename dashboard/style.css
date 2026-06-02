@@ -659,3 +659,99 @@ body.light-theme {
   max-width: 220px;
   word-break: break-word;
 }
+
+/* ── Schedule row ────────────────────────────────────────────────────────────── */
+
+.schedule-row {
+  display: flex;
+  gap: 2rem;
+  flex-wrap: wrap;
+  padding: .25rem 0;
+}
+
+.schedule-item { min-width: 140px; }
+.schedule-label { font-size: 11px; text-transform: uppercase; letter-spacing: .8px; color: var(--muted); margin-bottom: .3rem; }
+.schedule-value { font-size: 20px; font-weight: 700; font-variant-numeric: tabular-nums; }
+
+/* ── Quick filter chips ──────────────────────────────────────────────────────── */
+
+.quick-filters {
+  display: flex;
+  align-items: center;
+  gap: .4rem;
+  flex-wrap: wrap;
+  margin-bottom: .75rem;
+}
+
+.quick-label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .6px; }
+
+.qf-chip {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  color: var(--text);
+  cursor: pointer;
+  font-size: 12px;
+  padding: .2rem .7rem;
+  transition: background .15s, border-color .15s;
+}
+.qf-chip:hover { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+/* ── Bulk action bar ─────────────────────────────────────────────────────────── */
+
+.bulk-bar {
+  display: flex;
+  align-items: center;
+  gap: .6rem;
+  flex-wrap: wrap;
+  background: var(--surface2);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius);
+  padding: .5rem 1rem;
+  margin-top: .75rem;
+}
+
+.bulk-count { font-size: 13px; font-weight: 600; color: var(--accent); margin-right: .25rem; }
+
+/* ── Comparison grid ─────────────────────────────────────────────────────────── */
+
+.compare-grid {
+  display: grid;
+  gap: 1.25rem;
+}
+
+.compare-col {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1rem;
+}
+
+.compare-col h3 { font-size: 14px; font-weight: 700; margin-bottom: .75rem; }
+
+/* ── Heatmap ─────────────────────────────────────────────────────────────────── */
+
+.heatmap-container {
+  display: grid;
+  grid-template-columns: repeat(30, 1fr);
+  gap: 3px;
+  padding: .5rem 0;
+}
+
+.heatmap-cell {
+  aspect-ratio: 1;
+  border-radius: 2px;
+  cursor: default;
+  transition: transform .1s;
+}
+.heatmap-cell:hover { transform: scale(1.4); z-index: 1; }
+
+/* ── Browse checkbox column ──────────────────────────────────────────────────── */
+
+.chk-row { cursor: pointer; }
+thead th:first-child, td:first-child { width: 36px; padding-right: 0; }
+
+@media (max-width: 768px) {
+  .heatmap-container { grid-template-columns: repeat(15, 1fr); }
+  .schedule-row { gap: 1rem; }
+}

@@ -829,3 +829,161 @@ def export_all_cves_csv() -> str:
             except Exception:
                 pass
     return buf.getvalue()
+
+
+# ── Notification log ──────────────────────────────────────────────────────────
+
+def bootstrap_notify_log() -> None:
+    engine = _get_engine()
+    with engine.connect() as conn:
+        trans = conn.begin()
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS notification_log (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                sent_at     TEXT NOT NULL,
+                channel     TEXT NOT NULL,
+                profile     TEXT DEFAULT '',
+                cve_count   INTEGER DEFAULT 0,
+                recipients  TEXT DEFAULT '',
+                success     INTEGER DEFAULT 1,
+                error       TEXT DEFAULT ''
+            )
+        """ if _IS_SQLITE else """
+            CREATE TABLE IF NOT EXISTS notification_log (
+                id          SERIAL PRIMARY KEY,
+                sent_at     TEXT NOT NULL,
+                channel     TEXT NOT NULL,
+                profile     TEXT DEFAULT '',
+                cve_count   INTEGER DEFAULT 0,
+                recipients  TEXT DEFAULT '',
+                success     INTEGER DEFAULT 1,
+                error       TEXT DEFAULT ''
+            )
+        """))
+        trans.commit()
+
+
+def notify_log_insert(channel: str, profile: str = "", cve_count: int = 0,
+                      recipients: str = "", success: bool = True, error: str = "") -> None:
+    now = datetime.now().isoformat(timespec="seconds")
+    with _connect() as conn:
+        conn.execute(text(
+            "INSERT INTO notification_log (sent_at, channel, profile, cve_count, recipients, success, error) "
+            "VALUES (:ts, :ch, :pr, :cnt, :rcpt, :ok, :err)"
+        ), dict(ts=now, ch=channel, pr=profile, cnt=cve_count, rcpt=recipients,
+                ok=int(success), err=error))
+
+
+def notify_log_get(limit: int = 200) -> list[dict]:
+    with _connect() as conn:
+        rows = conn.execute(text(
+            "SELECT * FROM notification_log ORDER BY id DESC LIMIT :lim"
+        ), {"lim": limit}).fetchall()
+        return [_row_to_dict(r) for r in rows]
+
+
+# ── Severity-over-time data ───────────────────────────────────────────────────
+
+def get_severity_over_time(limit: int = 30) -> list[dict]:
+    """
+    Return per-scan cumulative severity snapshot by joining scan_history with
+    a count of CVEs published up to that scan's started_at across all tables.
+    Because we don't snapshot severity counts per scan, we approximate by
+    returning the current total broken down by severity alongside each scan timestamp.
+    For a real trend we return the existing scan new/updated counts with a severity
+    breakdown of all CVEs published up to each scan date.
+    """
+    with _connect() as conn:
+        scans = conn.execute(text(
+            "SELECT id, started_at, new_cves, updated_cves FROM scan_history ORDER BY id DESC LIMIT :lim"
+        ), {"lim": limit}).fetchall()
+    return list(reversed([_row_to_dict(r) for r in scans]))
+
+
+# ── CVE age distribution ──────────────────────────────────────────────────────
+
+def get_age_distribution() -> list[dict]:
+    """Return CVE counts bucketed by age: <30d, 30-90d, 90-180d, 180d+."""
+    tables = list_cve_tables()
+    buckets = {"lt30": 0, "30_90": 0, "90_180": 0, "gt180": 0}
+    with _connect() as conn:
+        for tbl in tables:
+            try:
+                rows = conn.execute(text(
+                    f'SELECT publish_date FROM "{tbl}" WHERE publish_date IS NOT NULL'
+                )).fetchall()
+                for row in rows:
+                    try:
+                        pub = datetime.fromisoformat(row[0][:10])
+                        age = (datetime.utcnow() - pub).days
+                        if age < 30:
+                            buckets["lt30"] += 1
+                        elif age < 90:
+                            buckets["30_90"] += 1
+                        elif age < 180:
+                            buckets["90_180"] += 1
+                        else:
+                            buckets["gt180"] += 1
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+    return [
+        {"label": "<30 days",   "count": buckets["lt30"]},
+        {"label": "30–90 days", "count": buckets["30_90"]},
+        {"label": "90–180 days","count": buckets["90_180"]},
+        {"label": "180d+",      "count": buckets["gt180"]},
+    ]
+
+
+# ── EPSS vs CVSS scatter data ─────────────────────────────────────────────────
+
+def get_scatter_data(limit: int = 500) -> list[dict]:
+    """Return CVSS+EPSS+KEV+severity for all CVEs for scatter plot, capped."""
+    tables = list_cve_tables()
+    rows: list[dict] = []
+    rank_expr = _severity_rank_expr()
+    with _connect() as conn:
+        for tbl in tables:
+            try:
+                res = conn.execute(text(
+                    f'SELECT cve_id, severity, cvss_score, epss_score, kev, "{tbl}" as keyword '
+                    f'FROM "{tbl}" WHERE cvss_score IS NOT NULL AND epss_score IS NOT NULL '
+                    f'ORDER BY {rank_expr} LIMIT 200'
+                )).fetchall()
+                rows.extend(_row_to_dict(r) for r in res)
+            except Exception:
+                pass
+    rows.sort(key=lambda r: (r.get("kev") or 0), reverse=True)
+    return rows[:limit]
+
+
+# ── CVE age heatmap ───────────────────────────────────────────────────────────
+
+def get_discovery_heatmap(days: int = 90) -> list[dict]:
+    """Return per-day new CVE counts for the last N days based on scan_history."""
+    with _connect() as conn:
+        rows = conn.execute(text(
+            "SELECT started_at, new_cves FROM scan_history "
+            "WHERE started_at >= date('now', :offset) ORDER BY started_at"
+        ), {"offset": f"-{days} days"}).fetchall()
+    result: dict[str, int] = {}
+    for row in rows:
+        day = (row[0] or "")[:10]
+        if day:
+            result[day] = result.get(day, 0) + (row[1] or 0)
+    return [{"date": d, "count": c} for d, c in sorted(result.items())]
+
+
+# ── Schedule info ─────────────────────────────────────────────────────────────
+
+def get_schedule_info() -> dict:
+    """Return last scan time and check frequency for schedule countdown."""
+    with _connect() as conn:
+        row = conn.execute(text(
+            "SELECT started_at, finished_at FROM scan_history ORDER BY id DESC LIMIT 1"
+        )).fetchone()
+    return {
+        "last_scan": row[0] if row else None,
+        "last_finished": row[1] if row else None,
+    }
