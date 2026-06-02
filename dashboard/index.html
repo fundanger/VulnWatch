@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>CVE Emailer — Dashboard</title>
   <link rel="stylesheet" href="style.css" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 </head>
 <body>
   <nav class="nav">
@@ -14,8 +15,10 @@
       <a href="#browse" class="nav-link" data-section="browse">Browse CVEs</a>
       <a href="#history" class="nav-link" data-section="history">Scan History</a>
       <a href="#profiles" class="nav-link" data-section="profiles">Profiles</a>
+      <a href="#digest" class="nav-link" data-section="digest">Digest Queue</a>
       <a href="#settings" class="nav-link" data-section="settings">Settings</a>
       <a href="/docs" class="nav-link" target="_self">Docs</a>
+      <button class="btn-theme" id="btn-theme" title="Toggle theme">☀</button>
     </div>
     <div class="nav-status">
       <span id="health-dot" class="health-dot"></span>
@@ -62,6 +65,53 @@
         </div>
       </div>
 
+      <!-- Trend chart + Top CVEs -->
+      <div class="panel-row" style="margin-bottom:1.5rem">
+        <div class="panel" style="flex:2">
+          <div class="panel-header">
+            <h2>CVE Trend</h2>
+            <select class="input-sm" id="trend-limit" style="width:auto">
+              <option value="14">Last 14 scans</option>
+              <option value="30" selected>Last 30 scans</option>
+              <option value="60">Last 60 scans</option>
+            </select>
+          </div>
+          <div class="chart-wrap"><canvas id="trend-chart"></canvas></div>
+        </div>
+        <div class="panel" style="flex:1">
+          <div class="panel-header">
+            <h2>EPSS Distribution</h2>
+          </div>
+          <div class="chart-wrap"><canvas id="epss-chart"></canvas></div>
+        </div>
+      </div>
+
+      <!-- Top CVEs -->
+      <div class="panel" style="margin-bottom:1.5rem">
+        <div class="panel-header">
+          <h2>Top Risk CVEs</h2>
+          <span class="panel-hint">Ranked by CVSS × (1 + EPSS), KEV-boosted</span>
+          <button class="btn-sm" id="btn-refresh-top">↻</button>
+        </div>
+        <div class="table-wrap">
+          <table id="top-cves-table">
+            <thead>
+              <tr>
+                <th>CVE ID</th>
+                <th>Severity</th>
+                <th class="num">CVSS</th>
+                <th class="num">EPSS</th>
+                <th>KEV</th>
+                <th>Keyword</th>
+                <th>Published</th>
+                <th>Description</th>
+              </tr>
+            </thead>
+            <tbody id="top-cves-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+
       <div class="panel-row">
         <div class="panel" style="flex:2">
           <div class="panel-header">
@@ -90,6 +140,16 @@
           <div class="panel-header"><h2>Recent Scans</h2></div>
           <ul id="recent-scans" class="scan-list"></ul>
         </div>
+      </div>
+
+      <!-- Live scan log -->
+      <div class="panel" style="margin-top:1.5rem" id="scan-log-panel">
+        <div class="panel-header">
+          <h2>Live Scan Log</h2>
+          <span id="scan-log-status" class="scan-status-text"></span>
+          <button class="btn-sm" id="btn-clear-log">Clear</button>
+        </div>
+        <div id="scan-log" class="scan-log"></div>
       </div>
     </div>
   </section>
@@ -134,7 +194,10 @@
           <tbody id="browse-tbody"></tbody>
         </table>
       </div>
-      <div id="browse-status" class="status-bar"></div>
+      <div class="browse-footer">
+        <div id="browse-status" class="status-bar"></div>
+        <div class="pagination" id="browse-pagination"></div>
+      </div>
 
       <!-- Detail panel -->
       <div id="detail-overlay" class="detail-overlay hidden">
@@ -260,6 +323,15 @@
     </div>
   </section>
 
+  <!-- DIGEST QUEUE -->
+  <section id="section-digest" class="section">
+    <div class="container">
+      <h1 class="page-title">Digest Queue</h1>
+      <p class="section-hint">CVEs waiting to be sent in the next digest batch, grouped by profile.</p>
+      <div id="digest-groups"></div>
+    </div>
+  </section>
+
   <!-- SETTINGS -->
   <section id="section-settings" class="section">
     <div class="container">
@@ -327,6 +399,29 @@
             <div class="form-group" id="fg-SERVICENOW__user"></div>
             <div class="form-group" id="fg-SERVICENOW__password"></div>
             <div class="form-group" id="fg-SERVICENOW__category"></div>
+          </div>
+        </div>
+
+        <!-- Notification tests -->
+        <div class="settings-group">
+          <div class="settings-group-title">Test Notifications</div>
+          <p class="section-hint" style="margin-bottom:1rem">Send a test message to verify your notification channels are configured correctly.</p>
+          <div class="test-row">
+            <button class="btn-sm" id="btn-test-email">Send test email</button>
+            <button class="btn-sm" id="btn-test-slack">Send test Slack message</button>
+            <button class="btn-sm" id="btn-test-webhook">Send test webhook</button>
+            <span id="test-notify-msg" class="form-msg"></span>
+          </div>
+        </div>
+
+        <!-- Saved searches -->
+        <div class="settings-group">
+          <div class="settings-group-title">Saved Searches</div>
+          <p class="section-hint" style="margin-bottom:1rem">Bookmark filter combinations for quick access in Browse CVEs.</p>
+          <div id="saved-searches-list" class="saved-searches-list"></div>
+          <div class="save-search-form" style="margin-top:.75rem">
+            <input class="input-sm" id="saved-search-name" placeholder="Search preset name…" style="width:220px" />
+            <button class="btn-sm" id="btn-save-search">Save current Browse filters</button>
           </div>
         </div>
 

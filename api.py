@@ -202,10 +202,11 @@ def api_trigger_scan():
         _log_mod.setup()
         database.bootstrap()
         try:
-            search.run_once(log=lambda m: None)
+            search.run_once(log=_broadcast_log)
         except Exception as exc:
             import logging
             logging.getLogger("cve_emailer.api").error("Triggered scan failed: %s", exc)
+            _broadcast_log(f"[ERROR] Scan failed: {exc}")
 
     _scheduler.add_job(_run, id="triggered_scan", replace_existing=True)
     return jsonify({"ok": True, "message": "Scan queued."})
@@ -215,6 +216,155 @@ def api_trigger_scan():
 def api_scan_status():
     jobs = _scheduler.get_jobs()
     return jsonify({"running": bool(jobs), "queued": len(jobs)})
+
+
+# ── Top CVEs ──────────────────────────────────────────────────────────────────
+
+@app.route("/api/cves/top")
+def api_top_cves():
+    limit = min(int(request.args.get("limit", 20)), 100)
+    return jsonify(database.get_top_cves(limit))
+
+
+# ── Trend data ────────────────────────────────────────────────────────────────
+
+@app.route("/api/history/trend")
+def api_trend():
+    limit = min(int(request.args.get("limit", 30)), 100)
+    return jsonify(database.get_trend_data(limit))
+
+
+# ── Digest queue ──────────────────────────────────────────────────────────────
+
+@app.route("/api/digest")
+def api_digest_queue():
+    return jsonify(database.get_digest_queue_all())
+
+
+@app.route("/api/digest/send", methods=["POST"])
+@_require_auth
+def api_digest_send():
+    data = request.get_json(force=True) or {}
+    profile_name = data.get("profile_name", "")
+    count = database.digest_send_now(profile_name)
+    return jsonify({"ok": True, "sent": count})
+
+
+# ── Notification tests ────────────────────────────────────────────────────────
+
+@app.route("/api/notify/test", methods=["POST"])
+@_require_auth
+def api_notify_test():
+    data   = request.get_json(force=True) or {}
+    channel = data.get("channel", "email")  # email | slack | webhook
+
+    if channel == "email":
+        import mail as _mail
+        cfg = configparser.ConfigParser()
+        cfg.read(_CONFIG_PATH)
+        sender    = os.environ.get("CVE_SENDER_EMAIL",    "").strip() or cfg.get("EMAIL", "senderEmail",    fallback="")
+        password  = os.environ.get("CVE_SENDER_PASSWORD", "").strip() or cfg.get("EMAIL", "senderPassword", fallback="")
+        rcpt_raw  = os.environ.get("CVE_RECIPIENT_EMAIL", "").strip() or cfg.get("EMAIL", "recipientEmail", fallback="")
+        recipients = [r.strip() for r in rcpt_raw.split(",") if r.strip()]
+        if not sender or not password or not recipients:
+            return jsonify({"ok": False, "error": "Email not configured"}), 400
+        try:
+            _mail.send_test_email(sender, password, recipients)
+            return jsonify({"ok": True})
+        except Exception as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 500
+
+    if channel == "slack":
+        import notify as _notify
+        cfg = configparser.ConfigParser()
+        cfg.read(_CONFIG_PATH)
+        webhook = os.environ.get("CVE_SLACK_WEBHOOK", "").strip() or cfg.get("DEFAULT", "slackWebhook", fallback="")
+        if not webhook:
+            return jsonify({"ok": False, "error": "Slack webhook not configured"}), 400
+        try:
+            _notify.send_slack(webhook, "CVE Emailer test message — Slack integration is working.")
+            return jsonify({"ok": True})
+        except Exception as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 500
+
+    if channel == "webhook":
+        import notify as _notify
+        cfg = configparser.ConfigParser()
+        cfg.read(_CONFIG_PATH)
+        webhook = os.environ.get("CVE_WEBHOOK_URL", "").strip() or cfg.get("DEFAULT", "webhookUrl", fallback="")
+        if not webhook:
+            return jsonify({"ok": False, "error": "Webhook URL not configured"}), 400
+        try:
+            _notify.send_webhook(webhook, [{"id": "TEST-0001", "description": "CVE Emailer test payload"}])
+            return jsonify({"ok": True})
+        except Exception as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 500
+
+    return jsonify({"ok": False, "error": f"Unknown channel: {channel}"}), 400
+
+
+# ── Scan log (SSE) ────────────────────────────────────────────────────────────
+
+import queue as _queue
+import threading as _threading
+
+_log_queue: _queue.Queue = _queue.Queue(maxsize=500)
+_log_lock = _threading.Lock()
+_log_subscribers: list[_queue.Queue] = []
+
+
+def _broadcast_log(msg: str) -> None:
+    """Push a log line to all active SSE subscribers and the ring buffer."""
+    _log_queue.put_nowait(msg) if not _log_queue.full() else None
+    with _log_lock:
+        dead = []
+        for q in _log_subscribers:
+            try:
+                q.put_nowait(msg)
+            except _queue.Full:
+                dead.append(q)
+        for q in dead:
+            _log_subscribers.remove(q)
+
+
+@app.route("/api/scan/log")
+def api_scan_log():
+    """Server-Sent Events stream of live scan log lines."""
+    sub: _queue.Queue = _queue.Queue(maxsize=200)
+    with _log_lock:
+        _log_subscribers.append(sub)
+
+    def _stream():
+        yield "retry: 2000\n\n"
+        # Drain the recent ring buffer first so the client sees recent lines
+        recent: list[str] = []
+        tmp: _queue.Queue = _queue.Queue()
+        while True:
+            try:
+                recent.append(_log_queue.get_nowait())
+            except _queue.Empty:
+                break
+        for line in recent[-50:]:
+            yield f"data: {line}\n\n"
+            tmp.put_nowait(line)
+        # Restore ring buffer
+        while not tmp.empty():
+            _log_queue.put_nowait(tmp.get_nowait())
+
+        try:
+            while True:
+                try:
+                    line = sub.get(timeout=25)
+                    yield f"data: {line}\n\n"
+                except _queue.Empty:
+                    yield ": ping\n\n"
+        finally:
+            with _log_lock:
+                if sub in _log_subscribers:
+                    _log_subscribers.remove(sub)
+
+    return app.response_class(_stream(), mimetype="text/event-stream",
+                               headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 # ── Config API ────────────────────────────────────────────────────────────────

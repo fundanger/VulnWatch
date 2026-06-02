@@ -18,10 +18,11 @@ navLinks.forEach(l => l.addEventListener("click", e => {
   e.preventDefault();
   const sec = l.dataset.section;
   showSection(sec);
-  if (sec === "overview")  loadDashboard();
+  if (sec === "overview")  { loadDashboard(); loadTopCves(); loadTrend(); }
   if (sec === "history")   loadHistory();
   if (sec === "profiles")  loadProfiles();
   if (sec === "browse")    loadBrowseTables();
+  if (sec === "digest")    loadDigestQueue();
   if (sec === "settings")  loadSettings();
 }));
 
@@ -123,7 +124,7 @@ async function loadDashboard() {
   }
 }
 
-document.getElementById("btn-refresh-dashboard").addEventListener("click", loadDashboard);
+document.getElementById("btn-refresh-dashboard").addEventListener("click", () => { loadDashboard(); loadTopCves(); loadTrend(); });
 
 // ── Browse CVEs ───────────────────────────────────────────────────────────────
 
@@ -188,8 +189,8 @@ function renderBrowseResults() {
   document.getElementById("browse-status").textContent = `${_browseRows.length} result(s) — click a row for detail`;
 }
 
-document.getElementById("btn-browse-search").addEventListener("click", doBrowseSearch);
-document.getElementById("br-search").addEventListener("keydown", e => { if (e.key === "Enter") doBrowseSearch(); });
+document.getElementById("btn-browse-search").addEventListener("click", () => doBrowseSearchPaged(0));
+document.getElementById("br-search").addEventListener("keydown", e => { if (e.key === "Enter") doBrowseSearchPaged(0); });
 
 document.getElementById("btn-browse-export").addEventListener("click", () => {
   if (!_browseRows.length) { alert("Run a search first."); return; }
@@ -308,6 +309,158 @@ function escHtml(str) {
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
 }
+
+// ── Theme toggle ─────────────────────────────────────────────────────────────
+
+const _themeBtn = document.getElementById("btn-theme");
+function _applyTheme(light) {
+  document.body.classList.toggle("light-theme", light);
+  _themeBtn.textContent = light ? "☾" : "☀";
+  localStorage.setItem("cve-theme", light ? "light" : "dark");
+}
+_themeBtn.addEventListener("click", () => _applyTheme(!document.body.classList.contains("light-theme")));
+_applyTheme(localStorage.getItem("cve-theme") === "light");
+
+// ── Trend chart ───────────────────────────────────────────────────────────────
+
+let _trendChart = null;
+let _epssChart  = null;
+
+async function loadTrend() {
+  const limit = document.getElementById("trend-limit").value;
+  try {
+    const r = await fetch(`${API}/api/history/trend?limit=${limit}`);
+    const rows = await r.json();
+
+    const labels  = rows.map(r => (r.started_at || "").slice(5, 16));
+    const newData = rows.map(r => r.new_cves     || 0);
+    const updData = rows.map(r => r.updated_cves || 0);
+
+    const ctx = document.getElementById("trend-chart").getContext("2d");
+    if (_trendChart) _trendChart.destroy();
+    _trendChart = new Chart(ctx, {
+      type: "bar",
+      data: {
+        labels,
+        datasets: [
+          { label: "New CVEs",     data: newData, backgroundColor: "rgba(124,58,237,.75)", borderRadius: 3 },
+          { label: "Upgraded",     data: updData, backgroundColor: "rgba(217,119,6,.65)",  borderRadius: 3 },
+        ],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: { legend: { labels: { color: "#94a3b8", font: { size: 11 } } } },
+        scales: {
+          x: { stacked: true, ticks: { color: "#94a3b8", font: { size: 10 } }, grid: { color: "#2d2d4e" } },
+          y: { stacked: true, ticks: { color: "#94a3b8", font: { size: 10 } }, grid: { color: "#2d2d4e" } },
+        },
+      },
+    });
+  } catch (e) { console.error("loadTrend:", e); }
+}
+
+async function loadEpssChart() {
+  try {
+    const tables = await (await fetch(`${API}/api/tables`)).json();
+    if (!tables.length) return;
+    const r = await fetch(`${API}/api/cves?table=${encodeURIComponent(tables[0])}&limit=1000`);
+    const rows = await r.json();
+    const scores = rows.map(r => r.epss_score).filter(v => v != null);
+    if (!scores.length) return;
+
+    const buckets = Array(10).fill(0);
+    scores.forEach(s => { const b = Math.min(9, Math.floor(s * 10)); buckets[b]++; });
+    const labels = ["0–10%","10–20%","20–30%","30–40%","40–50%","50–60%","60–70%","70–80%","80–90%","90–100%"];
+
+    const ctx = document.getElementById("epss-chart").getContext("2d");
+    if (_epssChart) _epssChart.destroy();
+    _epssChart = new Chart(ctx, {
+      type: "bar",
+      data: {
+        labels,
+        datasets: [{ label: "CVEs", data: buckets, backgroundColor: "rgba(147,51,234,.7)", borderRadius: 3 }],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: { legend: { display: false } },
+        scales: {
+          x: { ticks: { color: "#94a3b8", font: { size: 10 } }, grid: { color: "#2d2d4e" } },
+          y: { ticks: { color: "#94a3b8", font: { size: 10 } }, grid: { color: "#2d2d4e" } },
+        },
+      },
+    });
+  } catch (e) { console.error("loadEpssChart:", e); }
+}
+
+document.getElementById("trend-limit").addEventListener("change", loadTrend);
+
+// ── Top risk CVEs ─────────────────────────────────────────────────────────────
+
+async function loadTopCves() {
+  try {
+    const r = await fetch(`${API}/api/cves/top?limit=15`);
+    const rows = await r.json();
+    const tbody = document.getElementById("top-cves-tbody");
+    tbody.innerHTML = "";
+    rows.forEach((row, idx) => {
+      const tr = document.createElement("tr");
+      tr.className = "clickable";
+      tr.dataset.idx = idx;
+      tr.innerHTML = `
+        <td><code>${escHtml(row.cve_id)}</code></td>
+        <td>${sevBadge(row.severity)}</td>
+        <td class="num">${scoreStr(row.cvss_score)}</td>
+        <td class="num">${epssStr(row.epss_score)}</td>
+        <td>${kevBadge(row.kev)}</td>
+        <td>${escHtml(row.keyword || row._table || "")}</td>
+        <td>${escHtml((row.publish_date || "").slice(0,10))}</td>
+        <td>${escHtml(truncate(row.description, 80))}</td>
+      `;
+      tr.addEventListener("click", () => openDetail(row));
+      tbody.appendChild(tr);
+    });
+  } catch (e) { console.error("loadTopCves:", e); }
+}
+
+document.getElementById("btn-refresh-top").addEventListener("click", loadTopCves);
+
+// ── Live scan log (SSE) ───────────────────────────────────────────────────────
+
+let _sseSource = null;
+const _logEl  = document.getElementById("scan-log");
+const _logSts = document.getElementById("scan-log-status");
+
+function _startSseLog() {
+  if (_sseSource) return;
+  _sseSource = new EventSource(`${API}/api/scan/log`);
+  _logSts.textContent = "Live";
+  _logSts.className = "scan-status-text running";
+
+  _sseSource.onmessage = e => {
+    if (!e.data || e.data === ": ping") return;
+    const line = document.createElement("div");
+    line.className = "log-line";
+    line.textContent = e.data;
+    _logEl.appendChild(line);
+    _logEl.scrollTop = _logEl.scrollHeight;
+    // cap at 300 lines
+    while (_logEl.children.length > 300) _logEl.removeChild(_logEl.firstChild);
+  };
+  _sseSource.onerror = () => {
+    _logSts.textContent = "Disconnected";
+    _logSts.className = "scan-status-text";
+    _sseSource.close();
+    _sseSource = null;
+    setTimeout(_startSseLog, 5000); // reconnect
+  };
+}
+
+document.getElementById("btn-clear-log").addEventListener("click", () => { _logEl.innerHTML = ""; });
+
+// Start SSE log automatically
+_startSseLog();
 
 // ── Trigger scan ─────────────────────────────────────────────────────────────
 
@@ -573,6 +726,229 @@ async function loadProfiles() {
   }
 }
 
+// ── Digest queue ─────────────────────────────────────────────────────────────
+
+async function loadDigestQueue() {
+  try {
+    const r = await fetch(`${API}/api/digest`);
+    const rows = await r.json();
+    const container = document.getElementById("digest-groups");
+    container.innerHTML = "";
+
+    if (!rows.length) {
+      container.innerHTML = '<p class="muted">No CVEs pending in any digest queue.</p>';
+      return;
+    }
+
+    // Group by profile_name
+    const groups = {};
+    rows.forEach(r => {
+      const p = r.profile_name || "(default)";
+      if (!groups[p]) groups[p] = [];
+      groups[p].push(r);
+    });
+
+    for (const [profile, cves] of Object.entries(groups)) {
+      const div = document.createElement("div");
+      div.className = "panel";
+      div.style.marginBottom = "1.5rem";
+      div.innerHTML = `
+        <div class="panel-header">
+          <h2>${escHtml(profile)} <span class="form-hint">${cves.length} pending</span></h2>
+          <button class="btn-sm btn-send-digest" data-profile="${escHtml(profile)}">Send now</button>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr>
+              <th>CVE ID</th><th>Severity</th><th class="num">CVSS</th>
+              <th>Keyword</th><th>Queued At</th><th>Description</th>
+            </tr></thead>
+            <tbody>${cves.map(c => `
+              <tr>
+                <td><code>${escHtml(c.cve_id)}</code></td>
+                <td>${sevBadge(c.severity)}</td>
+                <td class="num">${scoreStr(c.cvss_score)}</td>
+                <td>${escHtml(c.keyword || "")}</td>
+                <td>${escHtml((c.queued_at || "").slice(0,16))}</td>
+                <td>${escHtml(truncate(c.description || "", 80))}</td>
+              </tr>`).join("")}
+            </tbody>
+          </table>
+        </div>
+      `;
+      container.appendChild(div);
+    }
+
+    container.querySelectorAll(".btn-send-digest").forEach(btn => {
+      btn.addEventListener("click", async () => {
+        const profile = btn.dataset.profile === "(default)" ? "" : btn.dataset.profile;
+        btn.disabled = true;
+        try {
+          const r = await fetch(`${API}/api/digest/send`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ profile_name: profile }),
+          });
+          const j = await r.json();
+          if (j.ok) loadDigestQueue();
+        } catch (e) { btn.disabled = false; }
+      });
+    });
+  } catch (e) { console.error("loadDigestQueue:", e); }
+}
+
+// ── Notification tests ────────────────────────────────────────────────────────
+
+async function _testNotify(channel) {
+  const msg = document.getElementById("test-notify-msg");
+  msg.textContent = `Sending ${channel} test…`;
+  msg.className = "form-msg";
+  try {
+    const r = await fetch(`${API}/api/notify/test`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ channel }),
+    });
+    const j = await r.json();
+    if (j.ok) { msg.textContent = `${channel} test sent!`; msg.className = "form-msg ok"; }
+    else       { msg.textContent = j.error || "Failed";     msg.className = "form-msg err"; }
+  } catch (e) { msg.textContent = "Request failed"; msg.className = "form-msg err"; }
+  setTimeout(() => { msg.textContent = ""; }, 4000);
+}
+
+document.getElementById("btn-test-email").addEventListener("click",   () => _testNotify("email"));
+document.getElementById("btn-test-slack").addEventListener("click",   () => _testNotify("slack"));
+document.getElementById("btn-test-webhook").addEventListener("click", () => _testNotify("webhook"));
+
+// ── Saved searches ────────────────────────────────────────────────────────────
+
+function _loadSavedSearches() {
+  try { return JSON.parse(localStorage.getItem("cve-saved-searches") || "[]"); } catch { return []; }
+}
+
+function _persistSavedSearches(arr) {
+  localStorage.setItem("cve-saved-searches", JSON.stringify(arr));
+}
+
+function renderSavedSearches() {
+  const list = document.getElementById("saved-searches-list");
+  const searches = _loadSavedSearches();
+  list.innerHTML = "";
+  if (!searches.length) {
+    list.innerHTML = '<span class="muted">No saved searches yet.</span>';
+    return;
+  }
+  searches.forEach((s, idx) => {
+    const chip = document.createElement("span");
+    chip.className = "search-chip";
+    chip.innerHTML = `${escHtml(s.name)} <button class="chip-del" data-idx="${idx}">✕</button>`;
+    chip.querySelector("button").addEventListener("click", e => {
+      e.stopPropagation();
+      const arr = _loadSavedSearches();
+      arr.splice(idx, 1);
+      _persistSavedSearches(arr);
+      renderSavedSearches();
+    });
+    chip.addEventListener("click", e => {
+      if (e.target.tagName === "BUTTON") return;
+      // Navigate to browse and apply filters
+      showSection("browse");
+      loadBrowseTables().then(() => {
+        document.getElementById("br-table").value    = s.table    || "";
+        document.getElementById("br-search").value   = s.search   || "";
+        document.getElementById("br-severity").value = s.severity || "NONE";
+        document.getElementById("br-date-from").value = s.dateFrom || "";
+        document.getElementById("br-date-to").value   = s.dateTo   || "";
+      });
+    });
+    list.appendChild(chip);
+  });
+}
+
+document.getElementById("btn-save-search").addEventListener("click", () => {
+  const name = document.getElementById("saved-search-name").value.trim();
+  if (!name) return;
+  const arr = _loadSavedSearches();
+  arr.push({
+    name,
+    table:    document.getElementById("br-table").value,
+    search:   document.getElementById("br-search").value,
+    severity: document.getElementById("br-severity").value,
+    dateFrom: document.getElementById("br-date-from").value,
+    dateTo:   document.getElementById("br-date-to").value,
+  });
+  _persistSavedSearches(arr);
+  document.getElementById("saved-search-name").value = "";
+  renderSavedSearches();
+});
+
+// ── Browse pagination ─────────────────────────────────────────────────────────
+
+const PAGE_SIZE_BROWSE = 100;
+let _browsePage = 0;
+let _browseTotalRows = 0;
+
+async function doBrowseSearchPaged(page = 0) {
+  const table = document.getElementById("br-table").value;
+  if (!table) { alert("Select a keyword table first."); return; }
+
+  _browsePage = page;
+  const params = new URLSearchParams({
+    table,
+    search:       document.getElementById("br-search").value,
+    min_severity: document.getElementById("br-severity").value,
+    date_from:    document.getElementById("br-date-from").value,
+    date_to:      document.getElementById("br-date-to").value,
+    limit:  PAGE_SIZE_BROWSE,
+    offset: page * PAGE_SIZE_BROWSE,
+  });
+
+  try {
+    const r = await fetch(`${API}/api/cves?${params}`);
+    _browseRows  = await r.json();
+    _browseTable = table;
+    // Fetch total count (one extra row to detect more pages)
+    const countParams = new URLSearchParams({...Object.fromEntries(params), limit: 1, offset: (page + 1) * PAGE_SIZE_BROWSE});
+    const rNext = await fetch(`${API}/api/cves?${countParams}`);
+    const nextRows = await rNext.json();
+    const hasMore = nextRows.length > 0;
+
+    renderBrowseResults();
+    renderPagination(page, hasMore);
+  } catch (e) {
+    console.error("doBrowseSearchPaged:", e);
+  }
+}
+
+function renderPagination(page, hasMore) {
+  const el = document.getElementById("browse-pagination");
+  el.innerHTML = "";
+  if (page === 0 && !hasMore) return;
+
+  if (page > 0) {
+    const prev = document.createElement("button");
+    prev.className = "btn-sm";
+    prev.textContent = "← Prev";
+    prev.addEventListener("click", () => doBrowseSearchPaged(page - 1));
+    el.appendChild(prev);
+  }
+  const info = document.createElement("span");
+  info.className = "page-info";
+  info.textContent = `Page ${page + 1}`;
+  el.appendChild(info);
+  if (hasMore) {
+    const next = document.createElement("button");
+    next.className = "btn-sm";
+    next.textContent = "Next →";
+    next.addEventListener("click", () => doBrowseSearchPaged(page + 1));
+    el.appendChild(next);
+  }
+}
+
 // ── Initial load ──────────────────────────────────────────────────────────────
 
 loadDashboard();
+loadTopCves();
+loadTrend();
+loadEpssChart();
+renderSavedSearches();

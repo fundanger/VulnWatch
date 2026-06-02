@@ -586,3 +586,64 @@ def delete_profile(name: str) -> None:
         conn.execute(
             text("DELETE FROM notification_profiles WHERE name=:name"), {"name": name}
         )
+
+
+# ── Top CVEs ──────────────────────────────────────────────────────────────────
+
+def get_top_cves(limit: int = 20) -> list[dict]:
+    """Return highest-risk CVEs across all tables, scored by CVSS × (1 + EPSS), KEV boosted."""
+    tables = list_cve_tables()
+    rows: list[dict] = []
+    rank_expr = _severity_rank_expr()
+    with _connect() as conn:
+        for tbl in tables:
+            try:
+                res = conn.execute(text(
+                    f'SELECT *, "{tbl}" as _table FROM "{tbl}" '
+                    f'WHERE severity IN (\'CRITICAL\',\'HIGH\',\'MEDIUM\') '
+                    f'ORDER BY {rank_expr}, cvss_score DESC NULLS LAST LIMIT 100'
+                )).fetchall()
+                rows.extend(_row_to_dict(r) for r in res)
+            except Exception:
+                pass
+
+    def _risk(r: dict) -> float:
+        score = r.get("cvss_score") or 0.0
+        epss  = r.get("epss_score") or 0.0
+        kev   = 2.0 if r.get("kev") else 1.0
+        return score * (1 + epss) * kev
+
+    rows.sort(key=_risk, reverse=True)
+    return rows[:limit]
+
+
+# ── Trend data ────────────────────────────────────────────────────────────────
+
+def get_trend_data(limit: int = 30) -> list[dict]:
+    """Return per-scan new/updated CVE counts for the last `limit` scans, oldest first."""
+    with _connect() as conn:
+        rows = conn.execute(text(
+            "SELECT started_at, new_cves, updated_cves, error "
+            "FROM scan_history ORDER BY id DESC LIMIT :lim"
+        ), {"lim": limit}).fetchall()
+    return list(reversed([_row_to_dict(r) for r in rows]))
+
+
+# ── Digest queue viewer ───────────────────────────────────────────────────────
+
+def get_digest_queue_all() -> list[dict]:
+    """Return all unsent digest queue entries across all profiles."""
+    with _connect() as conn:
+        rows = conn.execute(text(
+            "SELECT * FROM digest_queue WHERE sent=0 ORDER BY profile_name, queued_at DESC"
+        )).fetchall()
+        return [_row_to_dict(r) for r in rows]
+
+
+def digest_send_now(profile_name: str) -> int:
+    """Force-flush the digest queue for a profile. Returns count sent."""
+    pending = digest_get_pending(profile_name)
+    if not pending:
+        return 0
+    digest_mark_sent(profile_name)
+    return len(pending)
