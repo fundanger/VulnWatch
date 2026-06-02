@@ -227,6 +227,10 @@
       <a href="#enrichment">CVE Enrichment</a>
       <a href="#database">Database</a>
       <a href="#tui">Terminal UI</a>
+      <a href="#scanners">Environment Scanners</a>
+      <a href="#scanner-python" class="sub">Python</a>
+      <a href="#scanner-bash" class="sub">Bash (Linux/macOS)</a>
+      <a href="#scanner-ps1" class="sub">PowerShell (Windows)</a>
     </nav>
 
     <!-- ── Main content ── -->
@@ -693,6 +697,122 @@ python api.py --port 8080        <span class="cm"># custom port</span></code></p
         <p>
           New columns are added via <code>ALTER TABLE ... ADD COLUMN</code> inside try/except blocks,
           so upgrading an existing database is safe — just restart the app.
+        </p>
+      </div>
+
+      <!-- ENVIRONMENT SCANNERS -->
+      <div class="docs-section" id="scanners">
+        <h2 class="docs-h2">Environment Scanners</h2>
+        <p>
+          Run a scanner on any machine you want to monitor. Each script fingerprints installed
+          software, running services, OS/kernel, listening ports, and package-manager libraries,
+          then either prints a keyword list or uploads it directly to CVE Emailer — creating or
+          updating an <strong>Asset record</strong> so CVEs are automatically correlated to the host.
+        </p>
+        <p>
+          All three scanners require <strong>no root / admin rights</strong> (most checks), support
+          <code>--append</code> mode to merge into the existing keyword list, and filter generic
+          port-only names and unknown Docker image names to avoid NVD noise.
+        </p>
+
+        <h3 class="docs-h3" id="scanner-python">Python — <code>scan_environment.py</code></h3>
+        <p>Cross-platform (Windows / Linux / macOS). Recommended when Python 3.10+ is available.</p>
+        <pre><code><span class="cm"># Print keyword list to stdout</span>
+python scan_environment.py
+
+<span class="cm"># Full JSON inventory</span>
+python scan_environment.py --json
+
+<span class="cm"># Upload to dashboard + create/update asset</span>
+python scan_environment.py --upload http://your-dashboard:5000 --token YOUR_API_SECRET \
+    --asset-name PROD-WEB-01 --environment production \
+    --owner infra-team --append
+
+<span class="cm"># Write keyword list to file</span>
+python scan_environment.py --out keywords.txt</code></pre>
+        <table class="def-table">
+          <thead><tr><th>Flag</th><th>Description</th></tr></thead>
+          <tbody>
+            <tr><td><code>--upload URL</code></td><td>Base URL of a running CVE Emailer dashboard.</td></tr>
+            <tr><td><code>--token SECRET</code></td><td>API_SECRET bearer token for authenticated upload.</td></tr>
+            <tr><td><code>--asset-name NAME</code></td><td>Asset name in the inventory (default: hostname).</td></tr>
+            <tr><td><code>--environment ENV</code></td><td><code>production</code> / <code>staging</code> / <code>development</code> / <code>dmz</code></td></tr>
+            <tr><td><code>--owner TEAM</code></td><td>Owner/team name stored against the asset.</td></tr>
+            <tr><td><code>--asset-tags TAGS</code></td><td>Extra comma-separated tags to attach to the asset.</td></tr>
+            <tr><td><code>--append</code></td><td>Merge into existing keywords; scanner wins on version conflicts.</td></tr>
+            <tr><td><code>--json</code></td><td>Output full JSON inventory instead of keyword list.</td></tr>
+            <tr><td><code>--out FILE</code></td><td>Write output to file instead of stdout.</td></tr>
+          </tbody>
+        </table>
+
+        <h3 class="docs-h3" id="scanner-bash">Bash — <code>scan_environment.sh</code></h3>
+        <p>Linux and macOS. No Python required — pure bash with <code>curl</code> for uploads.</p>
+        <pre><code>chmod +x scan_environment.sh
+
+<span class="cm"># Print keyword list</span>
+./scan_environment.sh
+
+<span class="cm"># Upload to dashboard + create/update asset</span>
+./scan_environment.sh --upload http://your-dashboard:5000 --token YOUR_API_SECRET \
+    --asset-name PROD-LNX-01 --environment production --append
+
+<span class="cm"># Preview what would be uploaded (no changes made)</span>
+./scan_environment.sh --upload http://your-dashboard:5000 --token SECRET --dry-run</code></pre>
+        <p>Accepts the same flags as the Python script (<code>--upload</code>, <code>--token</code>,
+        <code>--asset-name</code>, <code>--environment</code>, <code>--owner</code>,
+        <code>--asset-tags</code>, <code>--append</code>, <code>--dry-run</code>, <code>--json</code>,
+        <code>--out</code>).</p>
+
+        <h3 class="docs-h3" id="scanner-ps1">PowerShell — <code>Scan-Environment.ps1</code></h3>
+        <p>Windows only. No external dependencies — uses WMI, .NET APIs, and the Windows registry.</p>
+        <pre><code><span class="cm"># Print keyword list</span>
+.\Scan-Environment.ps1
+
+<span class="cm"># Upload to dashboard + create/update asset</span>
+.\Scan-Environment.ps1 -DashboardUrl http://your-dashboard:5000 -Token YOUR_API_SECRET `
+    -AssetName PROD-WIN-01 -Environment production -Owner infra-team -Append
+
+<span class="cm"># Preview what would be uploaded</span>
+.\Scan-Environment.ps1 -DashboardUrl http://your-dashboard:5000 -Token SECRET -DryRun
+
+<span class="cm"># Write JSON inventory to file</span>
+.\Scan-Environment.ps1 -Json -OutFile C:\temp\inventory.json</code></pre>
+        <div class="callout note">
+          On Windows Server SKUs, the scanner also queries installed Windows Features (IIS, DNS,
+          DHCP, ADCS, ADFS, Hyper-V, RDS) via <code>Get-WindowsFeature</code>.
+          On workstation SKUs this section is silently skipped.
+        </div>
+
+        <h3 class="docs-h3">What gets scanned</h3>
+        <table class="def-table">
+          <thead><tr><th>Category</th><th>Detection method</th></tr></thead>
+          <tbody>
+            <tr><td>OS / kernel</td><td><code>/etc/os-release</code>, <code>uname</code>, <code>sw_vers</code>, WMI <code>Win32_OperatingSystem</code></td></tr>
+            <tr><td>Runtimes</td><td>Binary version flags (<code>python3 --version</code>, <code>node --version</code>, etc.)</td></tr>
+            <tr><td>Web servers</td><td>Binary version flags; IIS via Windows service / registry</td></tr>
+            <tr><td>Databases</td><td>Binary version flags; service presence on Windows</td></tr>
+            <tr><td>Containers</td><td><code>docker --version</code>, running containers (image whitelist), <code>kubectl</code>, <code>helm</code></td></tr>
+            <tr><td>Network / crypto</td><td><code>openssl version</code>, <code>ssh -V</code>, <code>curl --version</code></td></tr>
+            <tr><td>System packages</td><td><code>dpkg-query</code> (Debian/Ubuntu), <code>rpm</code> (RHEL/Fedora), <code>apk info</code> (Alpine), Homebrew</td></tr>
+            <tr><td>Listening ports</td><td><code>ss -tlnp</code> / <code>netstat</code> / <code>IPGlobalProperties</code> mapped to known products</td></tr>
+            <tr><td>Windows programs</td><td>Registry <code>HKLM/HKCU …\Uninstall</code> via <code>winreg</code> or <code>Get-ItemProperty</code></td></tr>
+          </tbody>
+        </table>
+
+        <h3 class="docs-h3">Keyword format produced</h3>
+        <p>
+          Each discovered product becomes one keyword with a <code>::SEVERITY</code> override,
+          trimmed to <code>major.minor</code> version for broader NVD hits:
+        </p>
+        <pre><code>nginx 1.24::CRITICAL
+PostgreSQL 16.1::CRITICAL
+OpenSSH 9.3::HIGH
+Python 3.11::MEDIUM
+Docker 24.0::HIGH</code></pre>
+        <p>
+          Generic names (<code>HTTP server</code>, <code>HTTPS server</code>, <code>SMTP server</code>,
+          etc.) are filtered out. Unknown Docker image names are silently dropped — only names in the
+          built-in product whitelist produce keywords.
         </p>
       </div>
 

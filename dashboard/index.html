@@ -8,378 +8,1011 @@
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 </head>
 <body>
+
+  <!-- ── Top nav ──────────────────────────────────────────────────────────── -->
   <nav class="nav">
-    <div class="nav-brand">CVE Emailer</div>
-    <div class="nav-links">
-      <a href="#overview" class="nav-link active" data-section="overview">Overview</a>
-      <a href="#browse" class="nav-link" data-section="browse">Browse CVEs</a>
-      <a href="#watchlist" class="nav-link" data-section="watchlist">Watchlist</a>
-      <a href="#analytics" class="nav-link" data-section="analytics">Analytics</a>
-      <a href="#history" class="nav-link" data-section="history">Scan History</a>
-      <a href="#profiles" class="nav-link" data-section="profiles">Profiles</a>
-      <a href="#digest" class="nav-link" data-section="digest">Digest Queue</a>
-      <a href="#triage" class="nav-link" data-section="triage">Triage</a>
-      <a href="#assets" class="nav-link" data-section="assets">Assets</a>
-      <a href="#users" class="nav-link" data-section="users">Users</a>
-      <a href="#threat" class="nav-link" data-section="threat">Threat Intel</a>
-      <a href="#routing" class="nav-link" data-section="routing">Routing</a>
-      <a href="#audit" class="nav-link" data-section="audit">Audit Log</a>
-      <a href="#notifylog" class="nav-link" data-section="notifylog">Notify Log</a>
-      <a href="#settings" class="nav-link" data-section="settings">Settings</a>
-      <a href="/docs" class="nav-link" target="_self">Docs</a>
-      <button class="btn-theme" id="btn-theme" title="Toggle theme">☀</button>
-      <button class="btn-theme" id="btn-shortcuts" title="Keyboard shortcuts (?)">⌨</button>
+    <div class="nav-brand">
+      <div class="nav-brand-icon">🛡</div>
+      <div>
+        CVE Emailer
+        <span class="nav-brand-sub">Security Operations</span>
+      </div>
     </div>
-    <div class="nav-status">
-      <span id="health-dot" class="health-dot"></span>
-      <span id="health-text">Connecting…</span>
+
+    <!-- Primary nav links — only top-level sections (others live in sidebar) -->
+    <div class="nav-links">
+      <a href="#overview"  class="nav-link active" data-section="overview">Overview</a>
+      <a href="#browse"    class="nav-link" data-section="browse">Browse CVEs</a>
+      <a href="#triage"    class="nav-link" data-section="triage">Triage</a>
+      <a href="#analytics" class="nav-link" data-section="analytics">Analytics</a>
+      <a href="#settings"  class="nav-link" data-section="settings">Settings</a>
+    </div>
+
+    <div class="nav-right">
+      <div class="nav-status">
+        <span id="health-dot" class="health-dot"></span>
+        <span id="health-text">Connecting…</span>
+      </div>
+      <button class="btn-icon" id="btn-theme" title="Toggle light / dark theme">☀</button>
+      <button class="btn-icon" id="btn-shortcuts" title="Keyboard shortcuts (?)">⌨</button>
     </div>
   </nav>
 
-  <!-- OVERVIEW -->
-  <section id="section-overview" class="section active">
-    <div class="container">
-      <div class="page-title-row">
-        <h1 class="page-title">Security Overview</h1>
-        <div class="page-actions">
-          <label class="auto-refresh-label">
-            <input type="checkbox" id="chk-auto-refresh" />
-            Auto-refresh
-            <select id="sel-refresh-interval" class="input-sm" style="width:auto;padding:.25rem .5rem">
-              <option value="60">1 min</option>
-              <option value="300" selected>5 min</option>
-              <option value="600">10 min</option>
+  <!-- ── App shell ────────────────────────────────────────────────────────── -->
+  <div class="app-shell">
+
+    <!-- ── Sidebar ──────────────────────────────────────────────────────── -->
+    <aside class="sidebar">
+
+      <div class="sidebar-group">
+        <div class="sidebar-group-label">Monitoring</div>
+        <a class="sidebar-link active" data-section="overview">
+          <span class="sidebar-icon">📊</span>Overview
+        </a>
+        <a class="sidebar-link" data-section="browse">
+          <span class="sidebar-icon">🔍</span>Browse CVEs
+        </a>
+        <a class="sidebar-link" data-section="watchlist">
+          <span class="sidebar-icon">⭐</span>Watchlist
+        </a>
+        <a class="sidebar-link" data-section="analytics">
+          <span class="sidebar-icon">📈</span>Analytics
+        </a>
+        <a class="sidebar-link" data-section="threat">
+          <span class="sidebar-icon">🔥</span>Threat Intel
+        </a>
+      </div>
+
+      <div class="sidebar-group">
+        <div class="sidebar-group-label">Response</div>
+        <a class="sidebar-link" data-section="triage">
+          <span class="sidebar-icon">🎯</span>Triage
+          <span class="sidebar-badge" id="sb-triage-count" style="display:none"></span>
+        </a>
+        <a class="sidebar-link" data-section="audit">
+          <span class="sidebar-icon">📋</span>Audit Log
+        </a>
+        <a class="sidebar-link" data-section="notifylog">
+          <span class="sidebar-icon">🔔</span>Notify Log
+        </a>
+      </div>
+
+      <div class="sidebar-group">
+        <div class="sidebar-group-label">Configuration</div>
+        <a class="sidebar-link" data-section="profiles">
+          <span class="sidebar-icon">👤</span>Profiles
+        </a>
+        <a class="sidebar-link" data-section="digest">
+          <span class="sidebar-icon">📬</span>Digest Queue
+        </a>
+        <a class="sidebar-link" data-section="routing">
+          <span class="sidebar-icon">⚡</span>Routing Rules
+        </a>
+        <a class="sidebar-link" data-section="assets">
+          <span class="sidebar-icon">🖥</span>Assets
+        </a>
+        <a class="sidebar-link" data-section="users">
+          <span class="sidebar-icon">🔑</span>Users
+        </a>
+        <a class="sidebar-link" data-section="history">
+          <span class="sidebar-icon">🕐</span>Scan History
+        </a>
+        <a class="sidebar-link" data-section="settings">
+          <span class="sidebar-icon">⚙</span>Settings
+        </a>
+      </div>
+
+      <div class="sidebar-group">
+        <div class="sidebar-group-label">Help</div>
+        <a class="sidebar-link" href="/docs" target="_self">
+          <span class="sidebar-icon">📖</span>Docs
+        </a>
+      </div>
+
+    </aside>
+
+    <!-- ── Main content ────────────────────────────────────────────────── -->
+    <main class="main-content">
+
+      <!-- ── OVERVIEW ───────────────────────────────────────────────────── -->
+      <section id="section-overview" class="section active">
+        <div class="container">
+          <div class="page-header">
+            <div>
+              <h1 class="page-title">Security Overview</h1>
+              <p class="page-subtitle">Live CVE threat landscape for your monitored keywords</p>
+            </div>
+            <div class="page-actions">
+              <label class="auto-refresh-label">
+                <input type="checkbox" id="chk-auto-refresh" />
+                Auto-refresh
+                <select id="sel-refresh-interval" class="input-sm" style="width:auto;padding:.25rem .5rem">
+                  <option value="60">1 min</option>
+                  <option value="300" selected>5 min</option>
+                  <option value="600">10 min</option>
+                </select>
+              </label>
+              <button class="btn-sm" id="btn-export-all" title="Export all CVEs to CSV">⬇ Export</button>
+              <button class="btn-sm" id="btn-report-html" title="Download HTML security report">📄 Report</button>
+              <span id="scan-status-text" class="scan-status-text"></span>
+              <button class="btn-primary" id="btn-trigger-scan">▶ Run Scan</button>
+            </div>
+          </div>
+
+          <!-- Stat cards -->
+          <div class="stat-grid">
+            <div class="stat-card">
+              <div class="stat-label">Total CVEs</div>
+              <div class="stat-value" id="stat-total">—</div>
+            </div>
+            <div class="stat-card critical">
+              <div class="stat-label">Critical</div>
+              <div class="stat-value" id="stat-critical">—</div>
+            </div>
+            <div class="stat-card high">
+              <div class="stat-label">High</div>
+              <div class="stat-value" id="stat-high">—</div>
+            </div>
+            <div class="stat-card medium">
+              <div class="stat-label">Medium</div>
+              <div class="stat-value" id="stat-medium">—</div>
+            </div>
+            <div class="stat-card low">
+              <div class="stat-label">Low</div>
+              <div class="stat-value" id="stat-low">—</div>
+            </div>
+            <div class="stat-card kev">
+              <div class="stat-label">CISA KEV</div>
+              <div class="stat-value" id="stat-kev">—</div>
+              <div class="stat-sub">Actively exploited</div>
+            </div>
+          </div>
+
+          <!-- Charts row -->
+          <div class="panel-row">
+            <div class="panel" style="flex:2">
+              <div class="panel-header">
+                <h2>CVE Trend</h2>
+                <select class="input-sm" id="trend-limit" style="width:auto;margin-left:auto">
+                  <option value="14">14 scans</option>
+                  <option value="30" selected>30 scans</option>
+                  <option value="60">60 scans</option>
+                </select>
+              </div>
+              <div class="chart-wrap"><canvas id="trend-chart"></canvas></div>
+            </div>
+            <div class="panel" style="flex:1">
+              <div class="panel-header"><h2>Severity Split</h2></div>
+              <div class="chart-wrap chart-wrap-sm"><canvas id="severity-chart"></canvas></div>
+            </div>
+            <div class="panel" style="flex:1">
+              <div class="panel-header"><h2>EPSS Distribution</h2></div>
+              <div class="chart-wrap chart-wrap-sm"><canvas id="epss-chart"></canvas></div>
+            </div>
+          </div>
+
+          <!-- Top Risk CVEs -->
+          <div class="panel" style="margin-bottom:1.25rem">
+            <div class="panel-header">
+              <h2>Top Risk CVEs</h2>
+              <span class="panel-hint">Ranked by CVSS × (1 + EPSS), KEV-boosted</span>
+              <button class="btn-sm" id="btn-refresh-top" style="margin-left:auto">↻ Refresh</button>
+            </div>
+            <div class="table-wrap">
+              <table id="top-cves-table">
+                <thead>
+                  <tr>
+                    <th>CVE ID</th>
+                    <th>Severity</th>
+                    <th class="num">CVSS</th>
+                    <th class="num">EPSS</th>
+                    <th>KEV</th>
+                    <th>Keyword</th>
+                    <th>Published</th>
+                    <th>Description</th>
+                  </tr>
+                </thead>
+                <tbody id="top-cves-tbody"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- Keyword breakdown + Recent scans -->
+          <div class="panel-row">
+            <div class="panel" style="flex:2">
+              <div class="panel-header">
+                <h2>Keyword Breakdown</h2>
+                <button class="btn-sm" id="btn-refresh-dashboard" style="margin-left:auto">↻ Refresh</button>
+              </div>
+              <div class="table-wrap">
+                <table id="keyword-table">
+                  <thead>
+                    <tr>
+                      <th>Keyword</th>
+                      <th class="num critical-col">CRIT</th>
+                      <th class="num high-col">HIGH</th>
+                      <th class="num medium-col">MED</th>
+                      <th class="num low-col">LOW</th>
+                      <th class="num">KEV</th>
+                      <th class="num">Total</th>
+                    </tr>
+                  </thead>
+                  <tbody id="keyword-tbody"></tbody>
+                </table>
+              </div>
+            </div>
+            <div class="panel" style="flex:1">
+              <div class="panel-header"><h2>Recent Scans</h2></div>
+              <ul id="recent-scans" class="scan-list"></ul>
+            </div>
+          </div>
+
+          <!-- Keyword performance -->
+          <div class="panel" style="margin-bottom:1.25rem">
+            <div class="panel-header">
+              <h2>Keyword Performance</h2>
+              <span class="panel-hint">Avg CVSS · EPSS · KEV count · last scan</span>
+              <button class="btn-sm" id="btn-refresh-kw-perf" style="margin-left:auto">↻</button>
+            </div>
+            <div class="table-wrap">
+              <table id="kw-perf-table">
+                <thead>
+                  <tr>
+                    <th>Keyword</th>
+                    <th class="num">Total</th>
+                    <th class="num">Avg CVSS</th>
+                    <th class="num">Avg EPSS</th>
+                    <th class="num">KEV</th>
+                    <th>Last Scan</th>
+                  </tr>
+                </thead>
+                <tbody id="kw-perf-tbody"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- Metrics row: MTTR + Schedule + Scan Health -->
+          <div class="panel-row">
+            <!-- MTTR -->
+            <div class="panel" style="flex:1">
+              <div class="panel-header">
+                <h2>MTTR &amp; Lifecycle</h2>
+                <button class="btn-sm" id="btn-refresh-mttr" style="margin-left:auto">↻</button>
+              </div>
+              <div class="schedule-row" id="mttr-summary" style="flex-wrap:wrap;gap:1rem">
+                <div class="schedule-item">
+                  <div class="schedule-label">MTTR (days)</div>
+                  <div class="schedule-value" id="mttr-days">—</div>
+                </div>
+                <div class="schedule-item">
+                  <div class="schedule-label">Remediated</div>
+                  <div class="schedule-value" id="mttr-remediated">—</div>
+                </div>
+                <div class="schedule-item">
+                  <div class="schedule-label">Open</div>
+                  <div class="schedule-value" id="mttr-open">—</div>
+                </div>
+                <div class="schedule-item">
+                  <div class="schedule-label">Overdue</div>
+                  <div class="schedule-value" id="mttr-overdue" style="color:var(--critical)">—</div>
+                </div>
+              </div>
+              <div id="mttr-states" style="margin-top:.75rem;display:flex;gap:.5rem;flex-wrap:wrap"></div>
+            </div>
+
+            <!-- Schedule -->
+            <div class="panel" style="flex:1">
+              <div class="panel-header"><h2>Schedule</h2></div>
+              <div class="schedule-row" style="flex-wrap:wrap;gap:1rem">
+                <div class="schedule-item">
+                  <div class="schedule-label">Last scan</div>
+                  <div class="schedule-value" id="sched-last">—</div>
+                </div>
+                <div class="schedule-item">
+                  <div class="schedule-label">Interval</div>
+                  <div class="schedule-value" id="sched-interval">—</div>
+                </div>
+                <div class="schedule-item">
+                  <div class="schedule-label">Next scan in</div>
+                  <div class="schedule-value" id="sched-next"><span id="sched-countdown">—</span></div>
+                </div>
+                <div class="schedule-item">
+                  <div class="schedule-label">NVD API key</div>
+                  <div class="schedule-value" id="sched-apikey">—</div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Scan health -->
+            <div class="panel" style="flex:1">
+              <div class="panel-header">
+                <h2>Scan Health</h2>
+                <span class="panel-hint">Last 20 scans</span>
+                <button class="btn-sm" id="btn-refresh-scan-health" style="margin-left:auto">↻</button>
+              </div>
+              <div class="schedule-row" style="flex-wrap:wrap;gap:1rem">
+                <div class="schedule-item">
+                  <div class="schedule-label">Success rate</div>
+                  <div class="schedule-value" id="health-success-rate">—</div>
+                </div>
+                <div class="schedule-item">
+                  <div class="schedule-label">Avg duration</div>
+                  <div class="schedule-value" id="health-avg-dur">—</div>
+                </div>
+                <div class="schedule-item">
+                  <div class="schedule-label">Error rate</div>
+                  <div class="schedule-value" id="health-error-rate">—</div>
+                </div>
+                <div class="schedule-item">
+                  <div class="schedule-label">Total scans</div>
+                  <div class="schedule-value" id="health-total">—</div>
+                </div>
+              </div>
+              <div class="chart-wrap" style="margin-top:1rem;height:60px"><canvas id="scan-health-chart"></canvas></div>
+            </div>
+          </div>
+
+          <!-- Live scan log -->
+          <div class="panel" id="scan-log-panel">
+            <div class="panel-header">
+              <h2>Live Scan Log</h2>
+              <span id="scan-log-status" class="scan-status-text" style="margin-left:.5rem"></span>
+              <button class="btn-sm" id="btn-clear-log" style="margin-left:auto">Clear</button>
+            </div>
+            <div id="scan-log" class="scan-log"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ── BROWSE CVEs ─────────────────────────────────────────────────── -->
+      <section id="section-browse" class="section">
+        <div class="container">
+          <div class="page-header">
+            <div>
+              <h1 class="page-title">Browse CVEs</h1>
+              <p class="page-subtitle">Search, filter, and triage across all your monitored keywords</p>
+            </div>
+          </div>
+
+          <div class="quick-filters" id="quick-filters">
+            <span class="quick-label">Quick:</span>
+            <button class="qf-chip" data-sev="CRITICAL" data-kev="">Critical only</button>
+            <button class="qf-chip" data-sev="HIGH" data-kev="">High+</button>
+            <button class="qf-chip" data-sev="" data-kev="1">KEV only</button>
+            <button class="qf-chip" data-sev="CRITICAL" data-kev="1">Critical KEV</button>
+            <button class="qf-chip" data-epss="0.5">EPSS &gt; 50%</button>
+            <button class="qf-chip" data-reviewed="unreviewed">Unreviewed</button>
+          </div>
+
+          <div class="filter-bar">
+            <select id="br-table" class="input-sm">
+              <option value="">All keywords…</option>
             </select>
-          </label>
-          <button class="btn-sm" id="btn-export-all" title="Export all CVEs across all keywords to CSV">⬇ Export All</button>
-          <button class="btn-sm" id="btn-report-html" title="Download HTML security report">📄 Report</button>
-          <span id="scan-status-text" class="scan-status-text"></span>
-          <button class="btn-primary" id="btn-trigger-scan">▶ Run Scan</button>
-        </div>
-      </div>
-
-      <div class="stat-grid">
-        <div class="stat-card">
-          <div class="stat-label">Total CVEs</div>
-          <div class="stat-value" id="stat-total">—</div>
-        </div>
-        <div class="stat-card critical">
-          <div class="stat-label">Critical</div>
-          <div class="stat-value" id="stat-critical">—</div>
-        </div>
-        <div class="stat-card high">
-          <div class="stat-label">High</div>
-          <div class="stat-value" id="stat-high">—</div>
-        </div>
-        <div class="stat-card medium">
-          <div class="stat-label">Medium</div>
-          <div class="stat-value" id="stat-medium">—</div>
-        </div>
-        <div class="stat-card low">
-          <div class="stat-label">Low</div>
-          <div class="stat-value" id="stat-low">—</div>
-        </div>
-        <div class="stat-card kev">
-          <div class="stat-label">CISA KEV</div>
-          <div class="stat-value" id="stat-kev">—</div>
-          <div class="stat-sub">Actively exploited</div>
-        </div>
-      </div>
-
-      <!-- Trend chart + Severity doughnut + EPSS -->
-      <div class="panel-row" style="margin-bottom:1.5rem">
-        <div class="panel" style="flex:2">
-          <div class="panel-header">
-            <h2>CVE Trend</h2>
-            <select class="input-sm" id="trend-limit" style="width:auto">
-              <option value="14">Last 14 scans</option>
-              <option value="30" selected>Last 30 scans</option>
-              <option value="60">Last 60 scans</option>
+            <input id="br-search" class="input-sm" placeholder="Search CVE ID or description…" />
+            <select id="br-severity" class="input-sm">
+              <option value="NONE">All severities</option>
+              <option value="LOW">LOW+</option>
+              <option value="MEDIUM">MEDIUM+</option>
+              <option value="HIGH">HIGH+</option>
+              <option value="CRITICAL">Critical only</option>
             </select>
+            <input id="br-date-from" class="input-sm" type="date" title="Published from" />
+            <input id="br-date-to"   class="input-sm" type="date" title="Published to" />
+            <select id="br-reviewed" class="input-sm">
+              <option value="">Any review status</option>
+              <option value="unreviewed">Unreviewed only</option>
+              <option value="reviewed">Reviewed only</option>
+            </select>
+            <button class="btn-primary" id="btn-browse-search">Search</button>
+            <button class="btn-sm" id="btn-browse-export">⬇ CSV</button>
           </div>
-          <div class="chart-wrap"><canvas id="trend-chart"></canvas></div>
-        </div>
-        <div class="panel" style="flex:1">
-          <div class="panel-header"><h2>Severity Breakdown</h2></div>
-          <div class="chart-wrap chart-wrap-sm"><canvas id="severity-chart"></canvas></div>
-        </div>
-        <div class="panel" style="flex:1">
-          <div class="panel-header">
-            <h2>EPSS Distribution</h2>
-          </div>
-          <div class="chart-wrap chart-wrap-sm"><canvas id="epss-chart"></canvas></div>
-        </div>
-      </div>
 
-      <!-- Top CVEs -->
-      <div class="panel" style="margin-bottom:1.5rem">
-        <div class="panel-header">
-          <h2>Top Risk CVEs</h2>
-          <span class="panel-hint">Ranked by CVSS × (1 + EPSS), KEV-boosted</span>
-          <button class="btn-sm" id="btn-refresh-top">↻</button>
-        </div>
-        <div class="table-wrap">
-          <table id="top-cves-table">
-            <thead>
-              <tr>
-                <th>CVE ID</th>
-                <th>Severity</th>
-                <th class="num">CVSS</th>
-                <th class="num">EPSS</th>
-                <th>KEV</th>
-                <th>Keyword</th>
-                <th>Published</th>
-                <th>Description</th>
-              </tr>
-            </thead>
-            <tbody id="top-cves-tbody"></tbody>
-          </table>
-        </div>
-      </div>
-
-      <div class="panel-row">
-        <div class="panel" style="flex:2">
-          <div class="panel-header">
-            <h2>Per-Keyword Breakdown</h2>
-            <button class="btn-sm" id="btn-refresh-dashboard">↻ Refresh</button>
-          </div>
           <div class="table-wrap">
-            <table id="keyword-table">
+            <table id="browse-table">
               <thead>
                 <tr>
+                  <th><input type="checkbox" id="chk-select-all" title="Select all" /></th>
+                  <th>CVE ID</th>
+                  <th>Severity</th>
+                  <th class="num">CVSS</th>
+                  <th class="num">EPSS</th>
+                  <th>KEV</th>
                   <th>Keyword</th>
-                  <th class="num critical-col">CRIT</th>
-                  <th class="num high-col">HIGH</th>
-                  <th class="num medium-col">MED</th>
-                  <th class="num low-col">LOW</th>
-                  <th class="num">KEV</th>
-                  <th class="num">Total</th>
+                  <th>Published</th>
+                  <th>Reviewed</th>
+                  <th>Triage</th>
+                  <th>Description</th>
                 </tr>
               </thead>
-              <tbody id="keyword-tbody"></tbody>
+              <tbody id="browse-tbody"></tbody>
+            </table>
+          </div>
+
+          <div class="bulk-bar" id="bulk-bar" style="display:none">
+            <span id="bulk-count" class="bulk-count">0 selected</span>
+            <button class="btn-sm" id="btn-bulk-reviewed">✓ Mark Reviewed</button>
+            <button class="btn-sm" id="btn-bulk-watchlist">⭐ Watchlist</button>
+            <button class="btn-sm" id="btn-bulk-export">⬇ Export</button>
+            <button class="btn-sm" id="btn-bulk-compare" title="Compare up to 3">⇄ Compare</button>
+            <button class="btn-sm" id="btn-bulk-clear">✕ Clear</button>
+          </div>
+
+          <div class="browse-footer">
+            <div id="browse-status" class="status-bar"></div>
+            <div class="pagination" id="browse-pagination"></div>
+          </div>
+
+          <!-- CVE detail overlay -->
+          <div id="detail-overlay" class="detail-overlay hidden">
+            <div class="detail-panel">
+              <!-- Sticky header -->
+              <div class="detail-panel-header">
+                <h2 id="detail-panel-title">CVE Details</h2>
+                <button class="btn-icon" id="btn-detail-close" title="Close (Esc)">✕</button>
+              </div>
+
+              <div class="detail-panel-body">
+                <!-- Core CVE info -->
+                <div id="detail-content"></div>
+
+                <!-- Action toolbar -->
+                <div class="detail-actions">
+                  <button class="btn-sm" id="btn-detail-watchlist">⭐ Watchlist</button>
+                  <button class="btn-sm" id="btn-detail-reviewed">✓ Reviewed</button>
+                  <button class="btn-sm btn-danger-sm" id="btn-detail-suppress" title="Suppress future alerts">⊘ Suppress</button>
+                  <button class="btn-sm" id="btn-detail-send-slack">⇒ Slack</button>
+                  <button class="btn-sm" id="btn-detail-send-webhook">⇒ Webhook</button>
+                  <button class="btn-sm" id="btn-detail-send-jira">⇒ Jira</button>
+                  <button class="btn-sm" id="btn-detail-send-snow">⇒ ServiceNow</button>
+                  <span id="detail-action-msg" class="form-msg" style="margin-left:.5rem"></span>
+                </div>
+
+                <!-- CVSS vector breakdown -->
+                <div id="cvss-vector-breakdown" class="cvss-breakdown" style="display:none;margin-top:.75rem"></div>
+
+                <!-- Triage -->
+                <div class="triage-row">
+                  <div class="form-group" style="margin-bottom:0;flex:1">
+                    <label class="form-label">Status</label>
+                    <select class="input-sm" id="detail-triage-status" style="width:100%">
+                      <option value="open">Open</option>
+                      <option value="investigating">Investigating</option>
+                      <option value="mitigated">Mitigated</option>
+                      <option value="wont_fix">Won't Fix</option>
+                      <option value="false_positive">False Positive</option>
+                      <option value="closed">Closed</option>
+                    </select>
+                  </div>
+                  <div class="form-group" style="margin-bottom:0;flex:1">
+                    <label class="form-label">Assignee</label>
+                    <input class="input-sm" id="detail-triage-assignee" placeholder="name or email…" style="width:100%" />
+                  </div>
+                  <div class="form-group" style="margin-bottom:0;flex:1">
+                    <label class="form-label">Due date</label>
+                    <input class="input-sm" id="detail-triage-due" type="date" style="width:100%" />
+                  </div>
+                  <button class="btn-sm" id="btn-detail-triage-save" style="align-self:flex-end">Save</button>
+                </div>
+
+                <!-- Exploit Intelligence -->
+                <div id="exploit-intel-panel" style="display:none" class="detail-block">
+                  <div class="detail-block-header">
+                    <span class="detail-block-icon">⚡</span>
+                    <span class="detail-block-title">Exploit Intelligence</span>
+                    <button class="btn-sm" id="btn-detail-enrich-exploit" style="margin-left:auto" title="Search GitHub + NVD for exploits">Check for Exploits</button>
+                    <span id="exploit-enrich-msg" class="form-msg" style="margin-left:.5rem"></span>
+                  </div>
+                  <div class="detail-block-body" id="exploit-intel-content"></div>
+                </div>
+
+                <!-- Threat Intelligence -->
+                <div id="threat-intel-panel" style="display:none" class="detail-block">
+                  <div class="detail-block-header">
+                    <span class="detail-block-icon">🔥</span>
+                    <span class="detail-block-title">Threat Intelligence</span>
+                    <button class="btn-sm" id="btn-detail-enrich-threat" style="margin-left:auto" title="Fetch OTX / CISA KEV data">Fetch Threat Data</button>
+                    <span id="threat-enrich-msg" class="form-msg" style="margin-left:.5rem"></span>
+                  </div>
+                  <div class="detail-block-body" id="threat-intel-content"></div>
+                </div>
+
+                <!-- Composite Risk Score -->
+                <div id="risk-score-panel" style="display:none" class="detail-block">
+                  <div class="detail-block-header">
+                    <span class="detail-block-icon">📊</span>
+                    <span class="detail-block-title">Composite Risk Score</span>
+                  </div>
+                  <div class="detail-block-body" id="risk-score-content"></div>
+                </div>
+
+                <!-- MITRE ATT&CK -->
+                <div id="attack-panel" style="display:none" class="detail-block">
+                  <div class="detail-block-header">
+                    <span class="detail-block-icon">🎯</span>
+                    <span class="detail-block-title">MITRE ATT&amp;CK Techniques</span>
+                  </div>
+                  <div class="detail-block-body">
+                    <div id="attack-content" class="attack-chips"></div>
+                  </div>
+                </div>
+
+                <!-- Compliance Mapping -->
+                <div id="compliance-panel" style="display:none" class="detail-block">
+                  <div class="detail-block-header">
+                    <span class="detail-block-icon">📜</span>
+                    <span class="detail-block-title">Compliance Mapping</span>
+                  </div>
+                  <div class="detail-block-body" id="compliance-content"></div>
+                </div>
+
+                <!-- Affected Assets -->
+                <div id="affected-assets-panel" style="display:none" class="detail-block">
+                  <div class="detail-block-header">
+                    <span class="detail-block-icon">🖥</span>
+                    <span class="detail-block-title">Affected Assets</span>
+                  </div>
+                  <div class="detail-block-body" id="affected-assets-content"></div>
+                </div>
+
+                <!-- Related CVEs -->
+                <div id="related-cves-panel" style="display:none" class="detail-block">
+                  <div class="detail-block-header">
+                    <span class="detail-block-icon">🔗</span>
+                    <span class="detail-block-title">Related CVEs (same CWE / product)</span>
+                  </div>
+                  <div class="detail-block-body" id="related-cves-content"></div>
+                </div>
+
+                <!-- Vendor Advisories & Exposure -->
+                <div id="exposure-panel" style="display:none" class="detail-block">
+                  <div class="detail-block-header">
+                    <span class="detail-block-icon">🔎</span>
+                    <span class="detail-block-title">Vendor Advisories &amp; Exposure</span>
+                    <button class="btn-sm" id="btn-detail-check-exposure" style="margin-left:auto" title="Check Red Hat, Ubuntu advisories">Check Advisories</button>
+                    <span id="exposure-msg" class="form-msg" style="margin-left:.5rem"></span>
+                  </div>
+                  <div class="detail-block-body" id="exposure-content"></div>
+                </div>
+
+                <!-- Internal Risk Override -->
+                <div class="detail-block" style="margin-top:.75rem">
+                  <div class="detail-block-header">
+                    <span class="detail-block-icon">🔧</span>
+                    <span class="detail-block-title">Internal Risk Override</span>
+                    <span style="font-size:11px;color:var(--subtle);margin-left:.5rem">Never overwrites NVD data</span>
+                  </div>
+                  <div class="detail-block-body">
+                    <div class="triage-row" style="border-top:none;padding-top:0">
+                      <div class="form-group" style="margin-bottom:0;flex:1">
+                        <label class="form-label">Score <span class="form-hint">0–10</span></label>
+                        <input class="input-sm" id="detail-override-score" type="number" min="0" max="10" step="0.1" placeholder="NVD score" style="width:100%" />
+                      </div>
+                      <div class="form-group" style="margin-bottom:0;flex:1">
+                        <label class="form-label">Effective severity</label>
+                        <select class="input-sm" id="detail-override-sev" style="width:100%">
+                          <option value="">— same as NVD —</option>
+                          <option value="CRITICAL">CRITICAL</option>
+                          <option value="HIGH">HIGH</option>
+                          <option value="MEDIUM">MEDIUM</option>
+                          <option value="LOW">LOW</option>
+                        </select>
+                      </div>
+                      <div class="form-group" style="margin-bottom:0;flex:2">
+                        <label class="form-label">Rationale</label>
+                        <input class="input-sm" id="detail-override-rationale" placeholder="e.g. air-gapped network, mitigating controls…" style="width:100%" />
+                      </div>
+                      <button class="btn-sm" id="btn-detail-override-save" style="align-self:flex-end">Save</button>
+                      <button class="btn-sm btn-danger-sm" id="btn-detail-override-clear" style="align-self:flex-end" title="Remove override">✕</button>
+                    </div>
+                    <div id="detail-override-msg" class="form-msg" style="margin-top:.3rem"></div>
+                  </div>
+                </div>
+
+                <!-- Patch Tracking -->
+                <div class="detail-block" style="margin-top:.75rem">
+                  <div class="detail-block-header">
+                    <span class="detail-block-icon">🩹</span>
+                    <span class="detail-block-title">Patch Tracking</span>
+                  </div>
+                  <div class="detail-block-body">
+                    <div class="triage-row" style="border-top:none;padding-top:0">
+                      <div class="form-group" style="margin-bottom:0;flex:2">
+                        <label class="form-label">Patched version</label>
+                        <input class="input-sm" id="detail-patch-version" placeholder="e.g. 2.3.1" style="width:100%" />
+                      </div>
+                      <div class="form-group" style="margin-bottom:0;flex:1">
+                        <label class="form-label">Date patched</label>
+                        <input class="input-sm" id="detail-patch-date" type="date" style="width:100%" />
+                      </div>
+                      <div class="form-group" style="margin-bottom:0;flex:1">
+                        <label class="form-label">Patched by</label>
+                        <input class="input-sm" id="detail-patch-by" placeholder="name…" style="width:100%" />
+                      </div>
+                      <button class="btn-sm" id="btn-detail-patch-save" style="align-self:flex-end">Save</button>
+                    </div>
+                    <div id="detail-patch-msg" class="form-msg" style="margin-top:.3rem"></div>
+                  </div>
+                </div>
+
+                <!-- Comments -->
+                <div class="detail-block" style="margin-top:.75rem">
+                  <div class="detail-block-header">
+                    <span class="detail-block-icon">💬</span>
+                    <span class="detail-block-title">Comments</span>
+                  </div>
+                  <div class="detail-block-body">
+                    <div id="comments-list" class="comments-list"></div>
+                    <div style="display:flex;gap:.5rem;margin-top:.5rem">
+                      <input class="input-sm" id="comment-input" placeholder="Add a comment…" style="flex:1" />
+                      <button class="btn-sm" id="btn-comment-add">Post</button>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Notes -->
+                <div class="form-group" style="margin-top:.75rem">
+                  <label class="form-label">Internal Notes</label>
+                  <textarea class="textarea-sm" id="detail-notes" rows="2" placeholder="Notes about this CVE…"></textarea>
+                  <button class="btn-sm" style="margin-top:.4rem" id="btn-detail-save-notes">Save notes</button>
+                </div>
+              </div><!-- /detail-panel-body -->
+            </div><!-- /detail-panel -->
+          </div><!-- /detail-overlay -->
+        </div>
+      </section>
+
+      <!-- ── WATCHLIST ───────────────────────────────────────────────────── -->
+      <section id="section-watchlist" class="section">
+        <div class="container">
+          <div class="page-header">
+            <div>
+              <h1 class="page-title">Watchlist</h1>
+              <p class="page-subtitle">Pinned CVEs with live severity and EPSS data</p>
+            </div>
+            <div class="page-actions">
+              <input class="input-sm" id="watchlist-add-id" placeholder="CVE-YYYY-NNNNN" style="width:180px" />
+              <button class="btn-primary" id="btn-watchlist-add">+ Add CVE</button>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table id="watchlist-table">
+              <thead>
+                <tr>
+                  <th>CVE ID</th>
+                  <th>Keyword</th>
+                  <th>Severity</th>
+                  <th class="num">CVSS</th>
+                  <th class="num">EPSS</th>
+                  <th>KEV</th>
+                  <th>Added</th>
+                  <th>Notes</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody id="watchlist-tbody"></tbody>
+            </table>
+          </div>
+          <div id="watchlist-empty" class="muted" style="padding:1rem 0;display:none">No CVEs on your watchlist yet. Find a CVE in Browse and open its detail panel to pin it.</div>
+        </div>
+      </section>
+
+      <!-- ── SCAN HISTORY ────────────────────────────────────────────────── -->
+      <section id="section-history" class="section">
+        <div class="container">
+          <div class="page-header">
+            <div>
+              <h1 class="page-title">Scan History</h1>
+              <p class="page-subtitle">Every scan cycle — new CVEs found, upgrades, errors</p>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table id="history-table">
+              <thead>
+                <tr>
+                  <th></th>
+                  <th>Started</th>
+                  <th>Finished</th>
+                  <th>Keywords</th>
+                  <th class="num">New</th>
+                  <th class="num">Upgraded</th>
+                  <th>Emailed</th>
+                  <th>Error</th>
+                </tr>
+              </thead>
+              <tbody id="history-tbody"></tbody>
             </table>
           </div>
         </div>
+      </section>
 
-        <div class="panel" style="flex:1">
-          <div class="panel-header"><h2>Recent Scans</h2></div>
-          <ul id="recent-scans" class="scan-list"></ul>
+      <!-- ── NOTIFICATION PROFILES ───────────────────────────────────────── -->
+      <section id="section-profiles" class="section">
+        <div class="container">
+          <div class="page-header">
+            <div>
+              <h1 class="page-title">Notification Profiles</h1>
+              <p class="page-subtitle">Isolated scans per team — each with its own keywords, recipients, and channels</p>
+            </div>
+          </div>
+          <div class="split-layout">
+            <div class="split-main">
+              <div class="panel">
+                <div class="panel-header">
+                  <h2>Profiles</h2>
+                  <button class="btn-sm" id="btn-profile-new" style="margin-left:auto">+ New Profile</button>
+                </div>
+                <div class="table-wrap">
+                  <table id="profiles-table">
+                    <thead>
+                      <tr>
+                        <th>Name</th>
+                        <th>Min Severity</th>
+                        <th>Recipients</th>
+                        <th>Digest</th>
+                        <th>Webhook</th>
+                        <th></th>
+                      </tr>
+                    </thead>
+                    <tbody id="profiles-tbody"></tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+            <div class="split-side" id="profile-editor">
+              <div class="panel">
+                <div class="panel-header">
+                  <h2 id="profile-editor-title">New Profile</h2>
+                </div>
+                <div class="form-body">
+                  <div class="form-group">
+                    <label class="form-label">Profile name</label>
+                    <input class="input-sm" id="pf-name" placeholder="e.g. Security Team" style="width:100%" />
+                  </div>
+                  <div class="form-group">
+                    <label class="form-label">Keywords <span class="form-hint">(one per line; append ::HIGH to override severity)</span></label>
+                    <textarea class="input-sm textarea-sm" id="pf-keywords" rows="4" placeholder="Apache Knox&#10;log4j::CRITICAL&#10;OpenSSL"></textarea>
+                  </div>
+                  <div class="form-group">
+                    <label class="form-label">Min severity</label>
+                    <select class="input-sm" id="pf-severity" style="width:100%">
+                      <option value="NONE">NONE (all)</option>
+                      <option value="LOW">LOW+</option>
+                      <option value="MEDIUM" selected>MEDIUM+</option>
+                      <option value="HIGH">HIGH+</option>
+                      <option value="CRITICAL">CRITICAL only</option>
+                    </select>
+                  </div>
+                  <div class="form-group">
+                    <label class="form-label">Recipients <span class="form-hint">(comma-separated)</span></label>
+                    <input class="input-sm" id="pf-recipients" placeholder="a@example.com, b@example.com" style="width:100%" />
+                  </div>
+                  <div class="form-group">
+                    <label class="form-label">Webhook URL <span class="form-hint">(optional)</span></label>
+                    <input class="input-sm" id="pf-webhook" placeholder="https://…" style="width:100%" />
+                  </div>
+                  <div class="form-group">
+                    <label class="form-label">Slack webhook <span class="form-hint">(optional)</span></label>
+                    <input class="input-sm" id="pf-slack" placeholder="https://hooks.slack.com/…" style="width:100%" />
+                  </div>
+                  <div class="form-group">
+                    <label class="form-label">Digest mode</label>
+                    <select class="input-sm" id="pf-digest" style="width:100%">
+                      <option value="off">Off — immediate alerts</option>
+                      <option value="hourly">Hourly digest</option>
+                      <option value="daily">Daily digest</option>
+                      <option value="weekly">Weekly digest</option>
+                    </select>
+                  </div>
+                  <div class="form-actions">
+                    <button class="btn-primary" id="btn-profile-save">Save profile</button>
+                    <button class="btn-sm" id="btn-profile-cancel">Cancel</button>
+                    <button class="btn-danger" id="btn-profile-delete" style="display:none">Delete</button>
+                  </div>
+                  <div id="profile-msg" class="form-msg"></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ── DIGEST QUEUE ────────────────────────────────────────────────── -->
+      <section id="section-digest" class="section">
+        <div class="container">
+          <div class="page-header">
+            <div>
+              <h1 class="page-title">Digest Queue</h1>
+              <p class="page-subtitle">CVEs waiting to be sent in the next digest batch, grouped by profile</p>
+            </div>
+          </div>
+          <div id="digest-groups"></div>
+        </div>
+      </section>
+
+      <!-- ── SETTINGS ────────────────────────────────────────────────────── -->
+      <section id="section-settings" class="section">
+        <div class="container">
+          <div class="page-header">
+            <div>
+              <h1 class="page-title">Settings</h1>
+              <p class="page-subtitle">Changes are saved to <code>config.ini</code>. Fields marked <span class="locked-badge">ENV</span> are set via environment variable.</p>
+            </div>
+          </div>
+
+          <form id="settings-form" autocomplete="off">
+            <div class="settings-group">
+              <div class="settings-group-title">NVD / Scan</div>
+              <div class="settings-grid">
+                <div class="form-group" id="fg-DEFAULT__apiKey"></div>
+                <div class="form-group" id="fg-DEFAULT__checkFrequency"></div>
+                <div class="form-group" id="fg-DEFAULT__minSeverity"></div>
+              </div>
+            </div>
+            <div class="settings-group">
+              <div class="settings-group-title">Keywords</div>
+              <div class="form-group">
+                <label class="form-label">Keywords <span class="form-hint">(one per line; append ::HIGH to override per-keyword severity)</span></label>
+                <textarea class="input-sm textarea-sm" id="cfg-DEFAULT__keywords" rows="6"
+                  placeholder="Apache Knox&#10;log4j::CRITICAL&#10;OpenSSL::MEDIUM"></textarea>
+              </div>
+            </div>
+            <div class="settings-group">
+              <div class="settings-group-title">Email</div>
+              <div class="settings-grid">
+                <div class="form-group" id="fg-EMAIL__senderEmail"></div>
+                <div class="form-group" id="fg-EMAIL__senderPassword"></div>
+                <div class="form-group" id="fg-EMAIL__recipientEmail"></div>
+                <div class="form-group" id="fg-EMAIL__subjectLine"></div>
+              </div>
+            </div>
+            <div class="settings-group">
+              <div class="settings-group-title">Webhook / Slack</div>
+              <div class="settings-grid">
+                <div class="form-group" id="fg-DEFAULT__webhookUrl"></div>
+                <div class="form-group" id="fg-DEFAULT__slackWebhook"></div>
+              </div>
+            </div>
+            <div class="settings-group">
+              <div class="settings-group-title">Jira <span class="form-hint">(optional)</span></div>
+              <div class="settings-grid">
+                <div class="form-group" id="fg-JIRA__url"></div>
+                <div class="form-group" id="fg-JIRA__user"></div>
+                <div class="form-group" id="fg-JIRA__token"></div>
+                <div class="form-group" id="fg-JIRA__project_key"></div>
+                <div class="form-group" id="fg-JIRA__issue_type"></div>
+              </div>
+            </div>
+            <div class="settings-group">
+              <div class="settings-group-title">ServiceNow <span class="form-hint">(optional)</span></div>
+              <div class="settings-grid">
+                <div class="form-group" id="fg-SERVICENOW__instance"></div>
+                <div class="form-group" id="fg-SERVICENOW__user"></div>
+                <div class="form-group" id="fg-SERVICENOW__password"></div>
+                <div class="form-group" id="fg-SERVICENOW__category"></div>
+              </div>
+            </div>
+            <div class="settings-group">
+              <div class="settings-group-title">Teams / PagerDuty / Opsgenie <span class="form-hint">(optional)</span></div>
+              <div class="settings-grid">
+                <div class="form-group" id="fg-DEFAULT__teamsWebhook"></div>
+                <div class="form-group" id="fg-DEFAULT__pagerdutyKey"></div>
+                <div class="form-group" id="fg-DEFAULT__opsgenieKey"></div>
+              </div>
+            </div>
+            <div class="settings-group">
+              <div class="settings-group-title">Test Notifications</div>
+              <p class="section-hint" style="margin-bottom:1rem">Send a test message to verify your notification channels are configured correctly.</p>
+              <div class="test-row">
+                <button class="btn-sm" id="btn-test-email">📧 Test Email</button>
+                <button class="btn-sm" id="btn-test-slack">💬 Test Slack</button>
+                <button class="btn-sm" id="btn-test-webhook">🔗 Test Webhook</button>
+                <span id="test-notify-msg" class="form-msg"></span>
+              </div>
+            </div>
+            <div class="settings-group">
+              <div class="settings-group-title">Saved Searches</div>
+              <p class="section-hint" style="margin-bottom:1rem">Bookmark filter combinations for quick access in Browse CVEs.</p>
+              <div id="saved-searches-list" class="saved-searches-list"></div>
+              <div class="save-search-form" style="margin-top:.75rem">
+                <input class="input-sm" id="saved-search-name" placeholder="Preset name…" style="width:220px" />
+                <button class="btn-sm" id="btn-save-search">Save current Browse filters</button>
+              </div>
+            </div>
+            <div class="settings-group">
+              <div class="settings-group-title">Saved Views</div>
+              <p class="section-hint" style="margin-bottom:1rem">Named filter presets saved server-side — available across sessions and devices.</p>
+              <div id="saved-views-list" class="saved-searches-list"></div>
+              <div class="save-search-form" style="margin-top:.75rem">
+                <input class="input-sm" id="saved-view-name" placeholder="View name…" style="width:220px" />
+                <button class="btn-sm" id="btn-save-view">Save current Browse filters as view</button>
+              </div>
+              <div id="saved-view-msg" class="form-msg" style="margin-top:.4rem"></div>
+            </div>
+            <div class="settings-group">
+              <div class="settings-group-title">Connection Tests</div>
+              <p class="section-hint" style="margin-bottom:1rem">Validate that your configured channels are reachable.</p>
+              <div class="test-row">
+                <button class="btn-sm" id="btn-validate-config">🔌 Test all connections</button>
+                <span id="validate-msg" class="form-msg"></span>
+              </div>
+              <div id="validate-results" class="validate-results" style="display:none;margin-top:.75rem"></div>
+            </div>
+            <div class="form-actions">
+              <button type="submit" class="btn-primary" id="btn-settings-save">Save Settings</button>
+              <span id="settings-msg" class="form-msg"></span>
+            </div>
+          </form>
+        </div>
+      </section>
+
+      <!-- ── CVE Comparison overlay ─────────────────────────────────────── -->
+      <div id="compare-overlay" class="detail-overlay hidden">
+        <div class="detail-panel" style="max-width:1100px">
+          <div class="detail-panel-header">
+            <h2>CVE Comparison</h2>
+            <button class="btn-icon" id="btn-compare-close">✕</button>
+          </div>
+          <div class="detail-panel-body">
+            <div id="compare-grid" class="compare-grid"></div>
+          </div>
         </div>
       </div>
 
-      <!-- Keyword performance -->
-      <div class="panel" style="margin-top:1.5rem">
-        <div class="panel-header">
-          <h2>Keyword Performance</h2>
-          <span class="panel-hint">Avg CVSS, EPSS, KEV count, last scan time per keyword</span>
-          <button class="btn-sm" id="btn-refresh-kw-perf">↻</button>
-        </div>
-        <div class="table-wrap">
-          <table id="kw-perf-table">
-            <thead>
-              <tr>
-                <th>Keyword</th>
-                <th class="num">Total CVEs</th>
-                <th class="num">Avg CVSS</th>
-                <th class="num">Avg EPSS</th>
-                <th class="num">KEV</th>
-                <th>Last Scan</th>
-              </tr>
-            </thead>
-            <tbody id="kw-perf-tbody"></tbody>
-          </table>
-        </div>
-      </div>
+      <!-- ── ANALYTICS ───────────────────────────────────────────────────── -->
+      <section id="section-analytics" class="section">
+        <div class="container">
+          <div class="page-header">
+            <div>
+              <h1 class="page-title">Analytics</h1>
+              <p class="page-subtitle">Trend analysis, risk distribution, and discovery patterns</p>
+            </div>
+          </div>
 
-      <!-- Schedule status -->
-      <div class="panel" style="margin-top:1.5rem">
-        <div class="panel-header">
-          <h2>Schedule</h2>
-          <span class="panel-hint">Next scan countdown based on check interval in config</span>
-        </div>
-        <div class="schedule-row">
-          <div class="schedule-item">
-            <div class="schedule-label">Last scan</div>
-            <div class="schedule-value" id="sched-last">—</div>
+          <div class="panel-row">
+            <div class="panel" style="flex:1">
+              <div class="panel-header"><h2>CVE Age Distribution</h2></div>
+              <div class="chart-wrap"><canvas id="age-chart"></canvas></div>
+            </div>
+            <div class="panel" style="flex:1">
+              <div class="panel-header">
+                <h2>Severity Over Time</h2>
+                <span class="panel-hint">New CVEs per scan, colored by severity</span>
+              </div>
+              <div class="chart-wrap"><canvas id="sev-time-chart"></canvas></div>
+            </div>
           </div>
-          <div class="schedule-item">
-            <div class="schedule-label">Check interval</div>
-            <div class="schedule-value" id="sched-interval">—</div>
+
+          <div class="panel" style="margin-bottom:1.25rem">
+            <div class="panel-header">
+              <h2>EPSS vs CVSS Risk Landscape</h2>
+              <span class="panel-hint">Each dot is a CVE — KEV highlighted in purple</span>
+              <button class="btn-sm" id="btn-refresh-scatter" style="margin-left:auto">↻</button>
+            </div>
+            <div class="chart-wrap" style="height:340px"><canvas id="scatter-chart"></canvas></div>
           </div>
-          <div class="schedule-item">
-            <div class="schedule-label">Next scan in</div>
-            <div class="schedule-value" id="sched-next"><span id="sched-countdown">—</span></div>
-          </div>
-          <div class="schedule-item">
-            <div class="schedule-label">NVD API key</div>
-            <div class="schedule-value" id="sched-apikey">—</div>
+
+          <div class="panel">
+            <div class="panel-header">
+              <h2>Discovery Heatmap</h2>
+              <span class="panel-hint">New CVEs found per day (last 90 days)</span>
+              <button class="btn-sm" id="btn-refresh-heatmap" style="margin-left:auto">↻</button>
+            </div>
+            <div id="heatmap-container" class="heatmap-container"></div>
           </div>
         </div>
-      </div>
+      </section>
 
-      <!-- MTTR / Lifecycle metrics -->
-      <div class="panel" style="margin-top:1.5rem">
-        <div class="panel-header">
-          <h2>Vulnerability Lifecycle &amp; MTTR</h2>
-          <span class="panel-hint">Mean time to remediate across all triaged CVEs</span>
-          <button class="btn-sm" id="btn-refresh-mttr">↻</button>
-        </div>
-        <div class="schedule-row" id="mttr-summary">
-          <div class="schedule-item">
-            <div class="schedule-label">MTTR (days)</div>
-            <div class="schedule-value" id="mttr-days">—</div>
-          </div>
-          <div class="schedule-item">
-            <div class="schedule-label">Remediated</div>
-            <div class="schedule-value" id="mttr-remediated">—</div>
-          </div>
-          <div class="schedule-item">
-            <div class="schedule-label">Open</div>
-            <div class="schedule-value" id="mttr-open">—</div>
-          </div>
-          <div class="schedule-item">
-            <div class="schedule-label">Overdue</div>
-            <div class="schedule-value" id="mttr-overdue" style="color:var(--critical)">—</div>
-          </div>
-        </div>
-        <div id="mttr-states" style="margin-top:.75rem;display:flex;gap:.5rem;flex-wrap:wrap"></div>
-      </div>
-
-      <!-- Scan health -->
-      <div class="panel" style="margin-top:1.5rem">
-        <div class="panel-header">
-          <h2>Scan Health</h2>
-          <span class="panel-hint">Last 20 scans</span>
-          <button class="btn-sm" id="btn-refresh-scan-health">↻</button>
-        </div>
-        <div class="schedule-row" id="scan-health-summary">
-          <div class="schedule-item">
-            <div class="schedule-label">Success rate</div>
-            <div class="schedule-value" id="health-success-rate">—</div>
-          </div>
-          <div class="schedule-item">
-            <div class="schedule-label">Avg duration</div>
-            <div class="schedule-value" id="health-avg-dur">—</div>
-          </div>
-          <div class="schedule-item">
-            <div class="schedule-label">Error rate</div>
-            <div class="schedule-value" id="health-error-rate">—</div>
-          </div>
-          <div class="schedule-item">
-            <div class="schedule-label">Total scans</div>
-            <div class="schedule-value" id="health-total">—</div>
-          </div>
-        </div>
-        <div class="chart-wrap" style="margin-top:1rem;height:80px"><canvas id="scan-health-chart"></canvas></div>
-      </div>
-
-      <!-- Live scan log -->
-      <div class="panel" style="margin-top:1.5rem" id="scan-log-panel">
-        <div class="panel-header">
-          <h2>Live Scan Log</h2>
-          <span id="scan-log-status" class="scan-status-text"></span>
-          <button class="btn-sm" id="btn-clear-log">Clear</button>
-        </div>
-        <div id="scan-log" class="scan-log"></div>
-      </div>
-    </div>
-  </section>
-
-  <!-- BROWSE -->
-  <section id="section-browse" class="section">
-    <div class="container">
-      <h1 class="page-title">Browse CVEs</h1>
-
-      <!-- Quick filter chips -->
-      <div class="quick-filters" id="quick-filters">
-        <span class="quick-label">Quick:</span>
-        <button class="qf-chip" data-sev="CRITICAL" data-kev="">CRITICAL only</button>
-        <button class="qf-chip" data-sev="HIGH" data-kev="">HIGH+</button>
-        <button class="qf-chip" data-sev="" data-kev="1">KEV only</button>
-        <button class="qf-chip" data-sev="CRITICAL" data-kev="1">CRITICAL KEV</button>
-        <button class="qf-chip" data-epss="0.5">EPSS &gt; 50%</button>
-        <button class="qf-chip" data-reviewed="unreviewed">Unreviewed</button>
-      </div>
-
-      <div class="filter-bar">
-        <select id="br-table" class="input-sm">
-          <option value="">Select keyword…</option>
-        </select>
-        <input id="br-search" class="input-sm" placeholder="Search CVE ID or description…" />
-        <select id="br-severity" class="input-sm">
-          <option value="NONE">All severities</option>
-          <option value="LOW">LOW+</option>
-          <option value="MEDIUM">MEDIUM+</option>
-          <option value="HIGH">HIGH+</option>
-          <option value="CRITICAL">CRITICAL only</option>
-        </select>
-        <input id="br-date-from" class="input-sm" type="date" title="Published from" />
-        <input id="br-date-to" class="input-sm" type="date" title="Published to" />
-        <select id="br-reviewed" class="input-sm">
-          <option value="">Any review status</option>
-          <option value="unreviewed">Unreviewed only</option>
-          <option value="reviewed">Reviewed only</option>
-        </select>
-        <button class="btn-primary" id="btn-browse-search">Search</button>
-        <button class="btn-sm" id="btn-browse-export">Export CSV</button>
-      </div>
-
-      <div class="table-wrap">
-        <table id="browse-table">
-          <thead>
-            <tr>
-              <th><input type="checkbox" id="chk-select-all" title="Select all" /></th>
-              <th>CVE ID</th>
-              <th>Severity</th>
-              <th>CVSS</th>
-              <th>EPSS</th>
-              <th>KEV</th>
-              <th>Keyword</th>
-              <th>Published</th>
-              <th>Reviewed</th>
-              <th>Triage</th>
-              <th>Description</th>
-            </tr>
-          </thead>
-          <tbody id="browse-tbody"></tbody>
-        </table>
-      </div>
-      <!-- Bulk actions bar -->
-      <div class="bulk-bar" id="bulk-bar" style="display:none">
-        <span id="bulk-count" class="bulk-count">0 selected</span>
-        <button class="btn-sm" id="btn-bulk-reviewed">✓ Mark Reviewed</button>
-        <button class="btn-sm" id="btn-bulk-watchlist">☆ Add to Watchlist</button>
-        <button class="btn-sm" id="btn-bulk-export">⬇ Export Selected</button>
-        <button class="btn-sm" id="btn-bulk-compare" title="Compare up to 3">⇄ Compare</button>
-        <button class="btn-sm" id="btn-bulk-clear">✕ Clear</button>
-      </div>
-
-      <div class="browse-footer">
-        <div id="browse-status" class="status-bar"></div>
-        <div class="pagination" id="browse-pagination"></div>
-      </div>
-
-      <!-- Detail panel -->
-      <div id="detail-overlay" class="detail-overlay hidden">
-        <div class="detail-panel">
-          <button class="detail-close" id="btn-detail-close">✕</button>
-          <div id="detail-content"></div>
-          <div class="detail-actions">
-            <button class="btn-sm" id="btn-detail-watchlist">☆ Watchlist</button>
-            <button class="btn-sm" id="btn-detail-reviewed">✓ Mark Reviewed</button>
-            <button class="btn-sm btn-danger-sm" id="btn-detail-suppress" title="Mark as false positive / suppress future alerts">⊘ Suppress</button>
-            <button class="btn-sm" id="btn-detail-send-slack" title="Send to Slack">⇒ Slack</button>
-            <button class="btn-sm" id="btn-detail-send-webhook" title="Send to Webhook">⇒ Webhook</button>
-            <button class="btn-sm" id="btn-detail-send-jira" title="Create Jira ticket">⇒ Jira</button>
-            <button class="btn-sm" id="btn-detail-send-snow" title="Create ServiceNow incident">⇒ ServiceNow</button>
-            <span id="detail-action-msg" class="form-msg" style="margin-left:.5rem"></span>
-          </div>
-
-          <!-- Triage controls -->
-          <div class="triage-row" style="margin-top:.75rem">
-            <div class="form-group" style="margin-bottom:0;flex:1">
-              <label class="form-label">Status</label>
-              <select class="input-sm" id="detail-triage-status" style="width:100%">
+      <!-- ── TRIAGE ──────────────────────────────────────────────────────── -->
+      <section id="section-triage" class="section">
+        <div class="container">
+          <div class="page-header">
+            <div>
+              <h1 class="page-title">Triage</h1>
+              <p class="page-subtitle">Assign CVEs, track remediation status, and manage SLA deadlines</p>
+            </div>
+            <div class="page-actions">
+              <select class="input-sm" id="triage-status-filter">
+                <option value="">All statuses</option>
                 <option value="open">Open</option>
                 <option value="investigating">Investigating</option>
                 <option value="mitigated">Mitigated</option>
@@ -387,893 +1020,419 @@
                 <option value="false_positive">False Positive</option>
                 <option value="closed">Closed</option>
               </select>
-            </div>
-            <div class="form-group" style="margin-bottom:0;flex:1">
-              <label class="form-label">Assignee</label>
-              <input class="input-sm" id="detail-triage-assignee" placeholder="name or email…" style="width:100%" />
-            </div>
-            <div class="form-group" style="margin-bottom:0;flex:1">
-              <label class="form-label">Due date</label>
-              <input class="input-sm" id="detail-triage-due" type="date" style="width:100%" />
-            </div>
-            <button class="btn-sm" id="btn-detail-triage-save" style="align-self:flex-end">Save triage</button>
-          </div>
-
-          <!-- CVSS vector breakdown -->
-          <div id="cvss-vector-breakdown" class="cvss-breakdown" style="display:none;margin-top:.75rem"></div>
-
-          <!-- Exploit intelligence -->
-          <div id="exploit-intel-panel" style="margin-top:.75rem;display:none">
-            <div class="detail-section-title">Exploit Intelligence</div>
-            <div id="exploit-intel-content"></div>
-            <button class="btn-sm" id="btn-detail-enrich-exploit" style="margin-top:.4rem" title="Search GitHub + NVD refs for known exploits">⚡ Check for Exploits</button>
-            <span id="exploit-enrich-msg" class="form-msg" style="margin-left:.5rem"></span>
-          </div>
-
-          <!-- ATT&CK technique mapping -->
-          <div id="attack-panel" style="margin-top:.75rem;display:none">
-            <div class="detail-section-title">MITRE ATT&amp;CK Techniques</div>
-            <div id="attack-content" class="attack-chips"></div>
-          </div>
-
-          <!-- Affected assets -->
-          <div id="affected-assets-panel" style="margin-top:.75rem;display:none">
-            <div class="detail-section-title">Affected Assets</div>
-            <div id="affected-assets-content"></div>
-          </div>
-
-          <!-- Related CVEs (chaining) -->
-          <div id="related-cves-panel" style="margin-top:.75rem;display:none">
-            <div class="detail-section-title">Related CVEs (same CWE / product)</div>
-            <div id="related-cves-content"></div>
-          </div>
-
-          <!-- Threat intelligence panel -->
-          <div id="threat-intel-panel" style="margin-top:.75rem;display:none">
-            <div class="detail-section-title">Threat Intelligence</div>
-            <div id="threat-intel-content"></div>
-            <button class="btn-sm" id="btn-detail-enrich-threat" style="margin-top:.4rem" title="Fetch OTX / CISA KEV data">⚡ Fetch Threat Data</button>
-            <span id="threat-enrich-msg" class="form-msg" style="margin-left:.5rem"></span>
-          </div>
-
-          <!-- Composite risk score -->
-          <div id="risk-score-panel" style="margin-top:.75rem;display:none">
-            <div class="detail-section-title">Composite Risk Score</div>
-            <div id="risk-score-content"></div>
-          </div>
-
-          <!-- Compliance mapping -->
-          <div id="compliance-panel" style="margin-top:.75rem;display:none">
-            <div class="detail-section-title">Compliance Mapping</div>
-            <div id="compliance-content"></div>
-          </div>
-
-          <!-- Internet exposure / vendor advisories -->
-          <div id="exposure-panel" style="margin-top:.75rem;display:none">
-            <div class="detail-section-title">Vendor Advisories &amp; Exposure</div>
-            <div id="exposure-content"></div>
-            <button class="btn-sm" id="btn-detail-check-exposure" style="margin-top:.4rem" title="Check Red Hat, Ubuntu advisories">⚡ Check Advisories</button>
-            <span id="exposure-msg" class="form-msg" style="margin-left:.5rem"></span>
-          </div>
-
-          <!-- Comments thread -->
-          <div style="margin-top:.75rem">
-            <div class="detail-section-title">Comments</div>
-            <div id="comments-list" class="comments-list"></div>
-            <div style="display:flex;gap:.5rem;margin-top:.5rem">
-              <input class="input-sm" id="comment-input" placeholder="Add a comment…" style="flex:1" />
-              <button class="btn-sm" id="btn-comment-add">Post</button>
+              <button class="btn-sm" id="btn-triage-refresh">↻ Refresh</button>
+              <button class="btn-sm" id="btn-sla-escalate" title="Email assignees for SLA breaches">⚠ SLA Alerts</button>
+              <span id="sla-escalate-msg" class="form-msg"></span>
             </div>
           </div>
 
-          <!-- Internal CVSS override -->
-          <div style="margin-top:.75rem">
-            <div class="detail-section-title">Internal Risk Override</div>
-            <div class="triage-row">
-              <div class="form-group" style="margin-bottom:0;flex:1">
-                <label class="form-label">Internal score <span class="form-hint">0–10</span></label>
-                <input class="input-sm" id="detail-override-score" type="number" min="0" max="10" step="0.1" placeholder="NVD score" style="width:100%" />
-              </div>
-              <div class="form-group" style="margin-bottom:0;flex:1">
-                <label class="form-label">Effective severity</label>
-                <select class="input-sm" id="detail-override-sev" style="width:100%">
-                  <option value="">— same as NVD —</option>
-                  <option value="CRITICAL">CRITICAL</option>
-                  <option value="HIGH">HIGH</option>
-                  <option value="MEDIUM">MEDIUM</option>
-                  <option value="LOW">LOW</option>
-                </select>
-              </div>
-              <div class="form-group" style="margin-bottom:0;flex:2">
-                <label class="form-label">Rationale</label>
-                <input class="input-sm" id="detail-override-rationale" placeholder="e.g. air-gapped network, mitigating controls…" style="width:100%" />
-              </div>
-              <button class="btn-sm" id="btn-detail-override-save" style="align-self:flex-end">Save override</button>
-              <button class="btn-sm btn-danger-sm" id="btn-detail-override-clear" style="align-self:flex-end" title="Remove override, revert to NVD score">✕</button>
-            </div>
-            <div id="detail-override-msg" class="form-msg" style="margin-top:.3rem"></div>
+          <div id="sla-breach-banner" class="sla-breach-banner" style="display:none"></div>
+
+          <div class="table-wrap">
+            <table id="triage-table">
+              <thead>
+                <tr>
+                  <th>CVE ID</th>
+                  <th>Status</th>
+                  <th>Assignee</th>
+                  <th>Due Date</th>
+                  <th>SLA</th>
+                  <th>Patched</th>
+                  <th>Updated</th>
+                </tr>
+              </thead>
+              <tbody id="triage-tbody"></tbody>
+            </table>
           </div>
+          <div id="triage-empty" class="muted" style="padding:1rem 0;display:none">No CVEs in triage yet. Open a CVE from Browse and set its status.</div>
 
-          <!-- Patch tracking -->
-          <div style="margin-top:.75rem">
-            <div class="detail-section-title">Patch Tracking</div>
-            <div class="triage-row">
-              <div class="form-group" style="margin-bottom:0;flex:2">
-                <label class="form-label">Patched version</label>
-                <input class="input-sm" id="detail-patch-version" placeholder="e.g. 2.3.1, n/a…" style="width:100%" />
-              </div>
-              <div class="form-group" style="margin-bottom:0;flex:1">
-                <label class="form-label">Patched date</label>
-                <input class="input-sm" id="detail-patch-date" type="date" style="width:100%" />
-              </div>
-              <div class="form-group" style="margin-bottom:0;flex:1">
-                <label class="form-label">Patched by</label>
-                <input class="input-sm" id="detail-patch-by" placeholder="name…" style="width:100%" />
-              </div>
-              <button class="btn-sm" id="btn-detail-patch-save" style="align-self:flex-end">Save patch</button>
-            </div>
-            <div id="detail-patch-msg" class="form-msg" style="margin-top:.3rem"></div>
-          </div>
-
-          <div class="form-group" style="margin-top:.75rem">
-            <label class="form-label">Notes</label>
-            <textarea class="textarea-sm" id="detail-notes" rows="2" placeholder="Internal notes about this CVE…"></textarea>
-            <button class="btn-sm" style="margin-top:.4rem" id="btn-detail-save-notes">Save notes</button>
-          </div>
-        </div>
-      </div>
-    </div>
-  </section>
-
-  <!-- WATCHLIST -->
-  <section id="section-watchlist" class="section">
-    <div class="container">
-      <div class="page-title-row">
-        <h1 class="page-title">Watchlist</h1>
-        <div class="page-actions">
-          <input class="input-sm" id="watchlist-add-id" placeholder="CVE-YYYY-NNNNN" style="width:180px" />
-          <button class="btn-primary" id="btn-watchlist-add">+ Add CVE</button>
-        </div>
-      </div>
-      <p class="section-hint">Pin specific CVE IDs for easy monitoring. Live severity and EPSS data is shown for pinned CVEs.</p>
-      <div class="table-wrap">
-        <table id="watchlist-table">
-          <thead>
-            <tr>
-              <th>CVE ID</th>
-              <th>Keyword</th>
-              <th>Severity</th>
-              <th class="num">CVSS</th>
-              <th class="num">EPSS</th>
-              <th>KEV</th>
-              <th>Added</th>
-              <th>Notes</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody id="watchlist-tbody"></tbody>
-        </table>
-      </div>
-      <div id="watchlist-empty" class="muted" style="padding:1rem 0;display:none">No CVEs on your watchlist yet. Search in Browse CVEs and use the detail panel to add one.</div>
-    </div>
-  </section>
-
-  <!-- HISTORY -->
-  <section id="section-history" class="section">
-    <div class="container">
-      <h1 class="page-title">Scan History</h1>
-      <div class="table-wrap">
-        <table id="history-table">
-          <thead>
-            <tr>
-              <th></th>
-              <th>Started</th>
-              <th>Finished</th>
-              <th>Keywords</th>
-              <th class="num">New</th>
-              <th class="num">Upgraded</th>
-              <th>Emailed</th>
-              <th>Error</th>
-            </tr>
-          </thead>
-          <tbody id="history-tbody"></tbody>
-        </table>
-      </div>
-    </div>
-  </section>
-
-  <!-- PROFILES -->
-  <section id="section-profiles" class="section">
-    <div class="container">
-      <h1 class="page-title">Notification Profiles</h1>
-      <p class="section-hint">Each profile runs its own keyword scan with independent recipients, severity threshold, and notification channels.</p>
-
-      <div class="split-layout">
-        <!-- Profile list -->
-        <div class="split-main">
-          <div class="panel">
+          <div class="panel" style="margin-top:2rem">
             <div class="panel-header">
-              <h2>Profiles</h2>
-              <button class="btn-sm" id="btn-profile-new">+ New profile</button>
+              <h2>Suppression List</h2>
+              <span class="panel-hint">False positives — excluded from future alerts</span>
+              <button class="btn-sm" id="btn-suppression-refresh" style="margin-left:auto">↻</button>
             </div>
             <div class="table-wrap">
-              <table id="profiles-table">
+              <table id="suppression-table">
                 <thead>
                   <tr>
-                    <th>Name</th>
-                    <th>Min Severity</th>
-                    <th>Recipients</th>
-                    <th>Digest</th>
-                    <th>Webhook</th>
+                    <th>CVE ID</th>
+                    <th>Keyword</th>
+                    <th>Reason</th>
+                    <th>Suppressed At</th>
+                    <th>By</th>
                     <th></th>
                   </tr>
                 </thead>
-                <tbody id="profiles-tbody"></tbody>
+                <tbody id="suppression-tbody"></tbody>
               </table>
             </div>
+            <div id="suppression-empty" class="muted" style="padding:.75rem 0;display:none">No suppressed CVEs.</div>
           </div>
         </div>
+      </section>
 
-        <!-- Profile editor -->
-        <div class="split-side" id="profile-editor">
+      <!-- ── ASSET INVENTORY ────────────────────────────────────────────── -->
+      <section id="section-assets" class="section">
+        <div class="container">
+          <div class="page-header">
+            <div>
+              <h1 class="page-title">Asset Inventory</h1>
+              <p class="page-subtitle">Map CPE identifiers to internal assets for CVE-to-asset correlation</p>
+            </div>
+            <div class="page-actions">
+              <button class="btn-primary" id="btn-asset-new">+ New Asset</button>
+            </div>
+          </div>
+          <div class="split-layout">
+            <div class="split-main">
+              <div class="panel">
+                <div class="table-wrap">
+                  <table id="assets-table">
+                    <thead>
+                      <tr>
+                        <th>Name</th>
+                        <th>Environment</th>
+                        <th>Owner</th>
+                        <th>Tags</th>
+                        <th>CPE</th>
+                        <th></th>
+                      </tr>
+                    </thead>
+                    <tbody id="assets-tbody"></tbody>
+                  </table>
+                </div>
+                <div id="assets-empty" class="muted" style="padding:1rem 0;display:none">No assets yet. Add assets to enable CVE-to-asset correlation in the detail panel.</div>
+              </div>
+            </div>
+            <div class="split-side" id="asset-editor">
+              <div class="panel">
+                <div class="panel-header">
+                  <h2 id="asset-editor-title">New Asset</h2>
+                </div>
+                <div class="form-body">
+                  <input type="hidden" id="asset-edit-id" />
+                  <div class="form-group">
+                    <label class="form-label">Asset name</label>
+                    <input class="input-sm" id="asset-name" placeholder="e.g. web-prod-01" style="width:100%" />
+                  </div>
+                  <div class="form-group">
+                    <label class="form-label">CPE <span class="form-hint">Comma-separated CPE 2.3 strings</span></label>
+                    <textarea class="input-sm textarea-sm" id="asset-cpe" rows="3"
+                      placeholder="cpe:2.3:a:apache:log4j:2.14.1:*:*:*:*:*:*:*"></textarea>
+                  </div>
+                  <div class="form-group">
+                    <label class="form-label">Environment</label>
+                    <select class="input-sm" id="asset-env" style="width:100%">
+                      <option value="production">Production</option>
+                      <option value="staging">Staging</option>
+                      <option value="development">Development</option>
+                      <option value="dmz">DMZ</option>
+                      <option value="internal">Internal</option>
+                      <option value="other">Other</option>
+                    </select>
+                  </div>
+                  <div class="form-group">
+                    <label class="form-label">Owner</label>
+                    <input class="input-sm" id="asset-owner" placeholder="team or email…" style="width:100%" />
+                  </div>
+                  <div class="form-group">
+                    <label class="form-label">Tags <span class="form-hint">comma-separated</span></label>
+                    <input class="input-sm" id="asset-tags" placeholder="web, public-facing, java…" style="width:100%" />
+                  </div>
+                  <div class="form-actions">
+                    <button class="btn-primary" id="btn-asset-save">Save asset</button>
+                    <button class="btn-sm" id="btn-asset-cancel">Cancel</button>
+                    <button class="btn-danger" id="btn-asset-delete" style="display:none">Delete</button>
+                  </div>
+                  <div id="asset-msg" class="form-msg"></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ── USER MANAGEMENT ────────────────────────────────────────────── -->
+      <section id="section-users" class="section">
+        <div class="container">
+          <div class="page-header">
+            <div>
+              <h1 class="page-title">User Management</h1>
+              <p class="page-subtitle"><strong>Viewer</strong> — read-only · <strong>Analyst</strong> — triage + review · <strong>Lead</strong> — full access</p>
+            </div>
+            <div class="page-actions">
+              <button class="btn-primary" id="btn-user-new">+ New User</button>
+            </div>
+          </div>
+          <div class="split-layout">
+            <div class="split-main">
+              <div class="panel">
+                <div class="table-wrap">
+                  <table id="users-table">
+                    <thead>
+                      <tr>
+                        <th>Username</th>
+                        <th>Role</th>
+                        <th>Email</th>
+                        <th>Created</th>
+                        <th>Active</th>
+                        <th></th>
+                      </tr>
+                    </thead>
+                    <tbody id="users-tbody"></tbody>
+                  </table>
+                </div>
+                <div id="users-empty" class="muted" style="padding:1rem 0;display:none">No users yet. The global API_SECRET environment variable still works as the legacy auth method.</div>
+              </div>
+            </div>
+            <div class="split-side" id="user-editor">
+              <div class="panel">
+                <div class="panel-header">
+                  <h2 id="user-editor-title">New User</h2>
+                </div>
+                <div class="form-body">
+                  <div class="form-group">
+                    <label class="form-label">Username</label>
+                    <input class="input-sm" id="user-username" placeholder="e.g. alice" style="width:100%" />
+                  </div>
+                  <div class="form-group">
+                    <label class="form-label">Role</label>
+                    <select class="input-sm" id="user-role" style="width:100%">
+                      <option value="viewer">Viewer — read-only</option>
+                      <option value="analyst" selected>Analyst — triage + review</option>
+                      <option value="lead">Lead — full access</option>
+                    </select>
+                  </div>
+                  <div class="form-group">
+                    <label class="form-label">Email <span class="form-hint">used for SLA escalation alerts</span></label>
+                    <input class="input-sm" id="user-email" placeholder="alice@example.com" type="email" style="width:100%" />
+                  </div>
+                  <div class="form-actions">
+                    <button class="btn-primary" id="btn-user-save">Create user</button>
+                    <button class="btn-sm" id="btn-user-cancel">Cancel</button>
+                    <button class="btn-danger" id="btn-user-delete" style="display:none">Revoke</button>
+                  </div>
+                  <div id="user-msg" class="form-msg"></div>
+                  <div id="user-key-display" style="display:none;margin-top:1rem">
+                    <div class="settings-group-title" style="color:var(--success)">User created — save this API key now</div>
+                    <p class="form-hint" style="margin:.4rem 0">This key is shown only once. Supply it as a Bearer token.</p>
+                    <code id="user-key-value" class="api-key-display"></code>
+                    <button class="btn-sm" id="btn-copy-key" style="margin-top:.5rem">Copy</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ── NOTIFICATION LOG ───────────────────────────────────────────── -->
+      <section id="section-notifylog" class="section">
+        <div class="container">
+          <div class="page-header">
+            <div>
+              <h1 class="page-title">Notification Log</h1>
+              <p class="page-subtitle">History of every email, Slack, webhook, Jira, and ServiceNow notification sent</p>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table id="notifylog-table">
+              <thead>
+                <tr>
+                  <th>Sent At</th>
+                  <th>Channel</th>
+                  <th>Profile</th>
+                  <th class="num">CVEs</th>
+                  <th>Recipients</th>
+                  <th>Status</th>
+                  <th>Error</th>
+                </tr>
+              </thead>
+              <tbody id="notifylog-tbody"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- ── THREAT INTELLIGENCE ────────────────────────────────────────── -->
+      <section id="section-threat" class="section">
+        <div class="container">
+          <div class="page-header">
+            <div>
+              <h1 class="page-title">Threat Intelligence</h1>
+              <p class="page-subtitle">In-the-wild exploitation data from CISA KEV and AlienVault OTX</p>
+            </div>
+            <div class="page-actions">
+              <button class="btn-sm" id="btn-threat-refresh">↻ Refresh</button>
+            </div>
+          </div>
+
           <div class="panel">
             <div class="panel-header">
-              <h2 id="profile-editor-title">New Profile</h2>
+              <h2>In-the-Wild Exploitation</h2>
+              <span class="panel-hint">Open a CVE detail and click "Fetch Threat Data" to enrich</span>
             </div>
-            <div class="form-body">
-              <div class="form-group">
-                <label class="form-label">Profile name</label>
-                <input class="input-sm" id="pf-name" placeholder="e.g. Security Team" />
-              </div>
-              <div class="form-group">
-                <label class="form-label">Keywords <span class="form-hint">(one per line; append ::HIGH to override severity)</span></label>
-                <textarea class="input-sm textarea-sm" id="pf-keywords" rows="4" placeholder="Apache Knox&#10;log4j::CRITICAL&#10;OpenSSL"></textarea>
-              </div>
-              <div class="form-group">
-                <label class="form-label">Min severity</label>
-                <select class="input-sm" id="pf-severity">
-                  <option value="NONE">NONE (all)</option>
-                  <option value="LOW">LOW+</option>
-                  <option value="MEDIUM" selected>MEDIUM+</option>
-                  <option value="HIGH">HIGH+</option>
-                  <option value="CRITICAL">CRITICAL only</option>
-                </select>
-              </div>
-              <div class="form-group">
-                <label class="form-label">Recipients <span class="form-hint">(comma-separated)</span></label>
-                <input class="input-sm" id="pf-recipients" placeholder="a@example.com, b@example.com" />
-              </div>
-              <div class="form-group">
-                <label class="form-label">Webhook URL <span class="form-hint">(optional)</span></label>
-                <input class="input-sm" id="pf-webhook" placeholder="https://..." />
-              </div>
-              <div class="form-group">
-                <label class="form-label">Slack webhook <span class="form-hint">(optional)</span></label>
-                <input class="input-sm" id="pf-slack" placeholder="https://hooks.slack.com/..." />
-              </div>
-              <div class="form-group">
-                <label class="form-label">Digest mode</label>
-                <select class="input-sm" id="pf-digest">
-                  <option value="off">Off — immediate alerts</option>
-                  <option value="hourly">Hourly digest</option>
-                  <option value="daily">Daily digest</option>
-                  <option value="weekly">Weekly digest</option>
-                </select>
-              </div>
-              <div class="form-actions">
-                <button class="btn-primary" id="btn-profile-save">Save profile</button>
-                <button class="btn-sm" id="btn-profile-cancel">Cancel</button>
-                <button class="btn-danger" id="btn-profile-delete" style="display:none">Delete</button>
-              </div>
-              <div id="profile-msg" class="form-msg"></div>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  </section>
-
-  <!-- DIGEST QUEUE -->
-  <section id="section-digest" class="section">
-    <div class="container">
-      <h1 class="page-title">Digest Queue</h1>
-      <p class="section-hint">CVEs waiting to be sent in the next digest batch, grouped by profile.</p>
-      <div id="digest-groups"></div>
-    </div>
-  </section>
-
-  <!-- SETTINGS -->
-  <section id="section-settings" class="section">
-    <div class="container">
-      <h1 class="page-title">Settings</h1>
-      <p class="section-hint">Changes are saved to <code>config.ini</code>. Fields marked <span class="locked-badge">ENV</span> are set via environment variable and cannot be edited here.</p>
-
-      <form id="settings-form" autocomplete="off">
-        <!-- NVD / Scan -->
-        <div class="settings-group">
-          <div class="settings-group-title">NVD / Scan</div>
-          <div class="settings-grid">
-            <div class="form-group" id="fg-DEFAULT__apiKey"></div>
-            <div class="form-group" id="fg-DEFAULT__checkFrequency"></div>
-            <div class="form-group" id="fg-DEFAULT__minSeverity"></div>
-          </div>
-        </div>
-
-        <!-- Keywords -->
-        <div class="settings-group">
-          <div class="settings-group-title">Keywords</div>
-          <div class="form-group">
-            <label class="form-label">Keywords <span class="form-hint">(one per line; append ::HIGH to override per-keyword severity)</span></label>
-            <textarea class="input-sm textarea-sm" id="cfg-DEFAULT__keywords" rows="6"
-              placeholder="Apache Knox&#10;log4j::CRITICAL&#10;OpenSSL::MEDIUM"></textarea>
-          </div>
-        </div>
-
-        <!-- Email -->
-        <div class="settings-group">
-          <div class="settings-group-title">Email</div>
-          <div class="settings-grid">
-            <div class="form-group" id="fg-EMAIL__senderEmail"></div>
-            <div class="form-group" id="fg-EMAIL__senderPassword"></div>
-            <div class="form-group" id="fg-EMAIL__recipientEmail"></div>
-            <div class="form-group" id="fg-EMAIL__subjectLine"></div>
-          </div>
-        </div>
-
-        <!-- Webhook / Slack -->
-        <div class="settings-group">
-          <div class="settings-group-title">Webhook / Slack</div>
-          <div class="settings-grid">
-            <div class="form-group" id="fg-DEFAULT__webhookUrl"></div>
-            <div class="form-group" id="fg-DEFAULT__slackWebhook"></div>
-          </div>
-        </div>
-
-        <!-- Jira -->
-        <div class="settings-group">
-          <div class="settings-group-title">Jira <span class="form-hint">(optional)</span></div>
-          <div class="settings-grid">
-            <div class="form-group" id="fg-JIRA__url"></div>
-            <div class="form-group" id="fg-JIRA__user"></div>
-            <div class="form-group" id="fg-JIRA__token"></div>
-            <div class="form-group" id="fg-JIRA__project_key"></div>
-            <div class="form-group" id="fg-JIRA__issue_type"></div>
-          </div>
-        </div>
-
-        <!-- ServiceNow -->
-        <div class="settings-group">
-          <div class="settings-group-title">ServiceNow <span class="form-hint">(optional)</span></div>
-          <div class="settings-grid">
-            <div class="form-group" id="fg-SERVICENOW__instance"></div>
-            <div class="form-group" id="fg-SERVICENOW__user"></div>
-            <div class="form-group" id="fg-SERVICENOW__password"></div>
-            <div class="form-group" id="fg-SERVICENOW__category"></div>
-          </div>
-        </div>
-
-        <!-- Notification tests -->
-        <div class="settings-group">
-          <div class="settings-group-title">Test Notifications</div>
-          <p class="section-hint" style="margin-bottom:1rem">Send a test message to verify your notification channels are configured correctly.</p>
-          <div class="test-row">
-            <button class="btn-sm" id="btn-test-email">Send test email</button>
-            <button class="btn-sm" id="btn-test-slack">Send test Slack message</button>
-            <button class="btn-sm" id="btn-test-webhook">Send test webhook</button>
-            <span id="test-notify-msg" class="form-msg"></span>
-          </div>
-        </div>
-
-        <!-- Saved searches -->
-        <div class="settings-group">
-          <div class="settings-group-title">Saved Searches</div>
-          <p class="section-hint" style="margin-bottom:1rem">Bookmark filter combinations for quick access in Browse CVEs.</p>
-          <div id="saved-searches-list" class="saved-searches-list"></div>
-          <div class="save-search-form" style="margin-top:.75rem">
-            <input class="input-sm" id="saved-search-name" placeholder="Search preset name…" style="width:220px" />
-            <button class="btn-sm" id="btn-save-search">Save current Browse filters</button>
-          </div>
-        </div>
-
-        <!-- Saved views (server-side) -->
-        <div class="settings-group">
-          <div class="settings-group-title">Saved Views</div>
-          <p class="section-hint" style="margin-bottom:1rem">Named filter presets saved server-side — available across sessions and devices.</p>
-          <div id="saved-views-list" class="saved-searches-list"></div>
-          <div class="save-search-form" style="margin-top:.75rem">
-            <input class="input-sm" id="saved-view-name" placeholder="View name…" style="width:220px" />
-            <button class="btn-sm" id="btn-save-view">Save current Browse filters as view</button>
-          </div>
-          <div id="saved-view-msg" class="form-msg" style="margin-top:.4rem"></div>
-        </div>
-
-        <!-- Config validation -->
-        <div class="settings-group">
-          <div class="settings-group-title">Connection Tests</div>
-          <p class="section-hint" style="margin-bottom:1rem">Validate that your configured channels are reachable.</p>
-          <div class="test-row">
-            <button class="btn-sm" id="btn-validate-config">Test all connections</button>
-            <span id="validate-msg" class="form-msg"></span>
-          </div>
-          <div id="validate-results" class="validate-results" style="display:none;margin-top:.75rem"></div>
-        </div>
-
-        <div class="form-actions">
-          <button type="submit" class="btn-primary" id="btn-settings-save">Save settings</button>
-          <span id="settings-msg" class="form-msg"></span>
-        </div>
-      </form>
-    </div>
-  </section>
-
-  <!-- CVE Comparison overlay -->
-  <div id="compare-overlay" class="detail-overlay hidden">
-    <div class="detail-panel" style="max-width:1100px">
-      <button class="detail-close" id="btn-compare-close">✕</button>
-      <h2 style="margin-bottom:1rem">CVE Comparison</h2>
-      <div id="compare-grid" class="compare-grid"></div>
-    </div>
-  </div>
-
-  <!-- ANALYTICS -->
-  <section id="section-analytics" class="section">
-    <div class="container">
-      <h1 class="page-title">Analytics</h1>
-
-      <div class="panel-row" style="margin-bottom:1.5rem">
-        <div class="panel" style="flex:1">
-          <div class="panel-header"><h2>CVE Age Distribution</h2></div>
-          <div class="chart-wrap"><canvas id="age-chart"></canvas></div>
-        </div>
-        <div class="panel" style="flex:1">
-          <div class="panel-header">
-            <h2>Severity Over Time</h2>
-            <span class="panel-hint">New CVEs per scan coloured by presence of critical/high</span>
-          </div>
-          <div class="chart-wrap"><canvas id="sev-time-chart"></canvas></div>
-        </div>
-      </div>
-
-      <!-- EPSS vs CVSS scatter -->
-      <div class="panel" style="margin-bottom:1.5rem">
-        <div class="panel-header">
-          <h2>EPSS vs CVSS Risk Landscape</h2>
-          <span class="panel-hint">Each dot is a CVE — KEV highlighted in purple, size = severity rank</span>
-          <button class="btn-sm" id="btn-refresh-scatter">↻</button>
-        </div>
-        <div class="chart-wrap" style="height:340px"><canvas id="scatter-chart"></canvas></div>
-      </div>
-
-      <!-- Discovery heatmap -->
-      <div class="panel">
-        <div class="panel-header">
-          <h2>Discovery Heatmap</h2>
-          <span class="panel-hint">New CVEs found per day (last 90 days)</span>
-          <button class="btn-sm" id="btn-refresh-heatmap">↻</button>
-        </div>
-        <div id="heatmap-container" class="heatmap-container"></div>
-      </div>
-    </div>
-  </section>
-
-  <!-- TRIAGE -->
-  <section id="section-triage" class="section">
-    <div class="container">
-      <div class="page-title-row">
-        <h1 class="page-title">Triage</h1>
-        <div class="page-actions">
-          <select class="input-sm" id="triage-status-filter">
-            <option value="">All statuses</option>
-            <option value="open">Open</option>
-            <option value="investigating">Investigating</option>
-            <option value="mitigated">Mitigated</option>
-            <option value="wont_fix">Won't Fix</option>
-            <option value="false_positive">False Positive</option>
-            <option value="closed">Closed</option>
-          </select>
-          <button class="btn-sm" id="btn-triage-refresh">↻ Refresh</button>
-          <button class="btn-sm" id="btn-sla-escalate" title="Email assignees for SLA breaches and items due within 24h">⚠ Send SLA Alerts</button>
-          <span id="sla-escalate-msg" class="form-msg"></span>
-        </div>
-      </div>
-      <p class="section-hint">Assign CVEs to team members, set remediation status, and track SLA deadlines. Use the detail overlay in Browse to set triage for a CVE.</p>
-
-      <!-- SLA breach banner -->
-      <div id="sla-breach-banner" class="sla-breach-banner" style="display:none"></div>
-
-      <div class="table-wrap">
-        <table id="triage-table">
-          <thead>
-            <tr>
-              <th>CVE ID</th>
-              <th>Status</th>
-              <th>Assignee</th>
-              <th>Due Date</th>
-              <th>SLA</th>
-              <th>Patched</th>
-              <th>Updated</th>
-            </tr>
-          </thead>
-          <tbody id="triage-tbody"></tbody>
-        </table>
-      </div>
-      <div id="triage-empty" class="muted" style="padding:1rem 0;display:none">No CVEs in triage yet. Open a CVE from Browse and set its status.</div>
-
-      <!-- Suppression list -->
-      <div class="panel" style="margin-top:2rem">
-        <div class="panel-header">
-          <h2>Suppression List</h2>
-          <span class="panel-hint">CVEs marked false positive — excluded from future alerts</span>
-          <button class="btn-sm" id="btn-suppression-refresh">↻</button>
-        </div>
-        <div class="table-wrap">
-          <table id="suppression-table">
-            <thead>
-              <tr>
-                <th>CVE ID</th>
-                <th>Keyword</th>
-                <th>Reason</th>
-                <th>Suppressed At</th>
-                <th>By</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody id="suppression-tbody"></tbody>
-          </table>
-        </div>
-        <div id="suppression-empty" class="muted" style="padding:.75rem 0;display:none">No suppressed CVEs.</div>
-      </div>
-    </div>
-  </section>
-
-  <!-- ASSETS -->
-  <section id="section-assets" class="section">
-    <div class="container">
-      <div class="page-title-row">
-        <h1 class="page-title">Asset Inventory</h1>
-        <div class="page-actions">
-          <button class="btn-primary" id="btn-asset-new">+ New Asset</button>
-        </div>
-      </div>
-      <p class="section-hint">Define internal assets with CPE identifiers. CVE detail views will show which assets are affected by each vulnerability.</p>
-
-      <div class="split-layout">
-        <div class="split-main">
-          <div class="panel">
             <div class="table-wrap">
-              <table id="assets-table">
+              <table id="threat-table">
                 <thead>
                   <tr>
-                    <th>Name</th>
-                    <th>Environment</th>
-                    <th>Owner</th>
-                    <th>Tags</th>
-                    <th>CPE</th>
-                    <th></th>
+                    <th>CVE ID</th>
+                    <th>In Wild</th>
+                    <th>Malware Families</th>
+                    <th>Campaigns / Tags</th>
+                    <th>Source</th>
+                    <th>Updated</th>
                   </tr>
                 </thead>
-                <tbody id="assets-tbody"></tbody>
+                <tbody id="threat-tbody"></tbody>
               </table>
             </div>
-            <div id="assets-empty" class="muted" style="padding:1rem 0;display:none">No assets yet. Add assets to enable CVE-to-asset correlation.</div>
+            <div id="threat-empty" class="muted" style="padding:1rem 0;display:none">No threat intelligence data yet. Open a CVE detail and click "Fetch Threat Data".</div>
           </div>
         </div>
+      </section>
 
-        <div class="split-side" id="asset-editor">
-          <div class="panel">
-            <div class="panel-header">
-              <h2 id="asset-editor-title">New Asset</h2>
+      <!-- ── ROUTING RULES ──────────────────────────────────────────────── -->
+      <section id="section-routing" class="section">
+        <div class="container">
+          <div class="page-header">
+            <div>
+              <h1 class="page-title">Alert Routing Rules</h1>
+              <p class="page-subtitle">Route high-severity alerts to Teams, PagerDuty, Opsgenie, Slack, or email based on severity or keyword</p>
             </div>
-            <div class="form-body">
-              <input type="hidden" id="asset-edit-id" />
-              <div class="form-group">
-                <label class="form-label">Asset name</label>
-                <input class="input-sm" id="asset-name" placeholder="e.g. web-prod-01" />
-              </div>
-              <div class="form-group">
-                <label class="form-label">CPE <span class="form-hint">Comma-separated CPE 2.3 strings</span></label>
-                <textarea class="input-sm textarea-sm" id="asset-cpe" rows="3"
-                  placeholder="cpe:2.3:a:apache:log4j:2.14.1:*:*:*:*:*:*:*&#10;cpe:2.3:a:openssl:openssl:3.0.0:*:*:*:*:*:*:*"></textarea>
-              </div>
-              <div class="form-group">
-                <label class="form-label">Environment</label>
-                <select class="input-sm" id="asset-env">
-                  <option value="production">Production</option>
-                  <option value="staging">Staging</option>
-                  <option value="development">Development</option>
-                  <option value="dmz">DMZ</option>
-                  <option value="internal">Internal</option>
-                  <option value="other">Other</option>
-                </select>
-              </div>
-              <div class="form-group">
-                <label class="form-label">Owner</label>
-                <input class="input-sm" id="asset-owner" placeholder="team or email…" />
-              </div>
-              <div class="form-group">
-                <label class="form-label">Tags <span class="form-hint">comma-separated</span></label>
-                <input class="input-sm" id="asset-tags" placeholder="web, public-facing, java…" />
-              </div>
-              <div class="form-actions">
-                <button class="btn-primary" id="btn-asset-save">Save asset</button>
-                <button class="btn-sm" id="btn-asset-cancel">Cancel</button>
-                <button class="btn-danger" id="btn-asset-delete" style="display:none">Delete</button>
-              </div>
-              <div id="asset-msg" class="form-msg"></div>
+            <div class="page-actions">
+              <button class="btn-primary" id="btn-routing-new">+ New Rule</button>
             </div>
           </div>
-        </div>
-      </div>
-    </div>
-  </section>
-
-  <!-- USERS -->
-  <section id="section-users" class="section">
-    <div class="container">
-      <div class="page-title-row">
-        <h1 class="page-title">User Management</h1>
-        <div class="page-actions">
-          <button class="btn-primary" id="btn-user-new">+ New User</button>
-        </div>
-      </div>
-      <p class="section-hint">Manage API access with role-based control. <strong>Viewer</strong> — read-only. <strong>Analyst</strong> — triage, review, suppress. <strong>Lead</strong> — full access including user management. Supply a per-user Bearer token instead of the global API_SECRET.</p>
-
-      <div class="split-layout">
-        <div class="split-main">
-          <div class="panel">
-            <div class="table-wrap">
-              <table id="users-table">
-                <thead>
-                  <tr>
-                    <th>Username</th>
-                    <th>Role</th>
-                    <th>Email</th>
-                    <th>Created</th>
-                    <th>Active</th>
-                    <th></th>
-                  </tr>
-                </thead>
-                <tbody id="users-tbody"></tbody>
-              </table>
+          <div class="split-layout">
+            <div class="split-main">
+              <div class="panel">
+                <div class="table-wrap">
+                  <table id="routing-table">
+                    <thead>
+                      <tr>
+                        <th>Name</th>
+                        <th>Min Severity</th>
+                        <th>Channel</th>
+                        <th>Destination</th>
+                        <th>Tag Filter</th>
+                        <th></th>
+                      </tr>
+                    </thead>
+                    <tbody id="routing-tbody"></tbody>
+                  </table>
+                </div>
+                <div id="routing-empty" class="muted" style="padding:1rem 0;display:none">No routing rules yet.</div>
+              </div>
             </div>
-            <div id="users-empty" class="muted" style="padding:1rem 0;display:none">No users yet. The global API_SECRET environment variable still works as the legacy auth method.</div>
-          </div>
-        </div>
-
-        <div class="split-side" id="user-editor">
-          <div class="panel">
-            <div class="panel-header">
-              <h2 id="user-editor-title">New User</h2>
-            </div>
-            <div class="form-body">
-              <div class="form-group">
-                <label class="form-label">Username</label>
-                <input class="input-sm" id="user-username" placeholder="e.g. alice" />
-              </div>
-              <div class="form-group">
-                <label class="form-label">Role</label>
-                <select class="input-sm" id="user-role">
-                  <option value="viewer">Viewer — read-only</option>
-                  <option value="analyst" selected>Analyst — triage + review</option>
-                  <option value="lead">Lead — full access</option>
-                </select>
-              </div>
-              <div class="form-group">
-                <label class="form-label">Email <span class="form-hint">used for SLA escalation alerts</span></label>
-                <input class="input-sm" id="user-email" placeholder="alice@example.com" type="email" />
-              </div>
-              <div class="form-actions">
-                <button class="btn-primary" id="btn-user-save">Create user</button>
-                <button class="btn-sm" id="btn-user-cancel">Cancel</button>
-                <button class="btn-danger" id="btn-user-delete" style="display:none">Revoke</button>
-              </div>
-              <div id="user-msg" class="form-msg"></div>
-              <!-- API key display after creation -->
-              <div id="user-key-display" style="display:none;margin-top:1rem">
-                <div class="settings-group-title" style="color:var(--success)">User created — save this API key now</div>
-                <p class="form-hint" style="margin:.4rem 0">This key is shown only once. The user supplies it as a Bearer token.</p>
-                <code id="user-key-value" class="api-key-display"></code>
-                <button class="btn-sm" id="btn-copy-key" style="margin-top:.5rem">Copy</button>
+            <div class="split-side" id="routing-editor">
+              <div class="panel">
+                <div class="panel-header">
+                  <h2 id="routing-editor-title">New Rule</h2>
+                </div>
+                <div class="form-body">
+                  <input type="hidden" id="routing-edit-id" />
+                  <div class="form-group">
+                    <label class="form-label">Rule name</label>
+                    <input class="input-sm" id="routing-name" placeholder="e.g. Critical → PagerDuty" style="width:100%" />
+                  </div>
+                  <div class="form-group">
+                    <label class="form-label">Min severity</label>
+                    <select class="input-sm" id="routing-severity" style="width:100%">
+                      <option value="CRITICAL">CRITICAL only</option>
+                      <option value="HIGH">HIGH+</option>
+                      <option value="MEDIUM">MEDIUM+</option>
+                      <option value="LOW">LOW+</option>
+                    </select>
+                  </div>
+                  <div class="form-group">
+                    <label class="form-label">Channel</label>
+                    <select class="input-sm" id="routing-channel" style="width:100%">
+                      <option value="pagerduty">PagerDuty</option>
+                      <option value="opsgenie">Opsgenie</option>
+                      <option value="teams">Microsoft Teams</option>
+                      <option value="slack">Slack</option>
+                      <option value="webhook">Webhook</option>
+                      <option value="email">Email</option>
+                    </select>
+                  </div>
+                  <div class="form-group">
+                    <label class="form-label">Destination <span class="form-hint">(routing key, webhook URL, or email)</span></label>
+                    <input class="input-sm" id="routing-destination" placeholder="https://… or key…" style="width:100%" />
+                  </div>
+                  <div class="form-group">
+                    <label class="form-label">Tag filter <span class="form-hint">(optional keyword substring)</span></label>
+                    <input class="input-sm" id="routing-tag" placeholder="e.g. apache, log4j" style="width:100%" />
+                  </div>
+                  <div class="form-actions">
+                    <button class="btn-primary" id="btn-routing-save">Save rule</button>
+                    <button class="btn-sm" id="btn-routing-cancel">Cancel</button>
+                    <button class="btn-danger" id="btn-routing-delete" style="display:none">Delete</button>
+                  </div>
+                  <div id="routing-msg" class="form-msg"></div>
+                </div>
               </div>
             </div>
           </div>
         </div>
-      </div>
-    </div>
-  </section>
+      </section>
 
-  <!-- NOTIFICATION LOG -->
-  <section id="section-notifylog" class="section">
-    <div class="container">
-      <h1 class="page-title">Notification Log</h1>
-      <p class="section-hint">History of every email, Slack, webhook, Jira, and ServiceNow notification sent.</p>
-      <div class="table-wrap">
-        <table id="notifylog-table">
-          <thead>
-            <tr>
-              <th>Sent At</th>
-              <th>Channel</th>
-              <th>Profile</th>
-              <th class="num">CVEs</th>
-              <th>Recipients</th>
-              <th>Status</th>
-              <th>Error</th>
-            </tr>
-          </thead>
-          <tbody id="notifylog-tbody"></tbody>
-        </table>
-      </div>
-    </div>
-  </section>
-
-  <!-- THREAT INTEL -->
-  <section id="section-threat" class="section">
-    <div class="container">
-      <div class="page-title-row">
-        <h1 class="page-title">Threat Intelligence</h1>
-        <div class="page-actions">
-          <button class="btn-sm" id="btn-threat-refresh">↻ Refresh</button>
-        </div>
-      </div>
-      <p class="section-hint">CVEs with known in-the-wild exploitation, threat actor associations, and malware family links. Use the detail panel to enrich individual CVEs from AlienVault OTX.</p>
-
-      <!-- In-the-wild summary chips -->
-      <div class="panel" style="margin-bottom:1.5rem">
-        <div class="panel-header">
-          <h2>In-the-Wild Exploitation</h2>
-          <span class="panel-hint">From CISA KEV + AlienVault OTX</span>
-        </div>
-        <div class="table-wrap">
-          <table id="threat-table">
-            <thead>
-              <tr>
-                <th>CVE ID</th>
-                <th>In Wild</th>
-                <th>Malware Families</th>
-                <th>Campaigns / Tags</th>
-                <th>Source</th>
-                <th>Updated</th>
-              </tr>
-            </thead>
-            <tbody id="threat-tbody"></tbody>
-          </table>
-        </div>
-        <div id="threat-empty" class="muted" style="padding:1rem 0;display:none">No threat intelligence data yet. Open a CVE detail and click "Fetch Threat Data".</div>
-      </div>
-    </div>
-  </section>
-
-  <!-- ROUTING RULES -->
-  <section id="section-routing" class="section">
-    <div class="container">
-      <div class="page-title-row">
-        <h1 class="page-title">Alert Routing Rules</h1>
-        <div class="page-actions">
-          <button class="btn-primary" id="btn-routing-new">+ New Rule</button>
-        </div>
-      </div>
-      <p class="section-hint">Define routing rules to send high-severity alerts to specific channels (Teams, PagerDuty, Opsgenie) based on severity or keyword tags. Rules apply during scan dispatch.</p>
-
-      <div class="split-layout">
-        <div class="split-main">
-          <div class="panel">
-            <div class="table-wrap">
-              <table id="routing-table">
-                <thead>
-                  <tr>
-                    <th>Name</th>
-                    <th>Min Severity</th>
-                    <th>Channel</th>
-                    <th>Destination</th>
-                    <th>Tag Filter</th>
-                    <th></th>
-                  </tr>
-                </thead>
-                <tbody id="routing-tbody"></tbody>
-              </table>
+      <!-- ── AUDIT LOG ──────────────────────────────────────────────────── -->
+      <section id="section-audit" class="section">
+        <div class="container">
+          <div class="page-header">
+            <div>
+              <h1 class="page-title">Audit Log</h1>
+              <p class="page-subtitle">Immutable record of every triage action, comment, override, and suppression</p>
             </div>
-            <div id="routing-empty" class="muted" style="padding:1rem 0;display:none">No routing rules yet.</div>
-          </div>
-        </div>
-
-        <div class="split-side" id="routing-editor">
-          <div class="panel">
-            <div class="panel-header">
-              <h2 id="routing-editor-title">New Rule</h2>
-            </div>
-            <div class="form-body">
-              <input type="hidden" id="routing-edit-id" />
-              <div class="form-group">
-                <label class="form-label">Rule name</label>
-                <input class="input-sm" id="routing-name" placeholder="e.g. Critical → PagerDuty" style="width:100%" />
-              </div>
-              <div class="form-group">
-                <label class="form-label">Min severity</label>
-                <select class="input-sm" id="routing-severity" style="width:100%">
-                  <option value="CRITICAL">CRITICAL only</option>
-                  <option value="HIGH">HIGH+</option>
-                  <option value="MEDIUM">MEDIUM+</option>
-                  <option value="LOW">LOW+</option>
-                </select>
-              </div>
-              <div class="form-group">
-                <label class="form-label">Channel</label>
-                <select class="input-sm" id="routing-channel" style="width:100%">
-                  <option value="pagerduty">PagerDuty</option>
-                  <option value="opsgenie">Opsgenie</option>
-                  <option value="teams">Microsoft Teams</option>
-                  <option value="slack">Slack</option>
-                  <option value="webhook">Webhook</option>
-                  <option value="email">Email</option>
-                </select>
-              </div>
-              <div class="form-group">
-                <label class="form-label">Destination <span class="form-hint">(routing key, webhook URL, or email)</span></label>
-                <input class="input-sm" id="routing-destination" placeholder="https://… or key…" style="width:100%" />
-              </div>
-              <div class="form-group">
-                <label class="form-label">Tag filter <span class="form-hint">(optional keyword substring)</span></label>
-                <input class="input-sm" id="routing-tag" placeholder="e.g. apache, log4j" style="width:100%" />
-              </div>
-              <div class="form-actions">
-                <button class="btn-primary" id="btn-routing-save">Save rule</button>
-                <button class="btn-sm" id="btn-routing-cancel">Cancel</button>
-                <button class="btn-danger" id="btn-routing-delete" style="display:none">Delete</button>
-              </div>
-              <div id="routing-msg" class="form-msg"></div>
+            <div class="page-actions">
+              <button class="btn-sm" id="btn-audit-refresh">↻ Refresh</button>
             </div>
           </div>
+          <div class="table-wrap">
+            <table id="audit-table">
+              <thead>
+                <tr>
+                  <th>Timestamp</th>
+                  <th>Actor</th>
+                  <th>Action</th>
+                  <th>CVE / Target</th>
+                  <th>Detail</th>
+                </tr>
+              </thead>
+              <tbody id="audit-tbody"></tbody>
+            </table>
+          </div>
         </div>
-      </div>
-    </div>
-  </section>
+      </section>
 
-  <!-- AUDIT LOG -->
-  <section id="section-audit" class="section">
-    <div class="container">
-      <div class="page-title-row">
-        <h1 class="page-title">Audit Log</h1>
-        <div class="page-actions">
-          <button class="btn-sm" id="btn-audit-refresh">↻ Refresh</button>
-        </div>
-      </div>
-      <p class="section-hint">Every triage action, comment, override, and threat intel update — who did what and when.</p>
-      <div class="table-wrap">
-        <table id="audit-table">
-          <thead>
-            <tr>
-              <th>Timestamp</th>
-              <th>Actor</th>
-              <th>Action</th>
-              <th>CVE / Target</th>
-              <th>Detail</th>
-            </tr>
-          </thead>
-          <tbody id="audit-tbody"></tbody>
-        </table>
-      </div>
-    </div>
-  </section>
+    </main><!-- /main-content -->
+  </div><!-- /app-shell -->
 
-  <!-- Keyboard shortcuts modal -->
+  <!-- ── Keyboard shortcuts modal ─────────────────────────────────────────── -->
   <div id="shortcuts-overlay" class="detail-overlay hidden">
     <div class="detail-panel" style="max-width:540px">
-      <button class="detail-close" id="btn-shortcuts-close">✕</button>
-      <h2 style="margin-bottom:1.25rem">Keyboard Shortcuts</h2>
-      <table class="shortcuts-table">
-        <tbody>
-          <tr><td><kbd>?</kbd></td><td>Show / hide this help</td></tr>
-          <tr><td><kbd>j</kbd> / <kbd>↓</kbd></td><td>Next CVE in browse list</td></tr>
-          <tr><td><kbd>k</kbd> / <kbd>↑</kbd></td><td>Previous CVE in browse list</td></tr>
-          <tr><td><kbd>o</kbd> / <kbd>Enter</kbd></td><td>Open detail for selected CVE</td></tr>
-          <tr><td><kbd>Esc</kbd></td><td>Close overlay / panel</td></tr>
-          <tr><td><kbd>w</kbd></td><td>Add selected CVE to watchlist</td></tr>
-          <tr><td><kbd>r</kbd></td><td>Toggle reviewed on selected CVE</td></tr>
-          <tr><td><kbd>s</kbd></td><td>Toggle checkbox on selected CVE</td></tr>
-          <tr><td><kbd>1</kbd>–<kbd>6</kbd></td><td>Apply quick filter chip 1–6</td></tr>
-          <tr><td><kbd>/</kbd></td><td>Focus search box (Browse section)</td></tr>
-        </tbody>
-      </table>
+      <div class="detail-panel-header">
+        <h2>Keyboard Shortcuts</h2>
+        <button class="btn-icon" id="btn-shortcuts-close">✕</button>
+      </div>
+      <div class="detail-panel-body">
+        <table class="shortcuts-table">
+          <tbody>
+            <tr><td><kbd>?</kbd></td><td>Show / hide this help</td></tr>
+            <tr><td><kbd>j</kbd> / <kbd>↓</kbd></td><td>Next CVE in browse list</td></tr>
+            <tr><td><kbd>k</kbd> / <kbd>↑</kbd></td><td>Previous CVE in browse list</td></tr>
+            <tr><td><kbd>o</kbd> / <kbd>Enter</kbd></td><td>Open detail for selected CVE</td></tr>
+            <tr><td><kbd>Esc</kbd></td><td>Close overlay / panel</td></tr>
+            <tr><td><kbd>w</kbd></td><td>Add selected CVE to watchlist</td></tr>
+            <tr><td><kbd>r</kbd></td><td>Toggle reviewed on selected CVE</td></tr>
+            <tr><td><kbd>s</kbd></td><td>Toggle checkbox on selected CVE</td></tr>
+            <tr><td><kbd>1</kbd>–<kbd>6</kbd></td><td>Apply quick filter chip 1–6</td></tr>
+            <tr><td><kbd>/</kbd></td><td>Focus search box (Browse section)</td></tr>
+          </tbody>
+        </table>
+      </div>
     </div>
   </div>
 

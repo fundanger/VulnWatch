@@ -1293,47 +1293,62 @@ def bootstrap_assets() -> None:
         trans = conn.begin()
         conn.execute(text("""
             CREATE TABLE IF NOT EXISTS assets (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                name        TEXT NOT NULL,
-                cpe         TEXT DEFAULT '',
-                tags        TEXT DEFAULT '',
-                owner       TEXT DEFAULT '',
-                environment TEXT DEFAULT '',
-                created_at  TEXT NOT NULL,
-                updated_at  TEXT NOT NULL
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                name            TEXT NOT NULL,
+                cpe             TEXT DEFAULT '',
+                tags            TEXT DEFAULT '',
+                owner           TEXT DEFAULT '',
+                environment     TEXT DEFAULT '',
+                last_scanned_at TEXT DEFAULT '',
+                scan_source     TEXT DEFAULT '',
+                created_at      TEXT NOT NULL,
+                updated_at      TEXT NOT NULL
             )
         """ if _IS_SQLITE else """
             CREATE TABLE IF NOT EXISTS assets (
-                id          SERIAL PRIMARY KEY,
-                name        TEXT NOT NULL,
-                cpe         TEXT DEFAULT '',
-                tags        TEXT DEFAULT '',
-                owner       TEXT DEFAULT '',
-                environment TEXT DEFAULT '',
-                created_at  TEXT NOT NULL,
-                updated_at  TEXT NOT NULL
+                id              SERIAL PRIMARY KEY,
+                name            TEXT NOT NULL,
+                cpe             TEXT DEFAULT '',
+                tags            TEXT DEFAULT '',
+                owner           TEXT DEFAULT '',
+                environment     TEXT DEFAULT '',
+                last_scanned_at TEXT DEFAULT '',
+                scan_source     TEXT DEFAULT '',
+                created_at      TEXT NOT NULL,
+                updated_at      TEXT NOT NULL
             )
         """))
+        # Migrations for existing databases
+        for col, default in [("last_scanned_at", "''"), ("scan_source", "''")]:
+            try:
+                conn.execute(text(f"ALTER TABLE assets ADD COLUMN {col} TEXT DEFAULT {default}"))
+            except Exception:
+                pass
         trans.commit()
 
 
 def asset_save(name: str, cpe: str = "", tags: str = "",
                owner: str = "", environment: str = "",
-               asset_id: int | None = None) -> int:
+               asset_id: int | None = None,
+               last_scanned_at: str = "", scan_source: str = "") -> int:
     now = datetime.now().isoformat(timespec="seconds")
+    scanned = last_scanned_at or now
     with _connect() as conn:
         if asset_id:
             conn.execute(text(
                 "UPDATE assets SET name=:name, cpe=:cpe, tags=:tags, owner=:owner, "
-                "environment=:env, updated_at=:now WHERE id=:id"
+                "environment=:env, last_scanned_at=:scanned, scan_source=:src, "
+                "updated_at=:now WHERE id=:id"
             ), {"name": name, "cpe": cpe, "tags": tags, "owner": owner,
-                "env": environment, "now": now, "id": asset_id})
+                "env": environment, "scanned": scanned, "src": scan_source,
+                "now": now, "id": asset_id})
             return asset_id
         result = conn.execute(text(
-            "INSERT INTO assets (name, cpe, tags, owner, environment, created_at, updated_at) "
-            "VALUES (:name, :cpe, :tags, :owner, :env, :now, :now)"
+            "INSERT INTO assets (name, cpe, tags, owner, environment, "
+            "last_scanned_at, scan_source, created_at, updated_at) "
+            "VALUES (:name, :cpe, :tags, :owner, :env, :scanned, :src, :now, :now)"
         ), {"name": name, "cpe": cpe, "tags": tags, "owner": owner,
-            "env": environment, "now": now})
+            "env": environment, "scanned": scanned, "src": scan_source, "now": now})
         return result.lastrowid if _IS_SQLITE else conn.execute(text("SELECT lastval()")).fetchone()[0]
 
 

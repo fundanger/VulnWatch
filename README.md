@@ -121,18 +121,73 @@ When any profiles exist, the scan loop runs profiles instead of the default conf
 
 ---
 
+## Environment scanners
+
+Run one of these on any machine you want to monitor. Each script fingerprints installed software, running services, OS/kernel, listening ports, and package-manager libraries, then either prints a keyword list or uploads it directly to CVE Emailer — creating an Asset record so CVEs are automatically correlated to the host.
+
+**Python** (Windows / Linux / macOS — recommended):
+
+```bash
+# Print keyword list
+python scan_environment.py
+
+# Upload to dashboard with full asset metadata
+python scan_environment.py --upload http://your-dashboard:5000 --token YOUR_API_SECRET \
+    --asset-name PROD-WEB-01 --environment production --owner infra-team --append
+```
+
+**Bash** (Linux / macOS — no Python required):
+
+```bash
+chmod +x scan_environment.sh
+
+# Print keyword list
+./scan_environment.sh
+
+# Upload to dashboard
+./scan_environment.sh --upload http://your-dashboard:5000 --token YOUR_API_SECRET \
+    --asset-name PROD-LNX-01 --environment production --append
+```
+
+**PowerShell** (Windows):
+
+```powershell
+# Print keyword list
+.\Scan-Environment.ps1
+
+# Upload to dashboard with full asset metadata
+.\Scan-Environment.ps1 -DashboardUrl http://your-dashboard:5000 -Token YOUR_API_SECRET `
+    -AssetName PROD-WIN-01 -Environment production -Owner infra-team -Append
+
+# Preview what would be uploaded (no changes made)
+.\Scan-Environment.ps1 -DashboardUrl http://your-dashboard:5000 -Token SECRET -DryRun
+```
+
+All three scanners:
+- Require no root / admin rights (most checks; some WMI queries on Windows work better elevated but degrade gracefully)
+- Use `--append` / `-Append` to merge discovered keywords into the existing list — version entries are updated in-place (scanner always wins)
+- Filter generic port-only names (`HTTP server`, `HTTPS server`, etc.) that produce NVD noise
+- Use a Docker image whitelist — unknown container names are silently dropped
+- Store `last_scanned_at` and `scan_source` on the Asset record
+
+---
+
 ## Project structure
 
 ```
 CVE-Emailer-v2/
-├── main.py         # Entry point — calls tui.run()
-├── tui.py          # Textual TUI: all screens, setup wizard, config helpers
-├── search.py       # NVD fetch, CVE enrichment, dispatch, scan loop
-├── database.py     # SQLite backend: CVE tables, scan history, profiles
-├── mail.py         # Gmail SMTP: plain-text + styled HTML email
-├── notify.py       # Slack block-kit and generic webhook dispatch
-├── scheduler.py    # Windows Task Scheduler integration
-├── config.ini      # Credentials and settings (gitignored)
+├── main.py               # Entry point — calls tui.run()
+├── tui.py                # Textual TUI: all screens, setup wizard, config helpers
+├── search.py             # NVD fetch, CVE enrichment, dispatch, scan loop
+├── database.py           # SQLite backend: CVE tables, scan history, profiles
+├── mail.py               # Gmail SMTP: plain-text + styled HTML email
+├── notify.py             # Slack block-kit and generic webhook dispatch
+├── scheduler.py          # Cross-platform background job installer
+├── api.py                # Flask REST API + web dashboard
+├── scan_environment.py   # Cross-platform environment scanner (Python)
+├── scan_environment.sh   # Linux/macOS environment scanner (Bash)
+├── Scan-Environment.ps1  # Windows environment scanner (PowerShell)
+├── config.ini            # Credentials and settings (gitignored)
 └── requirements.txt
 ```
 

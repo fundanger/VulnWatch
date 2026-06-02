@@ -7,18 +7,10 @@ const API = "";  // same origin; change to e.g. "http://localhost:5000" if cross
 
 const sections = document.querySelectorAll(".section");
 const navLinks = document.querySelectorAll(".nav-link");
+const sidebarLinks = document.querySelectorAll(".sidebar-link");
 
-function showSection(name) {
-  sections.forEach(s => s.classList.toggle("active", s.id === `section-${name}`));
-  navLinks.forEach(l => l.classList.toggle("active", l.dataset.section === name));
-}
-
-navLinks.forEach(l => l.addEventListener("click", e => {
-  if (!l.dataset.section) return; // external link (Docs)
-  e.preventDefault();
-  const sec = l.dataset.section;
-  showSection(sec);
-  if (sec === "overview")   { loadDashboard(); loadTopCves(); loadTrend(); loadKwPerf(); loadScheduleInfo(); loadScanHealth(); }
+function _sectionLoader(sec) {
+  if (sec === "overview")   { loadDashboard(); loadTopCves(); loadTrend(); loadKwPerf(); loadScheduleInfo(); loadScanHealth(); loadMttr(); }
   if (sec === "history")    loadHistory();
   if (sec === "profiles")   loadProfiles();
   if (sec === "browse")     loadBrowseTables();
@@ -30,6 +22,41 @@ navLinks.forEach(l => l.addEventListener("click", e => {
   if (sec === "triage")     loadTriage();
   if (sec === "assets")     loadAssets();
   if (sec === "users")      loadUsers();
+  if (sec === "threat")     loadThreatSection();
+  if (sec === "routing")    loadRoutingRules();
+  if (sec === "audit")      loadAuditLog();
+}
+
+function showSection(name) {
+  sections.forEach(s => {
+    const isTarget = s.id === `section-${name}`;
+    if (isTarget && !s.classList.contains("active")) {
+      // Re-trigger entrance animation by cycling the class
+      s.classList.remove("active");
+      void s.offsetWidth; // force reflow
+      s.classList.add("active");
+    } else {
+      s.classList.toggle("active", isTarget);
+    }
+  });
+  navLinks.forEach(l => l.classList.toggle("active", l.dataset.section === name));
+  sidebarLinks.forEach(l => l.classList.toggle("active", l.dataset.section === name));
+}
+
+navLinks.forEach(l => l.addEventListener("click", e => {
+  if (!l.dataset.section) return;
+  e.preventDefault();
+  const sec = l.dataset.section;
+  showSection(sec);
+  _sectionLoader(sec);
+}));
+
+sidebarLinks.forEach(l => l.addEventListener("click", e => {
+  if (!l.dataset.section) return;
+  e.preventDefault();
+  const sec = l.dataset.section;
+  showSection(sec);
+  _sectionLoader(sec);
 }));
 
 // ── Health check ─────────────────────────────────────────────────────────────
@@ -56,6 +83,53 @@ setInterval(checkHealth, 30_000);
 checkHealth();
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
+
+function _setStatVal(id, value) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.textContent = value;
+  el.classList.remove("stat-pop");
+  void el.offsetWidth; // force reflow to restart animation
+  el.classList.add("stat-pop");
+}
+
+function _animateRows(tbodyEl) {
+  if (!tbodyEl) return;
+  tbodyEl.classList.remove("row-animate");
+  void tbodyEl.offsetWidth;
+  tbodyEl.classList.add("row-animate");
+}
+
+// ── CSRF token helper ─────────────────────────────────────────────────────────
+// Reads the csrf_token cookie set by the server and returns fetch options
+// that include it in the X-CSRF-Token header for all state-changing requests.
+function _csrfToken() {
+  const match = document.cookie.match(/(?:^|;\s*)csrf_token=([^;]+)/);
+  return match ? decodeURIComponent(match[1]) : "";
+}
+
+function _postOpts(body, extraHeaders = {}) {
+  return {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-CSRF-Token": _csrfToken(), ...extraHeaders },
+    body: JSON.stringify(body),
+  };
+}
+
+function _deleteOpts(extraHeaders = {}) {
+  return {
+    method: "DELETE",
+    headers: { "X-CSRF-Token": _csrfToken(), ...extraHeaders },
+  };
+}
+
+function _patchOpts(body, extraHeaders = {}) {
+  return {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json", "X-CSRF-Token": _csrfToken(), ...extraHeaders },
+    body: JSON.stringify(body),
+  };
+}
 
 function sevBadge(sev) {
   const s = (sev || "UNKNOWN").toUpperCase();
@@ -87,12 +161,12 @@ async function loadDashboard() {
     const r = await fetch(`${API}/api/dashboard`);
     const d = await r.json();
 
-    document.getElementById("stat-total").textContent    = d.total_cves ?? "—";
-    document.getElementById("stat-critical").textContent = d.totals?.CRITICAL ?? 0;
-    document.getElementById("stat-high").textContent     = d.totals?.HIGH ?? 0;
-    document.getElementById("stat-medium").textContent   = d.totals?.MEDIUM ?? 0;
-    document.getElementById("stat-low").textContent      = d.totals?.LOW ?? 0;
-    document.getElementById("stat-kev").textContent      = d.kev_total ?? "—";
+    _setStatVal("stat-total",    d.total_cves ?? "—");
+    _setStatVal("stat-critical", d.totals?.CRITICAL ?? 0);
+    _setStatVal("stat-high",     d.totals?.HIGH ?? 0);
+    _setStatVal("stat-medium",   d.totals?.MEDIUM ?? 0);
+    _setStatVal("stat-low",      d.totals?.LOW ?? 0);
+    _setStatVal("stat-kev",      d.kev_total ?? "—");
 
     const tbody = document.getElementById("keyword-tbody");
     tbody.innerHTML = "";
@@ -110,6 +184,7 @@ async function loadDashboard() {
         </tr>
       `);
     });
+    _animateRows(tbody);
 
     const ul = document.getElementById("recent-scans");
     ul.innerHTML = "";
@@ -142,7 +217,7 @@ async function loadBrowseTables() {
     const r = await fetch(`${API}/api/tables`);
     const tables = await r.json();
     const sel = document.getElementById("br-table");
-    sel.innerHTML = `<option value="">Select keyword…</option>`;
+    sel.innerHTML = `<option value="">All keywords…</option>`;
     tables.forEach(t => sel.insertAdjacentHTML("beforeend", `<option value="${escHtml(t)}">${escHtml(t)}</option>`));
   } catch (e) {
     console.error("loadBrowseTables:", e);
@@ -231,8 +306,11 @@ async function openDetail(row) {
     ? `${(row.epss_score * 100).toFixed(2)}% (${(row.epss_percentile * 100 || 0).toFixed(0)}th percentile)`
     : "—";
 
+  // Set sticky panel header title
+  const titleEl = document.getElementById("detail-panel-title");
+  if (titleEl) titleEl.textContent = row.cve_id;
+
   document.getElementById("detail-content").innerHTML = `
-    <h2>${escHtml(row.cve_id)}</h2>
     <dl class="dl">
       <dt>Severity</dt>   <dd>${sevBadge(row.severity)} ${scoreStr(row.cvss_score)} CVSS</dd>
       <dt>EPSS</dt>       <dd>${escHtml(epss)}</dd>
@@ -284,14 +362,19 @@ async function openDetail(row) {
   document.getElementById("detail-overlay").classList.remove("hidden");
 }
 
-document.getElementById("btn-detail-close").addEventListener("click", () => {
-  document.getElementById("detail-overlay").classList.add("hidden");
-});
+function closeDetailOverlay() {
+  const ov = document.getElementById("detail-overlay");
+  if (ov.classList.contains("hidden")) return;
+  ov.classList.add("closing");
+  setTimeout(() => { ov.classList.add("hidden"); ov.classList.remove("closing"); }, 170);
+}
+
+document.getElementById("btn-detail-close").addEventListener("click", closeDetailOverlay);
 document.getElementById("detail-overlay").addEventListener("click", e => {
-  if (e.target === e.currentTarget) e.currentTarget.classList.add("hidden");
+  if (e.target === e.currentTarget) closeDetailOverlay();
 });
 document.addEventListener("keydown", e => {
-  if (e.key === "Escape") document.getElementById("detail-overlay").classList.add("hidden");
+  if (e.key === "Escape") closeDetailOverlay();
 });
 
 document.getElementById("btn-detail-watchlist").addEventListener("click", async () => {
@@ -300,7 +383,7 @@ document.getElementById("btn-detail-watchlist").addEventListener("click", async 
   try {
     const r = await fetch(`${API}/api/watchlist`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": _csrfToken() },
       body: JSON.stringify({ cve_id: _detailRow.cve_id, keyword: _detailRow.keyword || "" }),
     });
     const j = await r.json();
@@ -318,7 +401,7 @@ document.getElementById("btn-detail-reviewed").addEventListener("click", async (
   try {
     const r = await fetch(`${API}/api/review`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": _csrfToken() },
       body: JSON.stringify({ cve_id: _detailRow.cve_id, reviewed: !alreadyReviewed, notes: document.getElementById("detail-notes").value }),
     });
     const j = await r.json();
@@ -339,7 +422,7 @@ document.getElementById("btn-detail-save-notes").addEventListener("click", async
   try {
     const r = await fetch(`${API}/api/review`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": _csrfToken() },
       body: JSON.stringify({ cve_id: _detailRow.cve_id, reviewed: document.getElementById("btn-detail-reviewed").classList.contains("btn-reviewed"), notes }),
     });
     const j = await r.json();
@@ -350,7 +433,7 @@ document.getElementById("btn-detail-save-notes").addEventListener("click", async
   try {
     await fetch(`${API}/api/watchlist/${encodeURIComponent(_detailRow.cve_id)}/notes`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": _csrfToken() },
       body: JSON.stringify({ notes }),
     });
   } catch {}
@@ -408,6 +491,7 @@ async function loadHistory() {
         });
       }
     });
+    _animateRows(tbody);
   } catch (e) {
     console.error("loadHistory:", e);
   }
@@ -459,7 +543,7 @@ async function loadWatchlist() {
 
     tbody.querySelectorAll(".btn-watchlist-remove").forEach(btn => {
       btn.addEventListener("click", async () => {
-        await fetch(`${API}/api/watchlist/${encodeURIComponent(btn.dataset.cve)}`, { method: "DELETE" });
+        await fetch(`${API}/api/watchlist/${encodeURIComponent(btn.dataset.cve)}`, { method: "DELETE", headers: { "X-CSRF-Token": _csrfToken() } });
         loadWatchlist();
       });
     });
@@ -472,7 +556,7 @@ document.getElementById("btn-watchlist-add").addEventListener("click", async () 
   try {
     const r = await fetch(`${API}/api/watchlist`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": _csrfToken() },
       body: JSON.stringify({ cve_id: cveId }),
     });
     const j = await r.json();
@@ -643,6 +727,7 @@ async function loadTopCves() {
       tr.addEventListener("click", () => openDetail(row));
       tbody.appendChild(tr);
     });
+    _animateRows(tbody);
   } catch (e) { console.error("loadTopCves:", e); }
 }
 
@@ -668,6 +753,7 @@ async function loadKwPerf() {
         </tr>
       `);
     });
+    _animateRows(tbody);
   } catch (e) { console.error("loadKwPerf:", e); }
 }
 
@@ -800,10 +886,13 @@ const FIELD_META = {
   "JIRA__token":             { label: "Jira API token",        placeholder: "", password: true },
   "JIRA__project_key":       { label: "Jira project key",      placeholder: "SEC" },
   "JIRA__issue_type":        { label: "Jira issue type",       placeholder: "Bug" },
-  "SERVICENOW__instance":    { label: "ServiceNow instance",   placeholder: "myorg.service-now.com" },
-  "SERVICENOW__user":        { label: "ServiceNow username",   placeholder: "" },
-  "SERVICENOW__password":    { label: "ServiceNow password",   placeholder: "", password: true },
-  "SERVICENOW__category":    { label: "Incident category",     placeholder: "Security" },
+  "SERVICENOW__instance":    { label: "ServiceNow instance",      placeholder: "myorg.service-now.com" },
+  "SERVICENOW__user":        { label: "ServiceNow username",      placeholder: "" },
+  "SERVICENOW__password":    { label: "ServiceNow password",      placeholder: "", password: true },
+  "SERVICENOW__category":    { label: "Incident category",        placeholder: "Security" },
+  "DEFAULT__teamsWebhook":   { label: "Teams incoming webhook URL", placeholder: "https://outlook.office.com/webhook/…" },
+  "DEFAULT__pagerdutyKey":   { label: "PagerDuty routing key",    placeholder: "", password: true },
+  "DEFAULT__opsgenieKey":    { label: "Opsgenie API key",         placeholder: "", password: true },
 };
 
 let _settingsData = {};
@@ -871,7 +960,7 @@ document.getElementById("settings-form").addEventListener("submit", async e => {
   try {
     const r = await fetch(`${API}/api/config`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": _csrfToken() },
       body: JSON.stringify(payload),
     });
     const j = await r.json();
@@ -940,7 +1029,7 @@ document.getElementById("btn-profile-save").addEventListener("click", async () =
   try {
     const r = await fetch(`${API}/api/profiles`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": _csrfToken() },
       body: JSON.stringify(body),
     });
     const j = await r.json();
@@ -961,7 +1050,7 @@ document.getElementById("btn-profile-delete").addEventListener("click", async ()
   if (!confirm(`Delete profile "${_editingProfile}"?`)) return;
   const msg = document.getElementById("profile-msg");
   try {
-    const r = await fetch(`${API}/api/profiles/${encodeURIComponent(_editingProfile)}`, { method: "DELETE" });
+    const r = await fetch(`${API}/api/profiles/${encodeURIComponent(_editingProfile)}`, { method: "DELETE", headers: { "X-CSRF-Token": _csrfToken() } });
     const j = await r.json();
     if (j.ok) {
       loadProfiles();
@@ -1063,7 +1152,7 @@ async function loadDigestQueue() {
         try {
           const r = await fetch(`${API}/api/digest/send`, {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: { "Content-Type": "application/json", "X-CSRF-Token": _csrfToken() },
             body: JSON.stringify({ profile_name: profile }),
           });
           const j = await r.json();
@@ -1083,7 +1172,7 @@ async function _testNotify(channel) {
   try {
     const r = await fetch(`${API}/api/notify/test`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": _csrfToken() },
       body: JSON.stringify({ channel }),
     });
     const j = await r.json();
@@ -1167,7 +1256,16 @@ let _browseTotalRows = 0;
 
 async function doBrowseSearchPaged(page = 0) {
   const table = document.getElementById("br-table").value;
-  if (!table) { alert("Select a keyword table first."); return; }
+  if (!table) {
+    // Auto-select first available table
+    const opts = document.getElementById("br-table").options;
+    if (opts.length > 1) {
+      document.getElementById("br-table").value = opts[1].value;
+    } else {
+      document.getElementById("browse-status").textContent = "No keyword tables found — run a scan first.";
+      return;
+    }
+  }
 
   _browsePage = page;
   const params = new URLSearchParams({
@@ -1279,7 +1377,7 @@ async function _sendCve(channel) {
   try {
     const r = await fetch(`${API}/api/cve/send`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": _csrfToken() },
       body: JSON.stringify({ channel, cve: _detailRow }),
     });
     const j = await r.json();
@@ -1330,7 +1428,7 @@ document.getElementById("btn-bulk-reviewed").addEventListener("click", async () 
   for (const cveId of _selectedCves) {
     await fetch(`${API}/api/review`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": _csrfToken() },
       body: JSON.stringify({ cve_id: cveId, reviewed: true, notes: "" }),
     }).catch(() => {});
   }
@@ -1344,7 +1442,7 @@ document.getElementById("btn-bulk-watchlist").addEventListener("click", async ()
     const row = _browseRows.find(r => r.cve_id === cveId);
     await fetch(`${API}/api/watchlist`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": _csrfToken() },
       body: JSON.stringify({ cve_id: cveId, keyword: row?.keyword || "" }),
     }).catch(() => {});
   }
@@ -1492,6 +1590,7 @@ async function _origRenderBrowse() {
     });
     tbody.appendChild(tr);
   });
+  _animateRows(tbody);
   document.getElementById("browse-status").textContent = `${rows.length} result(s) — click a row for detail`;
 }
 
@@ -1674,7 +1773,7 @@ document.getElementById("btn-detail-triage-save").addEventListener("click", asyn
   try {
     const r = await fetch(`${API}/api/triage`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": _csrfToken() },
       body: JSON.stringify({
         cve_id:   _detailRow.cve_id,
         status:   document.getElementById("detail-triage-status").value,
@@ -1700,7 +1799,7 @@ document.getElementById("btn-detail-suppress").addEventListener("click", async (
   try {
     const r = await fetch(`${API}/api/suppressions`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": _csrfToken() },
       body: JSON.stringify({
         cve_id:  _detailRow.cve_id,
         keyword: _detailRow.keyword || "",
@@ -1797,6 +1896,7 @@ async function loadTriage() {
         </tr>
       `);
     });
+    _animateRows(tbody);
   } catch (e) { console.error("loadTriage:", e); }
 
   loadSuppressions();
@@ -1828,7 +1928,7 @@ async function loadSuppressions() {
     });
     tbody.querySelectorAll(".btn-suppression-remove").forEach(btn => {
       btn.addEventListener("click", async () => {
-        await fetch(`${API}/api/suppressions/${encodeURIComponent(btn.dataset.cve)}`, { method: "DELETE" });
+        await fetch(`${API}/api/suppressions/${encodeURIComponent(btn.dataset.cve)}`, { method: "DELETE", headers: { "X-CSRF-Token": _csrfToken() } });
         loadSuppressions();
       });
     });
@@ -1855,7 +1955,7 @@ async function loadSavedViews() {
       chip.innerHTML = `${escHtml(v.name)} <button class="chip-del" data-name="${escHtml(v.name)}">✕</button>`;
       chip.querySelector("button").addEventListener("click", async e => {
         e.stopPropagation();
-        await fetch(`${API}/api/views/${encodeURIComponent(v.name)}`, { method: "DELETE" });
+        await fetch(`${API}/api/views/${encodeURIComponent(v.name)}`, { method: "DELETE", headers: { "X-CSRF-Token": _csrfToken() } });
         loadSavedViews();
       });
       chip.addEventListener("click", e => {
@@ -1890,7 +1990,7 @@ document.getElementById("btn-save-view").addEventListener("click", async () => {
   try {
     const r = await fetch(`${API}/api/views`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": _csrfToken() },
       body: JSON.stringify({ name, filters }),
     });
     const j = await r.json();
@@ -2223,7 +2323,7 @@ document.getElementById("btn-detail-override-save").addEventListener("click", as
   try {
     const r = await fetch(`${API}/api/cvss-override`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": _csrfToken() },
       body: JSON.stringify({
         cve_id:         _detailRow.cve_id,
         internal_score: score !== "" ? parseFloat(score) : null,
@@ -2243,7 +2343,7 @@ document.getElementById("btn-detail-override-clear").addEventListener("click", a
   if (!_detailRow) return;
   const msg = document.getElementById("detail-override-msg");
   try {
-    await fetch(`${API}/api/cvss-override/${encodeURIComponent(_detailRow.cve_id)}`, { method: "DELETE" });
+    await fetch(`${API}/api/cvss-override/${encodeURIComponent(_detailRow.cve_id)}`, { method: "DELETE", headers: { "X-CSRF-Token": _csrfToken() } });
     document.getElementById("detail-override-score").value     = "";
     document.getElementById("detail-override-sev").value       = "";
     document.getElementById("detail-override-rationale").value = "";
@@ -2274,7 +2374,7 @@ document.getElementById("btn-detail-patch-save").addEventListener("click", async
   try {
     const r = await fetch(`${API}/api/triage/${encodeURIComponent(_detailRow.cve_id)}/patch`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": _csrfToken() },
       body: JSON.stringify({
         patched_version: document.getElementById("detail-patch-version").value.trim(),
         patched_at:      document.getElementById("detail-patch-date").value,
@@ -2374,7 +2474,7 @@ document.getElementById("btn-asset-save").addEventListener("click", async () => 
   try {
     const r = await fetch(`${API}/api/assets`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": _csrfToken() },
       body: JSON.stringify(body),
     });
     const j = await r.json();
@@ -2386,7 +2486,7 @@ document.getElementById("btn-asset-save").addEventListener("click", async () => 
 document.getElementById("btn-asset-delete").addEventListener("click", async () => {
   if (!_editingAsset) return;
   if (!confirm(`Delete asset "${_editingAsset.name}"?`)) return;
-  await fetch(`${API}/api/assets/${_editingAsset.id}`, { method: "DELETE" });
+  await fetch(`${API}/api/assets/${_editingAsset.id}`, { method: "DELETE", headers: { "X-CSRF-Token": _csrfToken() } });
   loadAssets();
   _closeAssetEditor();
 });
@@ -2460,7 +2560,7 @@ document.getElementById("btn-user-save").addEventListener("click", async () => {
     try {
       const r = await fetch(`${API}/api/users/${encodeURIComponent(_editingUser.username)}`, {
         method: "PATCH",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", "X-CSRF-Token": _csrfToken() },
         body: JSON.stringify({
           role:  document.getElementById("user-role").value,
           email: document.getElementById("user-email").value.trim(),
@@ -2479,7 +2579,7 @@ document.getElementById("btn-user-save").addEventListener("click", async () => {
   try {
     const r = await fetch(`${API}/api/users`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": _csrfToken() },
       body: JSON.stringify({
         username,
         role:  document.getElementById("user-role").value,
@@ -2502,7 +2602,7 @@ document.getElementById("btn-user-save").addEventListener("click", async () => {
 document.getElementById("btn-user-delete").addEventListener("click", async () => {
   if (!_editingUser) return;
   if (!confirm(`Revoke access for "${_editingUser.username}"? They will not be able to authenticate.`)) return;
-  await fetch(`${API}/api/users/${encodeURIComponent(_editingUser.username)}`, { method: "DELETE" });
+  await fetch(`${API}/api/users/${encodeURIComponent(_editingUser.username)}`, { method: "DELETE", headers: { "X-CSRF-Token": _csrfToken() } });
   loadUsers();
   _closeUserEditor();
 });
@@ -2522,7 +2622,7 @@ document.getElementById("btn-sla-escalate").addEventListener("click", async () =
   msg.textContent = "Sending SLA alerts…"; msg.className = "form-msg";
   try {
     const r = await fetch(`${API}/api/sla/escalate`, { method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": _csrfToken() },
       body: JSON.stringify({ hours: 24 }) });
     const j = await r.json();
     if (j.ok) {
@@ -2782,7 +2882,7 @@ document.getElementById("btn-comment-add").addEventListener("click", async () =>
   try {
     const r = await fetch(`${API}/api/comments`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": _csrfToken() },
       body: JSON.stringify({ cve_id: _detailRow.cve_id, body }),
     });
     const j = await r.json();
@@ -2945,7 +3045,7 @@ document.getElementById("btn-routing-save").addEventListener("click", async () =
   try {
     const r = await fetch(`${API}/api/routing`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": _csrfToken() },
       body: JSON.stringify(body),
     });
     const j = await r.json();
@@ -2957,7 +3057,7 @@ document.getElementById("btn-routing-save").addEventListener("click", async () =
 document.getElementById("btn-routing-delete").addEventListener("click", async () => {
   if (!_editingRule) return;
   if (!confirm(`Delete rule "${_editingRule.name}"?`)) return;
-  await fetch(`${API}/api/routing/${_editingRule.id}`, { method: "DELETE" });
+  await fetch(`${API}/api/routing/${_editingRule.id}`, { method: "DELETE", headers: { "X-CSRF-Token": _csrfToken() } });
   loadRoutingRules();
   _closeRoutingEditor();
 });
@@ -2990,19 +3090,6 @@ async function loadAuditLog() {
 
 document.getElementById("btn-audit-refresh").addEventListener("click", loadAuditLog);
 
-// ── Nav handler: new sections ─────────────────────────────────────────────────
-
-// Extend nav handler to call new loaders
-navLinks.forEach(l => {
-  if (!l.dataset.section) return;
-  const sec = l.dataset.section;
-  if (!["threat","routing","audit"].includes(sec)) return;
-  l.addEventListener("click", () => {
-    if (sec === "threat")  loadThreatSection();
-    if (sec === "routing") loadRoutingRules();
-    if (sec === "audit")   loadAuditLog();
-  });
-});
 
 // ── Initial load ──────────────────────────────────────────────────────────────
 

@@ -15,15 +15,20 @@ from __future__ import annotations
 
 import argparse
 import configparser
+import hashlib
+import hmac
 import json
+import logging
 import os
+import re
+import secrets
 from datetime import datetime
 from functools import wraps
 from pathlib import Path
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.jobstores.memory import MemoryJobStore
-from flask import Flask, jsonify, request, send_from_directory, abort
+from flask import Flask, jsonify, request, send_from_directory, abort, g
 from flask_cors import CORS
 
 import database
@@ -33,24 +38,135 @@ _scheduler.start()
 
 _HERE = Path(__file__).parent
 _DASHBOARD_DIR = _HERE / "dashboard"
-_API_SECRET = os.environ.get("API_SECRET", "")
+_API_SECRET = os.environ.get("API_SECRET", "").strip()
+
+_log = logging.getLogger("cve_emailer.api")
+
+# Warn loudly at startup if no secret is set — don't silently leave auth off
+if not _API_SECRET:
+    _log.warning(
+        "API_SECRET is not set. All write endpoints are UNPROTECTED. "
+        "Set the API_SECRET environment variable before exposing this server."
+    )
 
 app = Flask(__name__, static_folder=None)
-CORS(app)
+
+# CORS: same-origin by default; set CVE_CORS_ORIGINS=* or a comma-list to widen
+_cors_origins = os.environ.get("CVE_CORS_ORIGINS", "")
+if _cors_origins:
+    CORS(app, origins=[o.strip() for o in _cors_origins.split(",") if o.strip()])
+else:
+    # No cross-origin requests allowed by default
+    CORS(app, origins=[])
+
+
+# ── Security headers ──────────────────────────────────────────────────────────
+
+@app.after_request
+def _security_headers(response):
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    # Tight CSP: dashboard only needs its own scripts/styles + Chart.js CDN
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; "
+        "script-src 'self' https://cdn.jsdelivr.net; "
+        "style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data:; "
+        "connect-src 'self'; "
+        "frame-ancestors 'none';"
+    )
+    return response
+
+
+# ── CSRF protection ───────────────────────────────────────────────────────────
+# Double-submit cookie pattern. The dashboard JS reads the cookie and echoes
+# it in the X-CSRF-Token header on every state-changing request.
+
+_CSRF_COOKIE = "csrf_token"
+_CSRF_HEADER = "X-CSRF-Token"
+
+def _get_or_create_csrf_token() -> str:
+    token = request.cookies.get(_CSRF_COOKIE, "")
+    if not token:
+        token = secrets.token_hex(32)
+    return token
+
+@app.before_request
+def _csrf_check():
+    """Enforce CSRF token on all state-changing requests."""
+    if request.method not in ("POST", "PUT", "PATCH", "DELETE"):
+        return
+    # Skip for machine-to-machine: requests that carry a valid Bearer token are
+    # already authenticated and originate from code, not a browser form.
+    auth = request.headers.get("Authorization", "")
+    if auth.startswith("Bearer "):
+        return
+    cookie_token = request.cookies.get(_CSRF_COOKIE, "")
+    header_token = request.headers.get(_CSRF_HEADER, "")
+    if not cookie_token or not header_token:
+        abort(403)
+    if not hmac.compare_digest(cookie_token, header_token):
+        abort(403)
+
+@app.after_request
+def _set_csrf_cookie(response):
+    """Ensure the CSRF cookie is always present for the dashboard to read."""
+    if not request.cookies.get(_CSRF_COOKIE):
+        token = secrets.token_hex(32)
+        response.set_cookie(
+            _CSRF_COOKIE, token,
+            samesite="Strict", httponly=False,  # JS must read it
+            secure=False,  # set True when behind HTTPS
+        )
+    return response
 
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
 
+def _check_bearer() -> bool:
+    """Return True if the request carries a valid global API_SECRET."""
+    if not _API_SECRET:
+        return False
+    auth = request.headers.get("Authorization", "")
+    if not auth.startswith("Bearer "):
+        return False
+    return hmac.compare_digest(auth[7:], _API_SECRET)
+
 def _require_auth(f):
-    """Decorator: enforce Bearer token if API_SECRET is set."""
+    """Decorator: require a valid Bearer token (global secret or per-user key).
+    If API_SECRET is not configured, write endpoints are blocked entirely."""
     @wraps(f)
     def wrapper(*args, **kwargs):
-        if _API_SECRET:
-            auth = request.headers.get("Authorization", "")
-            if not auth.startswith("Bearer ") or auth[7:] != _API_SECRET:
-                abort(401)
-        return f(*args, **kwargs)
+        if _check_bearer():
+            return f(*args, **kwargs)
+        user = _get_user_from_request()
+        if user:
+            g.current_user = user
+            return f(*args, **kwargs)
+        # API_SECRET unset AND no valid per-user key → reject
+        abort(401)
     return wrapper
+
+
+# ── CVE ID validation ─────────────────────────────────────────────────────────
+
+_CVE_RE = re.compile(r'^CVE-\d{4}-\d{4,}$', re.IGNORECASE)
+
+def _valid_cve_id(cve_id: str) -> bool:
+    return bool(_CVE_RE.match(cve_id))
+
+def _assert_cve_id(cve_id: str):
+    if not _valid_cve_id(cve_id):
+        abort(400, description="Invalid CVE ID format")
+
+
+# ── Safe error helper ─────────────────────────────────────────────────────────
+
+def _safe_error(exc: Exception, public_msg: str = "An internal error occurred") -> str:
+    """Log the real exception, return only a generic message to the client."""
+    _log.error("Internal error: %s", exc, exc_info=True)
+    return public_msg
 
 
 # ── Dashboard static files ────────────────────────────────────────────────────
@@ -127,8 +243,11 @@ def api_cves():
     min_sev = request.args.get("min_severity", "NONE")
     date_from = request.args.get("date_from", "")
     date_to = request.args.get("date_to", "")
-    limit = min(int(request.args.get("limit", 200)), 1000)
-    offset = int(request.args.get("offset", 0))
+    try:
+        limit  = min(int(request.args.get("limit", 200)), 500)
+        offset = max(int(request.args.get("offset", 0)), 0)
+    except (TypeError, ValueError):
+        return jsonify({"error": "limit and offset must be integers"}), 400
 
     rows = database.query_cves(
         table,
@@ -142,8 +261,9 @@ def api_cves():
     return jsonify(rows)
 
 
-@app.route("/api/cve/<path:cve_id>")
+@app.route("/api/cve/<string:cve_id>")
 def api_cve_detail(cve_id: str):
+    _assert_cve_id(cve_id)
     table = request.args.get("table", "")
     if not table:
         return jsonify({"error": "table parameter required"}), 400
@@ -274,7 +394,7 @@ def api_notify_test():
             return jsonify({"ok": True})
         except Exception as exc:
             database.notify_log_insert("email", cve_count=0, recipients=rcpt_raw, success=False, error=str(exc))
-            return jsonify({"ok": False, "error": str(exc)}), 500
+            return jsonify({"ok": False, "error": _safe_error(exc, "Email test failed — check sender credentials")}), 500
 
     if channel == "slack":
         import notify as _notify
@@ -289,7 +409,7 @@ def api_notify_test():
             return jsonify({"ok": True})
         except Exception as exc:
             database.notify_log_insert("slack", cve_count=0, success=False, error=str(exc))
-            return jsonify({"ok": False, "error": str(exc)}), 500
+            return jsonify({"ok": False, "error": _safe_error(exc, "Slack test failed — check webhook URL")}), 500
 
     if channel == "webhook":
         import notify as _notify
@@ -304,7 +424,7 @@ def api_notify_test():
             return jsonify({"ok": True})
         except Exception as exc:
             database.notify_log_insert("webhook", cve_count=0, success=False, error=str(exc))
-            return jsonify({"ok": False, "error": str(exc)}), 500
+            return jsonify({"ok": False, "error": _safe_error(exc, "Webhook test failed — check URL")}), 500
 
     return jsonify({"ok": False, "error": f"Unknown channel: {channel}"}), 400
 
@@ -400,6 +520,9 @@ _CONFIG_FIELDS = [
     ("SERVICENOW",  "user",           False),
     ("SERVICENOW",  "password",       True),
     ("SERVICENOW",  "category",       False),
+    ("DEFAULT",     "teamsWebhook",   False),
+    ("DEFAULT",     "pagerdutyKey",   True),
+    ("DEFAULT",     "opsgenieKey",    True),
 ]
 
 # Env vars that override config.ini (values are read-only in the UI)
@@ -419,6 +542,9 @@ _ENV_OVERRIDES = {
     ("SERVICENOW", "user"):           "SNOW_USER",
     ("SERVICENOW", "password"):       "SNOW_PASSWORD",
     ("SERVICENOW", "category"):       "SNOW_CATEGORY",
+    ("DEFAULT",    "teamsWebhook"):   "TEAMS_WEBHOOK",
+    ("DEFAULT",    "pagerdutyKey"):   "PAGERDUTY_ROUTING_KEY",
+    ("DEFAULT",    "opsgenieKey"):    "OPSGENIE_API_KEY",
 }
 
 
@@ -486,18 +612,22 @@ def api_watchlist_add():
     cve_id = data.get("cve_id", "").strip()
     if not cve_id:
         return jsonify({"error": "cve_id required"}), 400
+    _assert_cve_id(cve_id)
     database.watchlist_add(cve_id, data.get("keyword", ""), data.get("notes", ""))
+    user = _get_user_from_request()
+    database.audit_log_insert("watchlist_add", cve_id, "", actor=user["username"] if user else "")
     return jsonify({"ok": True})
 
 
-@app.route("/api/watchlist/<path:cve_id>", methods=["DELETE"])
+@app.route("/api/watchlist/<string:cve_id>", methods=["DELETE"])
 @_require_auth
 def api_watchlist_remove(cve_id: str):
+    _assert_cve_id(cve_id)
     database.watchlist_remove(cve_id)
     return jsonify({"ok": True})
 
 
-@app.route("/api/watchlist/<path:cve_id>/notes", methods=["POST"])
+@app.route("/api/watchlist/<string:cve_id>/notes", methods=["POST"])
 @_require_auth
 def api_watchlist_notes(cve_id: str):
     data = request.get_json(force=True) or {}
@@ -514,11 +644,15 @@ def api_review_set():
     cve_id = data.get("cve_id", "").strip()
     if not cve_id:
         return jsonify({"error": "cve_id required"}), 400
+    _assert_cve_id(cve_id)
     database.review_set(cve_id, bool(data.get("reviewed", False)), data.get("notes", ""))
+    user = _get_user_from_request()
+    database.audit_log_insert("review_set", cve_id,
+        f"reviewed={data.get('reviewed', False)}", actor=user["username"] if user else "")
     return jsonify({"ok": True})
 
 
-@app.route("/api/review/<path:cve_id>")
+@app.route("/api/review/<string:cve_id>")
 def api_review_get(cve_id: str):
     r = database.review_get(cve_id)
     return jsonify(r or {})
@@ -608,7 +742,7 @@ def api_cve_send():
             return jsonify({"ok": True})
         except Exception as exc:
             database.notify_log_insert("slack", cve_count=1, success=False, error=str(exc))
-            return jsonify({"ok": False, "error": str(exc)}), 500
+            return jsonify({"ok": False, "error": _safe_error(exc, "Slack delivery failed")}), 500
 
     if channel == "webhook":
         import notify as _notify
@@ -621,7 +755,7 @@ def api_cve_send():
             return jsonify({"ok": True})
         except Exception as exc:
             database.notify_log_insert("webhook", cve_count=1, success=False, error=str(exc))
-            return jsonify({"ok": False, "error": str(exc)}), 500
+            return jsonify({"ok": False, "error": _safe_error(exc, "Webhook delivery failed")}), 500
 
     if channel == "jira":
         import notify as _notify
@@ -638,7 +772,7 @@ def api_cve_send():
             return jsonify({"ok": True})
         except Exception as exc:
             database.notify_log_insert("jira", cve_count=1, success=False, error=str(exc))
-            return jsonify({"ok": False, "error": str(exc)}), 500
+            return jsonify({"ok": False, "error": _safe_error(exc, "Jira issue creation failed")}), 500
 
     if channel == "servicenow":
         import notify as _notify
@@ -654,7 +788,7 @@ def api_cve_send():
             return jsonify({"ok": True})
         except Exception as exc:
             database.notify_log_insert("servicenow", cve_count=1, success=False, error=str(exc))
-            return jsonify({"ok": False, "error": str(exc)}), 500
+            return jsonify({"ok": False, "error": _safe_error(exc, "ServiceNow incident creation failed")}), 500
 
     if channel == "teams":
         webhook = os.environ.get("TEAMS_WEBHOOK", "").strip() or cfg.get("DEFAULT", "teamsWebhook", fallback="")
@@ -666,7 +800,7 @@ def api_cve_send():
             return jsonify({"ok": True})
         except Exception as exc:
             database.notify_log_insert("teams", cve_count=1, success=False, error=str(exc))
-            return jsonify({"ok": False, "error": str(exc)}), 500
+            return jsonify({"ok": False, "error": _safe_error(exc, "Teams delivery failed")}), 500
 
     if channel == "pagerduty":
         key = os.environ.get("PAGERDUTY_ROUTING_KEY", "").strip() or cfg.get("DEFAULT", "pagerdutyKey", fallback="")
@@ -678,7 +812,7 @@ def api_cve_send():
             return jsonify({"ok": True})
         except Exception as exc:
             database.notify_log_insert("pagerduty", cve_count=1, success=False, error=str(exc))
-            return jsonify({"ok": False, "error": str(exc)}), 500
+            return jsonify({"ok": False, "error": _safe_error(exc, "PagerDuty delivery failed")}), 500
 
     if channel == "opsgenie":
         key = os.environ.get("OPSGENIE_API_KEY", "").strip() or cfg.get("DEFAULT", "opsgenieKey", fallback="")
@@ -690,14 +824,14 @@ def api_cve_send():
             return jsonify({"ok": True})
         except Exception as exc:
             database.notify_log_insert("opsgenie", cve_count=1, success=False, error=str(exc))
-            return jsonify({"ok": False, "error": str(exc)}), 500
+            return jsonify({"ok": False, "error": _safe_error(exc, "Opsgenie delivery failed")}), 500
 
     return jsonify({"ok": False, "error": f"Unknown channel: {channel}"}), 400
 
 
 # ── CVE Triage ────────────────────────────────────────────────────────────────
 
-@app.route("/api/triage/<path:cve_id>")
+@app.route("/api/triage/<string:cve_id>")
 def api_triage_get(cve_id: str):
     return jsonify(database.triage_get(cve_id) or {})
 
@@ -748,6 +882,7 @@ def api_suppression_add():
     cve_id = data.get("cve_id", "").strip()
     if not cve_id:
         return jsonify({"error": "cve_id required"}), 400
+    _assert_cve_id(cve_id)
     database.suppression_add(
         cve_id,
         keyword=data.get("keyword", ""),
@@ -760,7 +895,7 @@ def api_suppression_add():
     return jsonify({"ok": True})
 
 
-@app.route("/api/suppressions/<path:cve_id>", methods=["DELETE"])
+@app.route("/api/suppressions/<string:cve_id>", methods=["DELETE"])
 @_require_auth
 def api_suppression_remove(cve_id: str):
     database.suppression_remove(cve_id)
@@ -785,7 +920,7 @@ def api_view_set():
     return jsonify({"ok": True})
 
 
-@app.route("/api/views/<path:name>", methods=["DELETE"])
+@app.route("/api/views/<string:name>", methods=["DELETE"])
 @_require_auth
 def api_view_delete(name: str):
     database.saved_view_delete(name)
@@ -869,7 +1004,8 @@ def api_config_validate():
                 s.login(sender, password)
             results["email"] = {"ok": True}
         except Exception as exc:
-            results["email"] = {"ok": False, "error": str(exc)}
+            _log.error("Email validation failed: %s", exc)
+            results["email"] = {"ok": False, "error": "Connection failed — check credentials"}
     else:
         results["email"] = {"ok": None, "error": "Not configured"}
 
@@ -883,7 +1019,8 @@ def api_config_validate():
             with urllib.request.urlopen(req, timeout=5) as resp:
                 results["slack"] = {"ok": resp.status == 200}
         except Exception as exc:
-            results["slack"] = {"ok": False, "error": str(exc)}
+            _log.error("Slack validation failed: %s", exc)
+            results["slack"] = {"ok": False, "error": "Connection failed — check webhook URL"}
     else:
         results["slack"] = {"ok": None, "error": "Not configured"}
 
@@ -897,7 +1034,8 @@ def api_config_validate():
             with urllib.request.urlopen(req, timeout=5) as resp:
                 results["webhook"] = {"ok": resp.status < 400}
         except Exception as exc:
-            results["webhook"] = {"ok": False, "error": str(exc)}
+            _log.error("Webhook validation failed: %s", exc)
+            results["webhook"] = {"ok": False, "error": "Connection failed — check URL"}
     else:
         results["webhook"] = {"ok": None, "error": "Not configured"}
 
@@ -914,7 +1052,8 @@ def api_config_validate():
             with urllib.request.urlopen(req, timeout=5) as resp:
                 results["jira"] = {"ok": resp.status == 200}
         except Exception as exc:
-            results["jira"] = {"ok": False, "error": str(exc)}
+            _log.error("Jira validation failed: %s", exc)
+            results["jira"] = {"ok": False, "error": "Connection failed — check URL and token"}
     else:
         results["jira"] = {"ok": None, "error": "Not configured"}
 
@@ -935,7 +1074,7 @@ def api_export_all():
 
 # ── Exploit intelligence ──────────────────────────────────────────────────────
 
-@app.route("/api/exploit/<path:cve_id>")
+@app.route("/api/exploit/<string:cve_id>")
 def api_exploit_get(cve_id: str):
     return jsonify(database.exploit_get(cve_id) or {})
 
@@ -947,6 +1086,7 @@ def api_exploit_set():
     cve_id = data.get("cve_id", "").strip()
     if not cve_id:
         return jsonify({"error": "cve_id required"}), 400
+    _assert_cve_id(cve_id)
     database.exploit_upsert(
         cve_id,
         has_exploit=bool(data.get("has_exploit", False)),
@@ -963,7 +1103,7 @@ def api_exploit_all():
     return jsonify(database.exploit_get_all(has_exploit_only=only))
 
 
-@app.route("/api/exploit/enrich/<path:cve_id>", methods=["POST"])
+@app.route("/api/exploit/enrich/<string:cve_id>", methods=["POST"])
 @_require_auth
 def api_exploit_enrich(cve_id: str):
     """Query GitHub search API for PoC repos mentioning the CVE ID."""
@@ -1058,6 +1198,8 @@ def api_asset_save():
         owner=data.get("owner", ""),
         environment=data.get("environment", ""),
         asset_id=data.get("id"),
+        last_scanned_at=data.get("last_scanned_at", ""),
+        scan_source=data.get("scan_source", ""),
     )
     return jsonify({"ok": True, "id": asset_id})
 
@@ -1091,12 +1233,13 @@ def api_cve_related():
 
     results: list[dict] = []
     seen: set[str] = {cve_id}
-    tables = database.list_cve_tables()
+    # Use validated whitelist — never interpolate caller-supplied table names
+    valid_tables = set(database.list_cve_tables())
     rank_expr = database._severity_rank_expr()
 
     from sqlalchemy import text as _text
     with database._connect() as conn:
-        for tbl in tables:
+        for tbl in valid_tables:
             try:
                 conditions = []
                 params: dict = {"lim": limit, "self_id": cve_id}
@@ -1115,11 +1258,12 @@ def api_cve_related():
                 if not conditions:
                     continue
                 where = " AND ".join(conditions) + " AND cve_id != :self_id"
-                tbl_lit = tbl.replace("'", "''")
+                # tbl is from our own database whitelist — safe to quote and interpolate
+                tbl_quoted = f'"{tbl}"'
                 rows = conn.execute(_text(
-                    f"SELECT *, '{tbl_lit}' as _keyword FROM \"{tbl}\" WHERE {where} "
+                    f"SELECT *, :tbl_name as _keyword FROM {tbl_quoted} WHERE {where} "
                     f'ORDER BY {rank_expr} LIMIT :lim'
-                ), params).fetchall()
+                ), {**params, "tbl_name": tbl}).fetchall()
                 for r in rows:
                     d = database._row_to_dict(r)
                     if d["cve_id"] not in seen:
@@ -1148,9 +1292,10 @@ def _ensure_patch_columns() -> None:
         trans.commit()
 
 
-@app.route("/api/triage/<path:cve_id>/patch", methods=["POST"])
+@app.route("/api/triage/<string:cve_id>/patch", methods=["POST"])
 @_require_auth
 def api_triage_patch(cve_id: str):
+    _assert_cve_id(cve_id)
     data = request.get_json(force=True) or {}
     from sqlalchemy import text as _text
     now = datetime.now().isoformat(timespec="seconds")
@@ -1165,12 +1310,16 @@ def api_triage_patch(cve_id: str):
             "now": now,
             "cid": cve_id,
         })
+    user = _get_user_from_request()
+    database.audit_log_insert("patch_set", cve_id,
+        f"version={data.get('patched_version','')} by={data.get('patched_by','')}",
+        actor=user["username"] if user else "")
     return jsonify({"ok": True})
 
 
 # ── Internal CVSS overrides ───────────────────────────────────────────────────
 
-@app.route("/api/cvss-override/<path:cve_id>")
+@app.route("/api/cvss-override/<string:cve_id>")
 def api_cvss_override_get(cve_id: str):
     return jsonify(database.cvss_override_get(cve_id) or {})
 
@@ -1182,11 +1331,13 @@ def api_cvss_override_set():
     cve_id = data.get("cve_id", "").strip()
     if not cve_id:
         return jsonify({"error": "cve_id required"}), 400
+    _assert_cve_id(cve_id)
     score = data.get("internal_score")
     if score is not None:
         try:
             score = float(score)
-            if not (0.0 <= score <= 10.0):
+            import math
+            if math.isnan(score) or math.isinf(score) or not (0.0 <= score <= 10.0):
                 return jsonify({"error": "score must be 0.0–10.0"}), 400
         except (TypeError, ValueError):
             return jsonify({"error": "invalid score"}), 400
@@ -1200,7 +1351,7 @@ def api_cvss_override_set():
     return jsonify({"ok": True})
 
 
-@app.route("/api/cvss-override/<path:cve_id>", methods=["DELETE"])
+@app.route("/api/cvss-override/<string:cve_id>", methods=["DELETE"])
 @_require_auth
 def api_cvss_override_delete(cve_id: str):
     database.cvss_override_delete(cve_id)
@@ -1361,10 +1512,14 @@ def api_user_update(username: str):
         if not auth.startswith("Bearer ") or auth[7:] != _API_SECRET:
             abort(401)
     data = request.get_json(force=True) or {}
+    _VALID_ROLES = {"viewer", "analyst", "lead"}
+    new_role = data.get("role")
+    if new_role is not None and new_role not in _VALID_ROLES:
+        return jsonify({"error": f"Invalid role. Must be one of: {', '.join(sorted(_VALID_ROLES))}"}), 400
     try:
         database.user_update(
             username,
-            role=data.get("role"),
+            role=new_role,
             email=data.get("email"),
             active=data.get("active"),
         )
@@ -1478,7 +1633,7 @@ def api_sla_escalate():
 
 # ── Threat intelligence ───────────────────────────────────────────────────────
 
-@app.route("/api/threat/<path:cve_id>")
+@app.route("/api/threat/<string:cve_id>")
 def api_threat_get(cve_id: str):
     return jsonify(database.threat_intel_get(cve_id) or {})
 
@@ -1490,6 +1645,7 @@ def api_threat_set():
     cve_id = data.get("cve_id", "").strip()
     if not cve_id:
         return jsonify({"error": "cve_id required"}), 400
+    _assert_cve_id(cve_id)
     database.threat_intel_upsert(
         cve_id,
         in_wild=bool(data.get("in_wild", False)),
@@ -1509,7 +1665,7 @@ def api_threat_all():
     return jsonify(database.threat_intel_get_all(in_wild_only=only))
 
 
-@app.route("/api/threat/enrich/<path:cve_id>", methods=["POST"])
+@app.route("/api/threat/enrich/<string:cve_id>", methods=["POST"])
 @_require_auth
 def api_threat_enrich(cve_id: str):
     """
@@ -1589,7 +1745,7 @@ def _fetch_threat_intel(cve_id: str) -> dict:
 
 # ── Risk scoring ──────────────────────────────────────────────────────────────
 
-@app.route("/api/risk/<path:cve_id>")
+@app.route("/api/risk/<string:cve_id>")
 def api_risk_score(cve_id: str):
     table = request.args.get("table", "")
     return jsonify(database.compute_risk_score(cve_id, table))
@@ -1607,12 +1763,13 @@ def api_risk_top():
     with database._connect() as conn:
         for tbl in tables:
             try:
-                tbl_lit = tbl.replace("'", "''")
+                # tbl is from our own database whitelist — safe to use as identifier
+                tbl_quoted = f'"{tbl}"'
                 rows = conn.execute(_text(
-                    f"SELECT *, '{tbl_lit}' as _table FROM \"{tbl}\" "
+                    f"SELECT *, :tbl_name as _table FROM {tbl_quoted} "
                     f"WHERE severity IN ('CRITICAL','HIGH','MEDIUM') "
                     f"ORDER BY {rank_expr}, cvss_score DESC NULLS LAST LIMIT 50"
-                )).fetchall()
+                ), {"tbl_name": tbl}).fetchall()
                 for r in rows:
                     d = database._row_to_dict(r)
                     if d["cve_id"] not in seen:
@@ -1640,7 +1797,7 @@ def api_compliance_map():
 
 # ── Comments ──────────────────────────────────────────────────────────────────
 
-@app.route("/api/comments/<path:cve_id>")
+@app.route("/api/comments/<string:cve_id>")
 def api_comments_get(cve_id: str):
     return jsonify(database.comments_get(cve_id))
 
@@ -1650,9 +1807,10 @@ def api_comments_get(cve_id: str):
 def api_comment_add():
     data = request.get_json(force=True) or {}
     cve_id = data.get("cve_id", "").strip()
-    body   = data.get("body", "").strip()
+    body   = data.get("body", "").strip()[:2000]  # cap at 2000 chars
     if not cve_id or not body:
         return jsonify({"error": "cve_id and body required"}), 400
+    _assert_cve_id(cve_id)
     user = _get_user_from_request()
     author = user["username"] if user else data.get("author", "")
     comment_id = database.comment_add(cve_id, body, author)
@@ -1787,7 +1945,7 @@ def api_report_html():
 
 # ── Internet exposure / vendor advisory enrichment ───────────────────────────
 
-@app.route("/api/exposure/<path:cve_id>", methods=["POST"])
+@app.route("/api/exposure/<string:cve_id>", methods=["POST"])
 @_require_auth
 def api_exposure_check(cve_id: str):
     """
