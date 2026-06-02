@@ -924,13 +924,19 @@ function Invoke-DashboardApi {
     )
     $json    = $Body | ConvertTo-Json -Depth 10 -Compress
     $bytes   = [System.Text.Encoding]::UTF8.GetBytes($json)
-    $req     = [System.Net.WebRequest]::Create($Url)
+    $req     = [System.Net.HttpWebRequest]::Create($Url)
     $req.Method        = $Method
     $req.ContentType   = "application/json"
     $req.ContentLength = $bytes.Length
     if ($Token)     { $req.Headers.Add("Authorization", "Bearer $Token") }
     if ($CsrfToken -and ($Method -in "POST","PUT","PATCH","DELETE")) {
         $req.Headers.Add("X-CSRF-Token", $CsrfToken)
+        # The server's double-submit check requires the CSRF value in both the
+        # X-CSRF-Token header AND the csrf_token cookie. WebRequest doesn't
+        # carry cookies automatically, so inject it explicitly.
+        $cookieJar = [System.Net.CookieContainer]::new()
+        $cookieJar.Add([Uri]$Url, [System.Net.Cookie]::new("csrf_token", $CsrfToken))
+        $req.CookieContainer = $cookieJar
     }
 
     $stream = $req.GetRequestStream()
@@ -957,6 +963,7 @@ function Upload-ToDashboard {
         [string]$AssetTags,
         [string]$AssetCpe,
         [System.Collections.Generic.List[string]]$Keywords,
+        [System.Collections.Generic.List[Software]]$SoftwareItems,
         [switch]$Append,
         [switch]$DryRun
     )
@@ -1020,7 +1027,35 @@ function Upload-ToDashboard {
         }
     }
 
-    # -- 3. Merge or replace keywords ------------------------------------------
+    # -- 3. Upload software inventory (version-specific CVE matching) ----------
+    if ($assetId -and -not $DryRun) {
+        Write-Host "  Uploading software inventory..." -ForegroundColor Cyan
+        try {
+            $invItems = $SoftwareItems | Where-Object { $_.Version -and $_.Cpe } | ForEach-Object {
+                @{
+                    name     = $_.Name
+                    version  = $_.Version
+                    cpe      = $_.Cpe
+                    category = $_.Category
+                    severity = $_.Severity
+                    source   = $_.Source
+                }
+            }
+            if ($invItems.Count -gt 0) {
+                $invBody = @{ items = @($invItems) }
+                $result = Invoke-DashboardApi -Url "$base/api/assets/$assetId/inventory" -Token $Token -CsrfToken $csrf -Body $invBody
+                if ($result.ok) {
+                    Write-Host "  Inventory saved ($($result.count) items)" -ForegroundColor Green
+                } else {
+                    Write-Warning "  Inventory upload returned: $($result | ConvertTo-Json)"
+                }
+            }
+        } catch {
+            Write-Warning "  Inventory upload failed: $_"
+        }
+    }
+
+    # -- 5. Merge or replace keywords ------------------------------------------
     $finalKeywords = $Keywords
 
     if ($Append) {
@@ -1053,7 +1088,7 @@ function Upload-ToDashboard {
         }
     }
 
-    # -- 4. Upload keywords ----------------------------------------------------
+    # -- 6. Upload keywords ----------------------------------------------------
     if ($DryRun) {
         Write-Host "  [DRY RUN] Would upload $($finalKeywords.Count) keywords:" -ForegroundColor DarkYellow
         $finalKeywords | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
@@ -1157,14 +1192,15 @@ if ($DashboardUrl) {
     }
     Write-Host "Uploading to $DashboardUrl ..." -ForegroundColor Cyan
     Upload-ToDashboard `
-        -BaseUrl     $DashboardUrl `
-        -Token       $Token `
-        -AssetName   $AssetName `
-        -Environment $Environment `
-        -Owner       $Owner `
-        -AssetTags   $assetTags `
-        -AssetCpe    $assetCpe `
-        -Keywords    $keywords `
+        -BaseUrl       $DashboardUrl `
+        -Token         $Token `
+        -AssetName     $AssetName `
+        -Environment   $Environment `
+        -Owner         $Owner `
+        -AssetTags     $assetTags `
+        -AssetCpe      $assetCpe `
+        -Keywords      $keywords `
+        -SoftwareItems $all `
         -Append:$Append `
         -DryRun:$DryRun
 }

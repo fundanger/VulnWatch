@@ -346,7 +346,7 @@ def list_cve_tables() -> list[str]:
         "cve_watchlist", "cve_reviews", "cve_triage", "cve_suppressions",
         "saved_views", "notification_log", "exploit_intel", "assets",
         "cvss_overrides", "users", "threat_intel", "cve_comments",
-        "audit_log", "routing_rules", "alert_dedup",
+        "audit_log", "routing_rules", "alert_dedup", "software_inventory",
     }
     engine = _get_engine()
     insp = inspect(engine)
@@ -400,6 +400,43 @@ def query_cves(
             params,
         ).fetchall()
         return [_row_to_dict(r) for r in rows]
+
+
+def query_cves_multi(
+    tables: list[str],
+    search: str = "",
+    min_severity: str = "NONE",
+    limit: int = 200,
+    offset: int = 0,
+    date_from: str = "",
+    date_to: str = "",
+) -> list[dict]:
+    """Query across multiple CVE tables, merge, sort, and paginate."""
+    seen: set[str] = set()
+    all_rows: list[dict] = []
+    for table in tables:
+        rows = query_cves(
+            table,
+            search=search,
+            min_severity=min_severity,
+            limit=limit,  # per-table cap; final slice applied below
+            offset=0,
+            date_from=date_from,
+            date_to=date_to,
+        )
+        for r in rows:
+            cve_id = r.get("cve_id", "")
+            if cve_id not in seen:
+                seen.add(cve_id)
+                r["_table"] = table
+                all_rows.append(r)
+
+    sev_order = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3, "NONE": 4}
+    # Two-pass stable sort: date descending first, then severity ascending.
+    # Python's sort is stable, so equal-severity rows keep date-descending order.
+    all_rows.sort(key=lambda r: r.get("publish_date") or "", reverse=True)
+    all_rows.sort(key=lambda r: sev_order.get((r.get("severity") or "NONE").upper(), 5))
+    return all_rows[offset: offset + limit]
 
 
 def get_cve(table: str, cve_id: str) -> dict | None:
@@ -1445,6 +1482,99 @@ def assets_match_cve(cpe_string: str) -> list[dict]:
                 continue
             break
     return matches
+
+
+# ── Software inventory (per-asset, version-specific) ─────────────────────────
+
+def bootstrap_inventory() -> None:
+    engine = _get_engine()
+    with engine.connect() as conn:
+        trans = conn.begin()
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS software_inventory (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                asset_id    INTEGER NOT NULL,
+                name        TEXT NOT NULL,
+                version     TEXT DEFAULT '',
+                cpe         TEXT DEFAULT '',
+                category    TEXT DEFAULT '',
+                severity    TEXT DEFAULT '',
+                source      TEXT DEFAULT '',
+                updated_at  TEXT NOT NULL
+            )
+        """ if _IS_SQLITE else """
+            CREATE TABLE IF NOT EXISTS software_inventory (
+                id          SERIAL PRIMARY KEY,
+                asset_id    INTEGER NOT NULL,
+                name        TEXT NOT NULL,
+                version     TEXT DEFAULT '',
+                cpe         TEXT DEFAULT '',
+                category    TEXT DEFAULT '',
+                severity    TEXT DEFAULT '',
+                source      TEXT DEFAULT '',
+                updated_at  TEXT NOT NULL
+            )
+        """))
+        trans.commit()
+
+
+def inventory_save(asset_id: int, items: list[dict]) -> None:
+    """Replace software inventory for an asset (upsert by name)."""
+    now = datetime.now().isoformat(timespec="seconds")
+    with _connect() as conn:
+        for item in items:
+            name = (item.get("name") or "").strip()
+            if not name:
+                continue
+            existing = conn.execute(
+                text("SELECT id FROM software_inventory WHERE asset_id=:a AND name=:n"),
+                {"a": asset_id, "n": name},
+            ).fetchone()
+            if existing:
+                conn.execute(text(
+                    "UPDATE software_inventory SET version=:v, cpe=:c, category=:cat, "
+                    "severity=:sev, source=:src, updated_at=:t "
+                    "WHERE id=:id"
+                ), {
+                    "v": item.get("version", ""), "c": item.get("cpe", ""),
+                    "cat": item.get("category", ""), "sev": item.get("severity", ""),
+                    "src": item.get("source", ""), "t": now, "id": existing[0],
+                })
+            else:
+                conn.execute(text(
+                    "INSERT INTO software_inventory "
+                    "(asset_id, name, version, cpe, category, severity, source, updated_at) "
+                    "VALUES (:a, :n, :v, :c, :cat, :sev, :src, :t)"
+                ), {
+                    "a": asset_id, "n": name, "v": item.get("version", ""),
+                    "c": item.get("cpe", ""), "cat": item.get("category", ""),
+                    "sev": item.get("severity", ""), "src": item.get("source", ""),
+                    "t": now,
+                })
+
+
+def inventory_get_all() -> list[dict]:
+    """Return all software inventory rows joined with asset names."""
+    with _connect() as conn:
+        rows = conn.execute(text(
+            "SELECT si.*, a.name AS asset_name "
+            "FROM software_inventory si "
+            "LEFT JOIN assets a ON a.id = si.asset_id "
+            "ORDER BY a.name, si.name"
+        )).fetchall()
+        return [_row_to_dict(r) for r in rows]
+
+
+def inventory_get_cpe_items() -> list[dict]:
+    """Return inventory items that have a versioned CPE (for CPE-based NVD scan)."""
+    with _connect() as conn:
+        rows = conn.execute(text(
+            "SELECT si.name, si.version, si.cpe, si.severity, a.name AS asset_name "
+            "FROM software_inventory si "
+            "LEFT JOIN assets a ON a.id = si.asset_id "
+            "WHERE si.version != '' AND si.cpe != ''"
+        )).fetchall()
+        return [_row_to_dict(r) for r in rows]
 
 
 # ── Internal CVSS override ────────────────────────────────────────────────────

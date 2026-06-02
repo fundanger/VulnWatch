@@ -475,222 +475,6 @@
             <div class="pagination" id="browse-pagination"></div>
           </div>
 
-          <!-- CVE detail overlay -->
-          <div id="detail-overlay" class="detail-overlay hidden">
-            <div class="detail-panel">
-              <!-- Sticky header -->
-              <div class="detail-panel-header">
-                <h2 id="detail-panel-title">CVE Details</h2>
-                <button class="btn-icon" id="btn-detail-close" title="Close (Esc)">✕</button>
-              </div>
-
-              <div class="detail-panel-body">
-                <!-- Core CVE info -->
-                <div id="detail-content"></div>
-
-                <!-- Action toolbar -->
-                <div class="detail-actions">
-                  <button class="btn-sm" id="btn-detail-watchlist">⭐ Watchlist</button>
-                  <button class="btn-sm" id="btn-detail-reviewed">✓ Reviewed</button>
-                  <button class="btn-sm btn-danger-sm" id="btn-detail-suppress" title="Suppress future alerts">⊘ Suppress</button>
-                  <button class="btn-sm" id="btn-detail-send-slack">⇒ Slack</button>
-                  <button class="btn-sm" id="btn-detail-send-webhook">⇒ Webhook</button>
-                  <button class="btn-sm" id="btn-detail-send-jira">⇒ Jira</button>
-                  <button class="btn-sm" id="btn-detail-send-snow">⇒ ServiceNow</button>
-                  <span id="detail-action-msg" class="form-msg" style="margin-left:.5rem"></span>
-                </div>
-
-                <!-- CVSS vector breakdown -->
-                <div id="cvss-vector-breakdown" class="cvss-breakdown" style="display:none;margin-top:.75rem"></div>
-
-                <!-- Triage -->
-                <div class="triage-row">
-                  <div class="form-group" style="margin-bottom:0;flex:1">
-                    <label class="form-label">Status</label>
-                    <select class="input-sm" id="detail-triage-status" style="width:100%">
-                      <option value="open">Open</option>
-                      <option value="investigating">Investigating</option>
-                      <option value="mitigated">Mitigated</option>
-                      <option value="wont_fix">Won't Fix</option>
-                      <option value="false_positive">False Positive</option>
-                      <option value="closed">Closed</option>
-                    </select>
-                  </div>
-                  <div class="form-group" style="margin-bottom:0;flex:1">
-                    <label class="form-label">Assignee</label>
-                    <input class="input-sm" id="detail-triage-assignee" placeholder="name or email…" style="width:100%" />
-                  </div>
-                  <div class="form-group" style="margin-bottom:0;flex:1">
-                    <label class="form-label">Due date</label>
-                    <input class="input-sm" id="detail-triage-due" type="date" style="width:100%" />
-                  </div>
-                  <button class="btn-sm" id="btn-detail-triage-save" style="align-self:flex-end">Save</button>
-                </div>
-
-                <!-- Exploit Intelligence -->
-                <div id="exploit-intel-panel" style="display:none" class="detail-block">
-                  <div class="detail-block-header">
-                    <span class="detail-block-icon">⚡</span>
-                    <span class="detail-block-title">Exploit Intelligence</span>
-                    <button class="btn-sm" id="btn-detail-enrich-exploit" style="margin-left:auto" title="Search GitHub + NVD for exploits">Check for Exploits</button>
-                    <span id="exploit-enrich-msg" class="form-msg" style="margin-left:.5rem"></span>
-                  </div>
-                  <div class="detail-block-body" id="exploit-intel-content"></div>
-                </div>
-
-                <!-- Threat Intelligence -->
-                <div id="threat-intel-panel" style="display:none" class="detail-block">
-                  <div class="detail-block-header">
-                    <span class="detail-block-icon">🔥</span>
-                    <span class="detail-block-title">Threat Intelligence</span>
-                    <button class="btn-sm" id="btn-detail-enrich-threat" style="margin-left:auto" title="Fetch OTX / CISA KEV data">Fetch Threat Data</button>
-                    <span id="threat-enrich-msg" class="form-msg" style="margin-left:.5rem"></span>
-                  </div>
-                  <div class="detail-block-body" id="threat-intel-content"></div>
-                </div>
-
-                <!-- Composite Risk Score -->
-                <div id="risk-score-panel" style="display:none" class="detail-block">
-                  <div class="detail-block-header">
-                    <span class="detail-block-icon">📊</span>
-                    <span class="detail-block-title">Composite Risk Score</span>
-                  </div>
-                  <div class="detail-block-body" id="risk-score-content"></div>
-                </div>
-
-                <!-- MITRE ATT&CK -->
-                <div id="attack-panel" style="display:none" class="detail-block">
-                  <div class="detail-block-header">
-                    <span class="detail-block-icon">🎯</span>
-                    <span class="detail-block-title">MITRE ATT&amp;CK Techniques</span>
-                  </div>
-                  <div class="detail-block-body">
-                    <div id="attack-content" class="attack-chips"></div>
-                  </div>
-                </div>
-
-                <!-- Compliance Mapping -->
-                <div id="compliance-panel" style="display:none" class="detail-block">
-                  <div class="detail-block-header">
-                    <span class="detail-block-icon">📜</span>
-                    <span class="detail-block-title">Compliance Mapping</span>
-                  </div>
-                  <div class="detail-block-body" id="compliance-content"></div>
-                </div>
-
-                <!-- Affected Assets -->
-                <div id="affected-assets-panel" style="display:none" class="detail-block">
-                  <div class="detail-block-header">
-                    <span class="detail-block-icon">🖥</span>
-                    <span class="detail-block-title">Affected Assets</span>
-                  </div>
-                  <div class="detail-block-body" id="affected-assets-content"></div>
-                </div>
-
-                <!-- Related CVEs -->
-                <div id="related-cves-panel" style="display:none" class="detail-block">
-                  <div class="detail-block-header">
-                    <span class="detail-block-icon">🔗</span>
-                    <span class="detail-block-title">Related CVEs (same CWE / product)</span>
-                  </div>
-                  <div class="detail-block-body" id="related-cves-content"></div>
-                </div>
-
-                <!-- Vendor Advisories & Exposure -->
-                <div id="exposure-panel" style="display:none" class="detail-block">
-                  <div class="detail-block-header">
-                    <span class="detail-block-icon">🔎</span>
-                    <span class="detail-block-title">Vendor Advisories &amp; Exposure</span>
-                    <button class="btn-sm" id="btn-detail-check-exposure" style="margin-left:auto" title="Check Red Hat, Ubuntu advisories">Check Advisories</button>
-                    <span id="exposure-msg" class="form-msg" style="margin-left:.5rem"></span>
-                  </div>
-                  <div class="detail-block-body" id="exposure-content"></div>
-                </div>
-
-                <!-- Internal Risk Override -->
-                <div class="detail-block" style="margin-top:.75rem">
-                  <div class="detail-block-header">
-                    <span class="detail-block-icon">🔧</span>
-                    <span class="detail-block-title">Internal Risk Override</span>
-                    <span style="font-size:11px;color:var(--subtle);margin-left:.5rem">Never overwrites NVD data</span>
-                  </div>
-                  <div class="detail-block-body">
-                    <div class="triage-row" style="border-top:none;padding-top:0">
-                      <div class="form-group" style="margin-bottom:0;flex:1">
-                        <label class="form-label">Score <span class="form-hint">0–10</span></label>
-                        <input class="input-sm" id="detail-override-score" type="number" min="0" max="10" step="0.1" placeholder="NVD score" style="width:100%" />
-                      </div>
-                      <div class="form-group" style="margin-bottom:0;flex:1">
-                        <label class="form-label">Effective severity</label>
-                        <select class="input-sm" id="detail-override-sev" style="width:100%">
-                          <option value="">— same as NVD —</option>
-                          <option value="CRITICAL">CRITICAL</option>
-                          <option value="HIGH">HIGH</option>
-                          <option value="MEDIUM">MEDIUM</option>
-                          <option value="LOW">LOW</option>
-                        </select>
-                      </div>
-                      <div class="form-group" style="margin-bottom:0;flex:2">
-                        <label class="form-label">Rationale</label>
-                        <input class="input-sm" id="detail-override-rationale" placeholder="e.g. air-gapped network, mitigating controls…" style="width:100%" />
-                      </div>
-                      <button class="btn-sm" id="btn-detail-override-save" style="align-self:flex-end">Save</button>
-                      <button class="btn-sm btn-danger-sm" id="btn-detail-override-clear" style="align-self:flex-end" title="Remove override">✕</button>
-                    </div>
-                    <div id="detail-override-msg" class="form-msg" style="margin-top:.3rem"></div>
-                  </div>
-                </div>
-
-                <!-- Patch Tracking -->
-                <div class="detail-block" style="margin-top:.75rem">
-                  <div class="detail-block-header">
-                    <span class="detail-block-icon">🩹</span>
-                    <span class="detail-block-title">Patch Tracking</span>
-                  </div>
-                  <div class="detail-block-body">
-                    <div class="triage-row" style="border-top:none;padding-top:0">
-                      <div class="form-group" style="margin-bottom:0;flex:2">
-                        <label class="form-label">Patched version</label>
-                        <input class="input-sm" id="detail-patch-version" placeholder="e.g. 2.3.1" style="width:100%" />
-                      </div>
-                      <div class="form-group" style="margin-bottom:0;flex:1">
-                        <label class="form-label">Date patched</label>
-                        <input class="input-sm" id="detail-patch-date" type="date" style="width:100%" />
-                      </div>
-                      <div class="form-group" style="margin-bottom:0;flex:1">
-                        <label class="form-label">Patched by</label>
-                        <input class="input-sm" id="detail-patch-by" placeholder="name…" style="width:100%" />
-                      </div>
-                      <button class="btn-sm" id="btn-detail-patch-save" style="align-self:flex-end">Save</button>
-                    </div>
-                    <div id="detail-patch-msg" class="form-msg" style="margin-top:.3rem"></div>
-                  </div>
-                </div>
-
-                <!-- Comments -->
-                <div class="detail-block" style="margin-top:.75rem">
-                  <div class="detail-block-header">
-                    <span class="detail-block-icon">💬</span>
-                    <span class="detail-block-title">Comments</span>
-                  </div>
-                  <div class="detail-block-body">
-                    <div id="comments-list" class="comments-list"></div>
-                    <div style="display:flex;gap:.5rem;margin-top:.5rem">
-                      <input class="input-sm" id="comment-input" placeholder="Add a comment…" style="flex:1" />
-                      <button class="btn-sm" id="btn-comment-add">Post</button>
-                    </div>
-                  </div>
-                </div>
-
-                <!-- Notes -->
-                <div class="form-group" style="margin-top:.75rem">
-                  <label class="form-label">Internal Notes</label>
-                  <textarea class="textarea-sm" id="detail-notes" rows="2" placeholder="Notes about this CVE…"></textarea>
-                  <button class="btn-sm" style="margin-top:.4rem" id="btn-detail-save-notes">Save notes</button>
-                </div>
-              </div><!-- /detail-panel-body -->
-            </div><!-- /detail-panel -->
-          </div><!-- /detail-overlay -->
         </div>
       </section>
 
@@ -1002,19 +786,6 @@
           </form>
         </div>
       </section>
-
-      <!-- ── CVE Comparison overlay ─────────────────────────────────────── -->
-      <div id="compare-overlay" class="detail-overlay hidden">
-        <div class="detail-panel" style="max-width:1100px">
-          <div class="detail-panel-header">
-            <h2>CVE Comparison</h2>
-            <button class="btn-icon" id="btn-compare-close">✕</button>
-          </div>
-          <div class="detail-panel-body">
-            <div id="compare-grid" class="compare-grid"></div>
-          </div>
-        </div>
-      </div>
 
       <!-- ── ANALYTICS ───────────────────────────────────────────────────── -->
       <section id="section-analytics" class="section">
@@ -1516,6 +1287,203 @@
 
     </main><!-- /main-content -->
   </div><!-- /app-shell -->
+
+  <!-- ── CVE detail overlay ───────────────────────────────────────────────── -->
+  <div id="detail-overlay" class="detail-overlay hidden">
+    <div class="detail-panel">
+      <div class="detail-panel-header">
+        <h2 id="detail-panel-title">CVE Details</h2>
+        <button class="btn-icon" id="btn-detail-close" title="Close (Esc)">✕</button>
+      </div>
+      <div class="detail-panel-body">
+        <div id="detail-content"></div>
+        <div class="detail-actions">
+          <button class="btn-sm" id="btn-detail-watchlist">⭐ Watchlist</button>
+          <button class="btn-sm" id="btn-detail-reviewed">✓ Reviewed</button>
+          <button class="btn-sm btn-danger-sm" id="btn-detail-suppress" title="Suppress future alerts">⊘ Suppress</button>
+          <button class="btn-sm" id="btn-detail-send-slack">⇒ Slack</button>
+          <button class="btn-sm" id="btn-detail-send-webhook">⇒ Webhook</button>
+          <button class="btn-sm" id="btn-detail-send-jira">⇒ Jira</button>
+          <button class="btn-sm" id="btn-detail-send-snow">⇒ ServiceNow</button>
+          <span id="detail-action-msg" class="form-msg" style="margin-left:.5rem"></span>
+        </div>
+        <div id="cvss-vector-breakdown" class="cvss-breakdown" style="display:none;margin-top:.75rem"></div>
+        <div class="triage-row">
+          <div class="form-group" style="margin-bottom:0;flex:1">
+            <label class="form-label">Status</label>
+            <select class="input-sm" id="detail-triage-status" style="width:100%">
+              <option value="open">Open</option>
+              <option value="investigating">Investigating</option>
+              <option value="mitigated">Mitigated</option>
+              <option value="wont_fix">Won't Fix</option>
+              <option value="false_positive">False Positive</option>
+              <option value="closed">Closed</option>
+            </select>
+          </div>
+          <div class="form-group" style="margin-bottom:0;flex:1">
+            <label class="form-label">Assignee</label>
+            <input class="input-sm" id="detail-triage-assignee" placeholder="name or email…" style="width:100%" />
+          </div>
+          <div class="form-group" style="margin-bottom:0;flex:1">
+            <label class="form-label">Due date</label>
+            <input class="input-sm" id="detail-triage-due" type="date" style="width:100%" />
+          </div>
+          <button class="btn-sm" id="btn-detail-triage-save" style="align-self:flex-end">Save</button>
+        </div>
+        <div id="exploit-intel-panel" style="display:none" class="detail-block">
+          <div class="detail-block-header">
+            <span class="detail-block-icon">⚡</span>
+            <span class="detail-block-title">Exploit Intelligence</span>
+            <button class="btn-sm" id="btn-detail-enrich-exploit" style="margin-left:auto" title="Search GitHub + NVD for exploits">Check for Exploits</button>
+            <span id="exploit-enrich-msg" class="form-msg" style="margin-left:.5rem"></span>
+          </div>
+          <div class="detail-block-body" id="exploit-intel-content"></div>
+        </div>
+        <div id="threat-intel-panel" style="display:none" class="detail-block">
+          <div class="detail-block-header">
+            <span class="detail-block-icon">🔥</span>
+            <span class="detail-block-title">Threat Intelligence</span>
+            <button class="btn-sm" id="btn-detail-enrich-threat" style="margin-left:auto" title="Fetch OTX / CISA KEV data">Fetch Threat Data</button>
+            <span id="threat-enrich-msg" class="form-msg" style="margin-left:.5rem"></span>
+          </div>
+          <div class="detail-block-body" id="threat-intel-content"></div>
+        </div>
+        <div id="risk-score-panel" style="display:none" class="detail-block">
+          <div class="detail-block-header">
+            <span class="detail-block-icon">📊</span>
+            <span class="detail-block-title">Composite Risk Score</span>
+          </div>
+          <div class="detail-block-body" id="risk-score-content"></div>
+        </div>
+        <div id="attack-panel" style="display:none" class="detail-block">
+          <div class="detail-block-header">
+            <span class="detail-block-icon">🎯</span>
+            <span class="detail-block-title">MITRE ATT&amp;CK Techniques</span>
+          </div>
+          <div class="detail-block-body">
+            <div id="attack-content" class="attack-chips"></div>
+          </div>
+        </div>
+        <div id="compliance-panel" style="display:none" class="detail-block">
+          <div class="detail-block-header">
+            <span class="detail-block-icon">📜</span>
+            <span class="detail-block-title">Compliance Mapping</span>
+          </div>
+          <div class="detail-block-body" id="compliance-content"></div>
+        </div>
+        <div id="affected-assets-panel" style="display:none" class="detail-block">
+          <div class="detail-block-header">
+            <span class="detail-block-icon">🖥</span>
+            <span class="detail-block-title">Affected Assets</span>
+          </div>
+          <div class="detail-block-body" id="affected-assets-content"></div>
+        </div>
+        <div id="related-cves-panel" style="display:none" class="detail-block">
+          <div class="detail-block-header">
+            <span class="detail-block-icon">🔗</span>
+            <span class="detail-block-title">Related CVEs (same CWE / product)</span>
+          </div>
+          <div class="detail-block-body" id="related-cves-content"></div>
+        </div>
+        <div id="exposure-panel" style="display:none" class="detail-block">
+          <div class="detail-block-header">
+            <span class="detail-block-icon">🔎</span>
+            <span class="detail-block-title">Vendor Advisories &amp; Exposure</span>
+            <button class="btn-sm" id="btn-detail-check-exposure" style="margin-left:auto" title="Check Red Hat, Ubuntu advisories">Check Advisories</button>
+            <span id="exposure-msg" class="form-msg" style="margin-left:.5rem"></span>
+          </div>
+          <div class="detail-block-body" id="exposure-content"></div>
+        </div>
+        <div class="detail-block" style="margin-top:.75rem">
+          <div class="detail-block-header">
+            <span class="detail-block-icon">🔧</span>
+            <span class="detail-block-title">Internal Risk Override</span>
+            <span style="font-size:11px;color:var(--subtle);margin-left:.5rem">Never overwrites NVD data</span>
+          </div>
+          <div class="detail-block-body">
+            <div class="triage-row" style="border-top:none;padding-top:0">
+              <div class="form-group" style="margin-bottom:0;flex:1">
+                <label class="form-label">Score <span class="form-hint">0–10</span></label>
+                <input class="input-sm" id="detail-override-score" type="number" min="0" max="10" step="0.1" placeholder="NVD score" style="width:100%" />
+              </div>
+              <div class="form-group" style="margin-bottom:0;flex:1">
+                <label class="form-label">Effective severity</label>
+                <select class="input-sm" id="detail-override-sev" style="width:100%">
+                  <option value="">— same as NVD —</option>
+                  <option value="CRITICAL">CRITICAL</option>
+                  <option value="HIGH">HIGH</option>
+                  <option value="MEDIUM">MEDIUM</option>
+                  <option value="LOW">LOW</option>
+                </select>
+              </div>
+              <div class="form-group" style="margin-bottom:0;flex:2">
+                <label class="form-label">Rationale</label>
+                <input class="input-sm" id="detail-override-rationale" placeholder="e.g. air-gapped network, mitigating controls…" style="width:100%" />
+              </div>
+              <button class="btn-sm" id="btn-detail-override-save" style="align-self:flex-end">Save</button>
+              <button class="btn-sm btn-danger-sm" id="btn-detail-override-clear" style="align-self:flex-end" title="Remove override">✕</button>
+            </div>
+            <div id="detail-override-msg" class="form-msg" style="margin-top:.3rem"></div>
+          </div>
+        </div>
+        <div class="detail-block" style="margin-top:.75rem">
+          <div class="detail-block-header">
+            <span class="detail-block-icon">🩹</span>
+            <span class="detail-block-title">Patch Tracking</span>
+          </div>
+          <div class="detail-block-body">
+            <div class="triage-row" style="border-top:none;padding-top:0">
+              <div class="form-group" style="margin-bottom:0;flex:2">
+                <label class="form-label">Patched version</label>
+                <input class="input-sm" id="detail-patch-version" placeholder="e.g. 2.3.1" style="width:100%" />
+              </div>
+              <div class="form-group" style="margin-bottom:0;flex:1">
+                <label class="form-label">Date patched</label>
+                <input class="input-sm" id="detail-patch-date" type="date" style="width:100%" />
+              </div>
+              <div class="form-group" style="margin-bottom:0;flex:1">
+                <label class="form-label">Patched by</label>
+                <input class="input-sm" id="detail-patch-by" placeholder="name…" style="width:100%" />
+              </div>
+              <button class="btn-sm" id="btn-detail-patch-save" style="align-self:flex-end">Save</button>
+            </div>
+            <div id="detail-patch-msg" class="form-msg" style="margin-top:.3rem"></div>
+          </div>
+        </div>
+        <div class="detail-block" style="margin-top:.75rem">
+          <div class="detail-block-header">
+            <span class="detail-block-icon">💬</span>
+            <span class="detail-block-title">Comments</span>
+          </div>
+          <div class="detail-block-body">
+            <div id="comments-list" class="comments-list"></div>
+            <div style="display:flex;gap:.5rem;margin-top:.5rem">
+              <input class="input-sm" id="comment-input" placeholder="Add a comment…" style="flex:1" />
+              <button class="btn-sm" id="btn-comment-add">Post</button>
+            </div>
+          </div>
+        </div>
+        <div class="form-group" style="margin-top:.75rem">
+          <label class="form-label">Internal Notes</label>
+          <textarea class="textarea-sm" id="detail-notes" rows="2" placeholder="Notes about this CVE…"></textarea>
+          <button class="btn-sm" style="margin-top:.4rem" id="btn-detail-save-notes">Save notes</button>
+        </div>
+      </div><!-- /detail-panel-body -->
+    </div><!-- /detail-panel -->
+  </div><!-- /detail-overlay -->
+
+  <!-- ── CVE Comparison overlay ─────────────────────────────────────────────── -->
+  <div id="compare-overlay" class="detail-overlay hidden">
+    <div class="detail-panel" style="max-width:1100px">
+      <div class="detail-panel-header">
+        <h2>CVE Comparison</h2>
+        <button class="btn-icon" id="btn-compare-close">✕</button>
+      </div>
+      <div class="detail-panel-body">
+        <div id="compare-grid" class="compare-grid"></div>
+      </div>
+    </div>
+  </div>
 
   <!-- ── Keyboard shortcuts modal ─────────────────────────────────────────── -->
   <div id="shortcuts-overlay" class="detail-overlay hidden">

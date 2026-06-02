@@ -1,8 +1,17 @@
 # Config contains credentials — never commit
 config.ini
 
+# Database — contains local scan data and software inventory
+cve_emailer.db
+cve_emailer.db-shm
+cve_emailer.db-wal
+
 # Claude Code guidance — local only
 CLAUDE.md
+
+# Claude local files
+.claude/
+.continue/
 
 # Python
 __pycache__/

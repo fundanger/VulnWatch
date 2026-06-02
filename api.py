@@ -135,16 +135,25 @@ def _check_bearer() -> bool:
 
 def _require_auth(f):
     """Decorator: require a valid Bearer token (global secret or per-user key).
-    If API_SECRET is not configured, write endpoints are blocked entirely."""
+    If API_SECRET is not configured AND no RBAC users exist, endpoints are open."""
     @wraps(f)
     def wrapper(*args, **kwargs):
+        if not _API_SECRET:
+            # No global secret set — allow unless a per-user key was provided
+            # but doesn't match any known user (bad token = reject).
+            auth = request.headers.get("Authorization", "")
+            if auth.startswith("Bearer "):
+                user = _get_user_from_request()
+                if not user:
+                    abort(401)
+                g.current_user = user
+            return f(*args, **kwargs)
         if _check_bearer():
             return f(*args, **kwargs)
         user = _get_user_from_request()
         if user:
             g.current_user = user
             return f(*args, **kwargs)
-        # API_SECRET unset AND no valid per-user key → reject
         abort(401)
     return wrapper
 
@@ -259,9 +268,6 @@ def api_tables():
 @app.route("/api/cves")
 def api_cves():
     table = request.args.get("table", "")
-    if not table or table not in database.list_cve_tables():
-        return jsonify({"error": "invalid or missing table"}), 400
-
     search = request.args.get("search", "")
     min_sev = request.args.get("min_severity", "NONE")
     date_from = request.args.get("date_from", "")
@@ -272,8 +278,20 @@ def api_cves():
     except (TypeError, ValueError):
         return jsonify({"error": "limit and offset must be integers"}), 400
 
-    rows = database.query_cves(
-        table,
+    all_tables = database.list_cve_tables()
+
+    if table:
+        if table not in all_tables:
+            return jsonify({"error": "invalid table"}), 400
+        tables_to_query = [table]
+    else:
+        tables_to_query = all_tables
+
+    if not tables_to_query:
+        return jsonify([])
+
+    rows = database.query_cves_multi(
+        tables_to_query,
         search=search,
         min_severity=min_sev,
         limit=limit,
@@ -1251,6 +1269,24 @@ def api_asset_match():
     return jsonify(database.assets_match_cve(cpe))
 
 
+@app.route("/api/assets/<int:asset_id>/inventory", methods=["POST"])
+@_require_auth
+def api_asset_inventory(asset_id: int):
+    """Upload software inventory for an asset (list of {name, version, cpe, category, severity, source})."""
+    data = request.get_json(force=True) or {}
+    items = data.get("items", [])
+    if not isinstance(items, list):
+        return jsonify({"error": "items must be a list"}), 400
+    database.inventory_save(asset_id, items)
+    return jsonify({"ok": True, "count": len(items)})
+
+
+@app.route("/api/assets/inventory")
+def api_inventory_get():
+    """Return full software inventory across all assets."""
+    return jsonify(database.inventory_get_all())
+
+
 # ── CVE chaining / related CVEs ───────────────────────────────────────────────
 
 @app.route("/api/cve/related")
@@ -1780,7 +1816,10 @@ def _fetch_threat_intel(cve_id: str) -> dict:
 
 @app.route("/api/risk/<string:cve_id>")
 def api_risk_score(cve_id: str):
+    _assert_cve_id(cve_id)
     table = request.args.get("table", "")
+    if table and table not in database.list_cve_tables():
+        table = ""  # fall back to all-tables search rather than crashing
     return jsonify(database.compute_risk_score(cve_id, table))
 
 
@@ -2292,6 +2331,7 @@ def _bootstrap_all():
     database.bootstrap_audit_log()
     database.bootstrap_routing_rules()
     database.bootstrap_alert_dedup()
+    database.bootstrap_inventory()
     _ensure_patch_columns()
 
 

@@ -62,6 +62,13 @@ def _keyword_url(keyword: str, start: int = 0) -> str:
     )
 
 
+def _cpe_url(cpe_name: str, start: int = 0) -> str:
+    return (
+        f"{NVD_BASE}?cpeName={quote_plus(cpe_name)}"
+        f"&resultsPerPage={PAGE_SIZE}&startIndex={start}"
+    )
+
+
 # ── Per-keyword severity override ─────────────────────────────────────────────
 # Syntax: "Apache Knox::HIGH" overrides the global min_severity for that keyword.
 
@@ -176,6 +183,43 @@ def fetch_all_cves(keyword: str, headers: dict, log=print) -> list[dict]:
     return vulns
 
 
+def _fetch_page_by_cpe(cpe_name: str, start: int, headers: dict, retries: int = 4) -> dict:
+    """Fetch NVD results by exact CPE name (version-aware)."""
+    global _last_nvd_success, _last_nvd_error
+    url = _cpe_url(cpe_name, start)
+    for attempt in range(1, retries + 1):
+        try:
+            resp = requests.get(url, headers=headers, timeout=30)
+            if resp.status_code in (429, 403):
+                _last_nvd_error = f"HTTP {resp.status_code} rate-limited"
+                time.sleep(30 * attempt)
+                continue
+            resp.raise_for_status()
+            _last_nvd_success = datetime.now()
+            _last_nvd_error   = None
+            return resp.json()
+        except (requests.RequestException, ValueError) as exc:
+            _last_nvd_error = str(exc)
+            if attempt == retries:
+                raise
+            time.sleep(2 ** attempt)
+    raise RuntimeError("NVD CPE fetch failed after all retries")
+
+
+def fetch_all_cves_by_cpe(cpe_name: str, headers: dict, log=print) -> list[dict]:
+    first = _fetch_page_by_cpe(cpe_name, 0, headers)
+    total = first.get("totalResults", 0)
+    vulns = first.get("vulnerabilities", [])
+    log(f"  CPE {cpe_name}: {total} CVE(s) from NVD")
+    start = PAGE_SIZE
+    while start < total:
+        time.sleep(3)
+        page = _fetch_page_by_cpe(cpe_name, start, headers)
+        vulns.extend(page.get("vulnerabilities", []))
+        start += PAGE_SIZE
+    return vulns
+
+
 # ── Processing ────────────────────────────────────────────────────────────────
 
 def _passes_threshold(severity: str, min_severity: str) -> bool:
@@ -271,6 +315,133 @@ def process_keyword(
 
     _logger.event("keyword_processed", keyword=kw, new=len(new_cves), upgraded=len(upgraded_cves))
     return new_cves, upgraded_cves
+
+
+def _versioned_cpe(cpe_template: str, version: str) -> str:
+    """Replace the version component (index 5) of a CPE 2.3 string with the real version."""
+    parts = cpe_template.split(":")
+    if len(parts) >= 6:
+        parts[5] = version
+        return ":".join(parts)
+    return cpe_template
+
+
+def process_cpe(
+    name: str,
+    version: str,
+    cpe_template: str,
+    cfg,
+    log=print,
+    min_severity: str = "NONE",
+    enrich_epss: bool = True,
+) -> tuple[list[dict], list[dict]]:
+    """
+    Fetch CVEs from NVD using a versioned CPE name. NVD's cpeName parameter
+    uses its own version-range data, so only CVEs where this exact version is
+    in the vulnerable range are returned — no keyword false-positives.
+    Returns (new_cves, upgraded_cves).
+    """
+    versioned = _versioned_cpe(cpe_template, version)
+    # Table name: use product name + version, same sanitisation as keyword tables
+    table_key = f"{name} {version}"
+    table = re.sub(r"\W+", "_", table_key)
+    database.create_table(table)
+    time.sleep(3)
+
+    vulns = fetch_all_cves_by_cpe(versioned, _api_headers(cfg), log=log)
+
+    candidates: list[dict] = []
+    for v in vulns:
+        cve = v["cve"]
+        severity = _get_severity(cve)
+        if not _passes_threshold(severity, min_severity):
+            continue
+        cvss_score = _get_cvss_score(cve)
+        descriptions = cve.get("descriptions", [])
+        description = descriptions[0]["value"] if descriptions else "No description available."
+        candidates.append({
+            "keyword":       table_key,
+            "id":            cve["id"],
+            "publish_date":  _parse_dt(cve["published"]),
+            "last_modified": _parse_dt(cve["lastModified"]),
+            "description":   description,
+            "severity":      severity,
+            "cvss_score":    cvss_score,
+            "cwe":           _get_cwe(cve),
+            "cpe":           _get_cpe(cve),
+            "refs":          _get_refs(cve),
+            "epss_score":    None,
+            "epss_percentile": None,
+            "kev":           False,
+        })
+
+    if enrich_epss and candidates:
+        try:
+            epss_mod.enrich_cves(candidates, log=log)
+        except Exception as exc:
+            log(f"  [yellow]EPSS enrichment failed: {exc}[/yellow]")
+
+    new_cves: list[dict] = []
+    upgraded_cves: list[dict] = []
+    for entry in candidates:
+        is_new, is_upgraded = database.insert_cve(
+            table, entry["id"], entry["publish_date"], entry["last_modified"],
+            entry["description"], entry["severity"], entry["cvss_score"],
+            entry["cwe"], entry["cpe"], json.dumps(entry["refs"]), table_key,
+            epss_score=entry.get("epss_score"),
+            epss_percentile=entry.get("epss_percentile"),
+            kev=entry.get("kev", False),
+        )
+        if is_new:
+            new_cves.append(entry)
+        elif is_upgraded:
+            upgraded_cves.append({**entry, "upgraded": True})
+
+    new_cves.sort(key=lambda c: SEVERITY_ORDER.get(c["severity"], 5))
+    upgraded_cves.sort(key=lambda c: SEVERITY_ORDER.get(c["severity"], 5))
+    log(f"  {table_key}: {len(new_cves)} new, {len(upgraded_cves)} upgraded CVE(s) [CPE scan]")
+    return new_cves, upgraded_cves
+
+
+def run_inventory_scan(
+    log=print,
+    stop_event: Event | None = None,
+    min_severity: str = "NONE",
+) -> tuple[int, int]:
+    """
+    Scan CVEs for every software item in the inventory that has a version and CPE.
+    Runs after the normal keyword scan. Returns (new_count, upgraded_count).
+    """
+    cfg = _load_config()
+    items = database.inventory_get_cpe_items()
+    if not items:
+        return 0, 0
+
+    # Deduplicate by (name, version) — multiple assets may run the same software
+    seen: set[tuple[str, str]] = set()
+    unique = []
+    for item in items:
+        key = (item["name"], item["version"])
+        if key not in seen:
+            seen.add(key)
+            unique.append(item)
+
+    log(f"CPE inventory scan: {len(unique)} unique software version(s)...")
+    all_new, all_upgraded = 0, 0
+    for item in unique:
+        if stop_event and stop_event.is_set():
+            break
+        try:
+            new, upgraded = process_cpe(
+                item["name"], item["version"], item["cpe"],
+                cfg, log=log, min_severity=min_severity,
+            )
+            all_new += len(new)
+            all_upgraded += len(upgraded)
+        except Exception as exc:
+            log(f"  [yellow]CPE scan failed for {item['name']} {item['version']}: {exc}[/yellow]")
+
+    return all_new, all_upgraded
 
 
 def _build_email_body(cves: list[dict], label: str = "") -> str:
@@ -417,6 +588,15 @@ def run_once(
             new, upgraded = process_keyword(kw, cfg, log=log, min_severity=min_severity)
             all_new.extend(new)
             all_upgraded.extend(upgraded)
+
+        # CPE-based version scan using software inventory uploaded by scanners
+        if not (stop_event and stop_event.is_set()):
+            try:
+                inv_new, inv_upg = run_inventory_scan(log=log, stop_event=stop_event, min_severity=min_severity)
+                if inv_new or inv_upg:
+                    log(f"CPE inventory scan: {inv_new} new, {inv_upg} upgraded CVE(s)")
+            except Exception as exc:
+                log(f"  [yellow]CPE inventory scan error: {exc}[/yellow]")
     except Exception as exc:
         error_msg = str(exc)
         log(f"[bold red]Error during scan:[/bold red] {exc}")

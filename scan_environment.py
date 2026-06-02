@@ -1187,8 +1187,22 @@ def _upload(items: list[Software], base: str, token: str, append: bool,
     """Upload keywords and create/update asset record. Returns 0 on success."""
     import urllib.request
     import urllib.error
+    import http.cookiejar
 
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+    # Fetch CSRF token from dashboard root (double-submit cookie pattern)
+    csrf_token = ""
+    try:
+        cj = http.cookiejar.CookieJar()
+        opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cj))
+        opener.open(f"{base}/", timeout=10)
+        for cookie in cj:
+            if cookie.name == "csrf_token":
+                csrf_token = cookie.value
+                break
+    except Exception:
+        pass
 
     def _api(path: str, payload: dict | None = None) -> dict:
         url = f"{base}{path}"
@@ -1196,6 +1210,9 @@ def _upload(items: list[Software], base: str, token: str, append: bool,
         if token:
             headers["Authorization"] = f"Bearer {token}"
         if payload is not None:
+            if csrf_token:
+                headers["X-CSRF-Token"] = csrf_token
+                headers["Cookie"] = f"csrf_token={csrf_token}"
             data = json.dumps(payload).encode()
             req = urllib.request.Request(url, data=data, headers=headers, method="POST")
         else:
@@ -1235,13 +1252,37 @@ def _upload(items: list[Software], base: str, token: str, append: bool,
 
         result = _api("/api/assets", asset_payload)
         if result.get("ok"):
-            print(f"  Asset saved (id={result.get('id')})", file=sys.stderr)
+            asset_id = result.get("id") or asset_id
+            print(f"  Asset saved (id={asset_id})", file=sys.stderr)
         else:
             print(f"  Asset save returned: {result}", file=sys.stderr)
     except Exception as exc:
         print(f"  Asset save error: {exc}", file=sys.stderr)
 
-    # -- 2. Build keyword payload (append or replace) --------------------------
+    # -- 2. Upload software inventory (version-specific CVE matching) ----------
+    if asset_id is not None:
+        print("Uploading software inventory...", file=sys.stderr)
+        try:
+            inventory = [
+                {
+                    "name":     i.name,
+                    "version":  i.version,
+                    "cpe":      i.cpe,
+                    "category": i.category,
+                    "severity": i.severity,
+                    "source":   i.source,
+                }
+                for i in items if i.version and i.cpe
+            ]
+            result = _api(f"/api/assets/{asset_id}/inventory", {"items": inventory})
+            if result.get("ok"):
+                print(f"  Inventory saved ({result.get('count', 0)} items)", file=sys.stderr)
+            else:
+                print(f"  Inventory upload returned: {result}", file=sys.stderr)
+        except Exception as exc:
+            print(f"  Inventory upload error: {exc}", file=sys.stderr)
+
+    # -- 3. Build keyword payload (append or replace) --------------------------
     new_kws = _to_keywords(items)
 
     if append:
@@ -1270,7 +1311,7 @@ def _upload(items: list[Software], base: str, token: str, append: bool,
     else:
         keywords_payload = "\n".join(new_kws)
 
-    # -- 3. Upload keywords ----------------------------------------------------
+    # -- 4. Upload keywords ----------------------------------------------------
     print(f"Uploading {keywords_payload.count(chr(10)) + 1} keywords...", file=sys.stderr)
     try:
         result = _api("/api/config", {"DEFAULT__keywords": keywords_payload})

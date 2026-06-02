@@ -824,6 +824,27 @@ to_json() {
     echo "]"
 }
 
+to_inventory_json() {
+    # Emit JSON array of items that have both a version and a CPE (for CPE-based NVD scanning)
+    local first=1
+    echo "["
+    for item in "${ITEMS[@]}"; do
+        IFS=$'\t' read -r name ver cat sev cpe src <<< "$item"
+        [[ -z "$ver" || -z "$cpe" ]] && continue
+        _is_generic "$name" && continue
+        [[ $first -eq 0 ]] && echo ","
+        first=0
+        local esc_name="${name//\"/\\\"}"
+        local esc_ver="${ver//\"/\\\"}"
+        local esc_cpe="${cpe//\"/\\\"}"
+        local esc_src="${src//\"/\\\"}"
+        printf '  {"name":"%s","version":"%s","cpe":"%s","category":"%s","severity":"%s","source":"%s"}' \
+            "$esc_name" "$esc_ver" "$esc_cpe" "$cat" "$sev" "$esc_src"
+    done
+    echo ""
+    echo "]"
+}
+
 # ---------------------------------------------------------------------------
 # Get primary OS CPE for asset record
 # ---------------------------------------------------------------------------
@@ -860,21 +881,27 @@ get_discovered_categories() {
 # ---------------------------------------------------------------------------
 # Upload helper -- requires curl
 # ---------------------------------------------------------------------------
+_CSRF_TOKEN=""
+
+_fetch_csrf() {
+    # Fetch CSRF token once and cache it in _CSRF_TOKEN
+    local tmp="/tmp/_cve_csrf_$$.txt"
+    curl -s -c "$tmp" "${UPLOAD_URL%/}/" -o /dev/null 2>/dev/null || true
+    _CSRF_TOKEN=$(grep -oP '(?<=\tcsrf_token\t)[^\t\n]+' "$tmp" 2>/dev/null || \
+                  grep 'csrf_token' "$tmp" 2>/dev/null | awk '{print $NF}' || true)
+    rm -f "$tmp"
+}
+
 _api_post() {
     local path="$1"
     local body="$2"
     local url="${UPLOAD_URL%/}${path}"
     local args=(-s -X POST -H "Content-Type: application/json")
     [[ -n "$TOKEN" ]] && args+=(-H "Authorization: Bearer $TOKEN")
-
-    # Get CSRF token (best-effort; bearer auth is exempt but we send anyway)
-    local csrf
-    csrf=$(curl -s -c /tmp/_cve_csrf_$$.txt "${UPLOAD_URL%/}/" -o /dev/null 2>/dev/null && \
-           grep -oP '(?<=csrf_token\t)[^\t]+' /tmp/_cve_csrf_$$.txt 2>/dev/null || true)
-    rm -f /tmp/_cve_csrf_$$.txt
-    [[ -n "$csrf" ]] && args+=(-H "X-CSRF-Token: $csrf")
-
-    curl "${args[@]}" -H "Content-Type: application/json" -d "$body" "$url" 2>/dev/null
+    if [[ -n "$_CSRF_TOKEN" ]]; then
+        args+=(-H "X-CSRF-Token: $_CSRF_TOKEN" -H "Cookie: csrf_token=$_CSRF_TOKEN")
+    fi
+    curl "${args[@]}" -d "$body" "$url" 2>/dev/null
 }
 
 _api_get() {
@@ -890,6 +917,9 @@ do_upload() {
         echo "Error: curl is required for --upload" >&2
         return 1
     fi
+
+    _fetch_csrf
+    [[ -n "$_CSRF_TOKEN" ]] && echo "  CSRF token obtained." >&2
 
     local now
     now=$(date -u +"%Y-%m-%dT%H:%M:%S" 2>/dev/null || date +"%Y-%m-%dT%H:%M:%S")
@@ -946,13 +976,32 @@ do_upload() {
         if echo "$result" | grep -q '"ok":true'; then
             local new_id
             new_id=$(echo "$result" | grep -oP '"id":\K[0-9]+' | head -1 || true)
-            echo "  Asset saved (id=${new_id:-?})" >&2
+            [[ -n "$new_id" ]] && existing_id="$new_id"
+            echo "  Asset saved (id=${existing_id:-?})" >&2
         else
             echo "  Asset save returned: $result" >&2
         fi
     fi
 
-    # 3. Build keyword payload
+    # 3. Upload software inventory (version-specific CVE matching)
+    if [[ -n "$existing_id" && $DRY_RUN -eq 0 ]]; then
+        echo "  Uploading software inventory..." >&2
+        local inv_json
+        inv_json=$(to_inventory_json)
+        if [[ -n "$inv_json" ]]; then
+            local inv_result
+            inv_result=$(_api_post "/api/assets/${existing_id}/inventory" "{\"items\":${inv_json}}")
+            if echo "$inv_result" | grep -q '"ok":true'; then
+                local inv_count
+                inv_count=$(echo "$inv_result" | grep -oP '"count":\K[0-9]+' | head -1 || echo "?")
+                echo "  Inventory saved (${inv_count} items)" >&2
+            else
+                echo "  Inventory upload returned: $inv_result" >&2
+            fi
+        fi
+    fi
+
+    # 4. Build keyword payload
     local new_kws
     new_kws=$(to_keywords)
 

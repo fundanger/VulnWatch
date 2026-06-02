@@ -229,13 +229,14 @@ document.getElementById("stat-card-overdue").addEventListener("click", () => { s
 let _browseRows = [];
 let _browseTable = "";
 
-async function loadBrowseTables() {
+async function loadBrowseTables(autoSearch = true) {
   try {
     const r = await fetch(`${API}/api/tables`);
     const tables = await r.json();
     const sel = document.getElementById("br-table");
     sel.innerHTML = `<option value="">All keywords…</option>`;
     tables.forEach(t => sel.insertAdjacentHTML("beforeend", `<option value="${escHtml(t)}">${escHtml(t)}</option>`));
+    if (autoSearch && !_browseRows.length) doBrowseSearchPaged(0);
   } catch (e) {
     console.error("loadBrowseTables:", e);
   }
@@ -243,7 +244,6 @@ async function loadBrowseTables() {
 
 async function doBrowseSearch() {
   const table = document.getElementById("br-table").value;
-  if (!table) { alert("Select a keyword table first."); return; }
 
   const params = new URLSearchParams({
     table,
@@ -901,7 +901,7 @@ btnScan.addEventListener("click", async () => {
   scanStatus.textContent = "Queuing scan…";
   scanStatus.className = "scan-status-text running";
   try {
-    const r = await fetch(`${API}/api/scan`, { method: "POST" });
+    const r = await fetch(`${API}/api/scan`, { method: "POST", headers: { "X-CSRF-Token": _csrfToken() } });
     const j = await r.json();
     if (r.status === 409) {
       scanStatus.textContent = "Already running";
@@ -923,11 +923,11 @@ setInterval(pollScanStatus, 5000);
 // ── Settings ──────────────────────────────────────────────────────────────────
 
 const FIELD_META = {
-  "DEFAULT__apiKey":         { label: "NVD API Key",           placeholder: "optional — avoids rate limits" },
+  "DEFAULT__apiKey":         { label: "NVD API Key",           placeholder: "optional — avoids rate limits", password: true },
   "DEFAULT__checkFrequency": { label: "Check interval (sec)",  placeholder: "3600" },
   "DEFAULT__minSeverity":    { label: "Global min severity",   placeholder: "NONE / LOW / MEDIUM / HIGH / CRITICAL" },
-  "DEFAULT__webhookUrl":     { label: "Webhook URL",           placeholder: "https://..." },
-  "DEFAULT__slackWebhook":   { label: "Slack webhook URL",     placeholder: "https://hooks.slack.com/..." },
+  "DEFAULT__webhookUrl":     { label: "Webhook URL",           placeholder: "https://...", password: true },
+  "DEFAULT__slackWebhook":   { label: "Slack webhook URL",     placeholder: "https://hooks.slack.com/...", password: true },
   "EMAIL__senderEmail":      { label: "Sender Gmail",          placeholder: "you@gmail.com" },
   "EMAIL__senderPassword":   { label: "Gmail App Password",    placeholder: "xxxx xxxx xxxx xxxx", password: true },
   "EMAIL__recipientEmail":   { label: "Recipient email(s)",    placeholder: "a@x.com, b@x.com" },
@@ -950,6 +950,22 @@ const FIELD_META = {
 
 let _settingsData = {};
 
+// Sentinel displayed in password fields after a value has been saved.
+// Fields showing this value are skipped when building the save payload.
+const _MASK_DISPLAY = "••••••••••••••••";
+
+function _applyMask(input) {
+  input.type = "text";
+  input.value = _MASK_DISPLAY;
+  input.dataset.masked = "1";
+}
+
+function _clearMask(input) {
+  input.type = "password";
+  input.value = "";
+  delete input.dataset.masked;
+}
+
 function buildSettingsField(id, field) {
   const meta = FIELD_META[id] || { label: id, placeholder: "" };
   const container = document.getElementById(`fg-${id}`);
@@ -970,11 +986,30 @@ function buildSettingsField(id, field) {
   const input = document.createElement("input");
   input.className = "input-sm";
   input.id = `cfg-${id}`;
-  input.type = (meta.password && !locked) ? "password" : "text";
   input.placeholder = meta.placeholder;
-  input.value = field.value || "";
   input.disabled = locked;
   if (locked) input.title = "Set via environment variable — edit your .env file to change this.";
+
+  if (meta.password && !locked) {
+    if (field.value) {
+      // Value already exists — show mask immediately
+      input.type = "text";
+      input.value = _MASK_DISPLAY;
+      input.dataset.masked = "1";
+    } else {
+      input.type = "password";
+    }
+    input.addEventListener("focus", () => {
+      if (input.dataset.masked) _clearMask(input);
+    });
+    input.addEventListener("blur", () => {
+      // If user cleared the field without typing anything new, restore mask
+      if (!input.value && field.value) _applyMask(input);
+    });
+  } else {
+    input.type = "text";
+    input.value = field.value || "";
+  }
 
   container.innerHTML = "";
   container.appendChild(labelEl);
@@ -1008,6 +1043,8 @@ document.getElementById("settings-form").addEventListener("submit", async e => {
   for (const id of Object.keys(_settingsData)) {
     const el = document.getElementById(`cfg-${id}`);
     if (!el || el.disabled) continue;
+    // Skip fields still showing the obfuscation mask — value hasn't changed
+    if (el.dataset.masked) continue;
     payload[id] = el.value;
   }
 
@@ -1021,6 +1058,15 @@ document.getElementById("settings-form").addEventListener("submit", async e => {
     if (j.ok) {
       msg.textContent = "Saved!";
       msg.className = "form-msg ok";
+      // Update in-memory cache and re-mask any sensitive fields that now have values
+      for (const [id, val] of Object.entries(payload)) {
+        if (_settingsData[id]) _settingsData[id].value = val;
+        const meta = FIELD_META[id];
+        if (meta && meta.password && val) {
+          const el = document.getElementById(`cfg-${id}`);
+          if (el) _applyMask(el);
+        }
+      }
       // Re-apply report schedule if it changed
       if (payload["REPORT__reportSchedule"] !== undefined) {
         fetch(`${API}/api/report/schedule`, { method: "POST", headers: { "X-CSRF-Token": _csrfToken() } }).catch(() => {});
@@ -1328,12 +1374,13 @@ function renderSavedSearches() {
       if (e.target.tagName === "BUTTON") return;
       // Navigate to browse and apply filters
       showSection("browse");
-      loadBrowseTables().then(() => {
+      loadBrowseTables(false).then(() => {
         document.getElementById("br-table").value    = s.table    || "";
         document.getElementById("br-search").value   = s.search   || "";
         document.getElementById("br-severity").value = s.severity || "NONE";
         document.getElementById("br-date-from").value = s.dateFrom || "";
         document.getElementById("br-date-to").value   = s.dateTo   || "";
+        doBrowseSearchPaged(0);
       });
     });
     list.appendChild(chip);
@@ -1364,21 +1411,15 @@ let _browsePage = 0;
 let _browseTotalRows = 0;
 
 async function doBrowseSearchPaged(page = 0) {
-  const table = document.getElementById("br-table").value;
-  if (!table) {
-    // Auto-select first available table
-    const opts = document.getElementById("br-table").options;
-    if (opts.length > 1) {
-      document.getElementById("br-table").value = opts[1].value;
-    } else {
-      document.getElementById("browse-status").textContent = "No keyword tables found — run a scan first.";
-      return;
-    }
+  const tableEl = document.getElementById("br-table");
+  if (!tableEl.value && tableEl.options.length <= 1) {
+    document.getElementById("browse-status").textContent = "No keyword tables found — run a scan first.";
+    return;
   }
 
   _browsePage = page;
   const params = new URLSearchParams({
-    table,
+    table: tableEl.value,
     search:       document.getElementById("br-search").value,
     min_severity: document.getElementById("br-severity").value,
     date_from:    document.getElementById("br-date-from").value,
@@ -1390,7 +1431,7 @@ async function doBrowseSearchPaged(page = 0) {
   try {
     const r = await fetch(`${API}/api/cves?${params}`);
     _browseRows  = await r.json();
-    _browseTable = table;
+    _browseTable = tableEl.value;
     // Fetch total count (one extra row to detect more pages)
     const countParams = new URLSearchParams({...Object.fromEntries(params), limit: 1, offset: (page + 1) * PAGE_SIZE_BROWSE});
     const rNext = await fetch(`${API}/api/cves?${countParams}`);
@@ -1448,7 +1489,7 @@ async function loadScheduleInfo() {
 
     // API key status
     const apiKeyField = cfg["DEFAULT__apiKey"];
-    const hasKey = apiKeyField && apiKeyField.value && apiKeyField.value !== "••••••••" && apiKeyField.value.trim() !== "";
+    const hasKey = apiKeyField && apiKeyField.value && apiKeyField.value.trim() !== "";
     document.getElementById("sched-apikey").innerHTML = hasKey
       ? `<span class="badge" style="background:var(--success)">Configured</span>`
       : `<span class="badge" style="background:var(--medium)">Not set — rate limited</span>`;
@@ -1631,14 +1672,7 @@ document.querySelectorAll(".qf-chip").forEach(btn => {
     // For EPSS filter we do a client-side post-filter by storing it and re-rendering
     _qfEpssMin = epss ? parseFloat(epss) : null;
 
-    // Need a table selected
-    const table = document.getElementById("br-table").value;
-    if (!table) {
-      // Auto-select first table
-      const opts = document.getElementById("br-table").options;
-      if (opts.length > 1) document.getElementById("br-table").value = opts[1].value;
-    }
-    if (document.getElementById("br-table").value) doBrowseSearchPaged(0);
+    doBrowseSearchPaged(0);
   });
 });
 
@@ -2072,13 +2106,13 @@ async function loadSavedViews() {
         if (e.target.tagName === "BUTTON") return;
         const f = v.filters || {};
         showSection("browse");
-        loadBrowseTables().then(() => {
+        loadBrowseTables(false).then(() => {
           if (f.table)    document.getElementById("br-table").value     = f.table;
           if (f.search)   document.getElementById("br-search").value    = f.search;
           if (f.severity) document.getElementById("br-severity").value  = f.severity;
           if (f.dateFrom) document.getElementById("br-date-from").value = f.dateFrom;
           if (f.dateTo)   document.getElementById("br-date-to").value   = f.dateTo;
-          if (document.getElementById("br-table").value) doBrowseSearchPaged(0);
+          doBrowseSearchPaged(0);
         });
       });
       list.appendChild(chip);
@@ -2123,7 +2157,7 @@ document.getElementById("btn-validate-config").addEventListener("click", async (
   msg.textContent = "Testing…"; msg.className = "form-msg";
   results.style.display = "none";
   try {
-    const r = await fetch(`${API}/api/config/validate`, { method: "POST" });
+    const r = await fetch(`${API}/api/config/validate`, { method: "POST", headers: { "X-CSRF-Token": _csrfToken() } });
     const data = await r.json();
     msg.textContent = "Done"; msg.className = "form-msg ok";
     results.style.display = "";
@@ -2275,7 +2309,7 @@ document.addEventListener("keydown", e => {
     const row = _browseRows[_browseSelectedIdx];
     if (row) {
       fetch(`${API}/api/watchlist`, {
-        method: "POST", headers: { "Content-Type": "application/json" },
+        method: "POST", headers: { "Content-Type": "application/json", "X-CSRF-Token": _csrfToken() },
         body: JSON.stringify({ cve_id: row.cve_id, keyword: row.keyword || "" }),
       });
     }
@@ -2285,7 +2319,7 @@ document.addEventListener("keydown", e => {
     if (row) {
       const alreadyReviewed = !!_reviewedMap[row.cve_id];
       fetch(`${API}/api/review`, {
-        method: "POST", headers: { "Content-Type": "application/json" },
+        method: "POST", headers: { "Content-Type": "application/json", "X-CSRF-Token": _csrfToken() },
         body: JSON.stringify({ cve_id: row.cve_id, reviewed: !alreadyReviewed, notes: "" }),
       }).then(() => renderBrowseResults());
     }
@@ -2345,7 +2379,7 @@ document.getElementById("btn-detail-enrich-exploit").addEventListener("click", a
   btn.disabled = true;
   msg.textContent = "Searching…"; msg.className = "form-msg";
   try {
-    const r = await fetch(`${API}/api/exploit/enrich/${encodeURIComponent(_detailRow.cve_id)}`, { method: "POST" });
+    const r = await fetch(`${API}/api/exploit/enrich/${encodeURIComponent(_detailRow.cve_id)}`, { method: "POST", headers: { "X-CSRF-Token": _csrfToken() } });
     const d = await r.json();
     msg.textContent = d.has_exploit ? `Found ${d.exploit_refs.length} reference(s)!` : "No exploits found.";
     msg.className = d.has_exploit ? "form-msg ok" : "form-msg";
@@ -2545,8 +2579,7 @@ document.getElementById("btn-detail-patch-save").addEventListener("click", async
 const _origOpenDetail = openDetail;
 openDetail = async function(row) {
   await _origOpenDetail(row);
-  // Load all new enrichment panels in parallel
-  await Promise.all([
+  await Promise.allSettled([
     _loadExploitIntel(row),
     _loadAttackMapping(row),
     _loadAffectedAssets(row),
@@ -3023,7 +3056,7 @@ document.getElementById("btn-detail-enrich-threat").addEventListener("click", as
   btn.disabled = true;
   msg.textContent = "Fetching…"; msg.className = "form-msg";
   try {
-    const r = await fetch(`${API}/api/threat/enrich/${encodeURIComponent(_detailRow.cve_id)}`, { method: "POST" });
+    const r = await fetch(`${API}/api/threat/enrich/${encodeURIComponent(_detailRow.cve_id)}`, { method: "POST", headers: { "X-CSRF-Token": _csrfToken() } });
     const d = await r.json();
     msg.textContent = d.in_wild ? "In-the-wild exploitation confirmed!" : "No active threat data found.";
     msg.className = d.in_wild ? "form-msg ok" : "form-msg";
@@ -3039,8 +3072,9 @@ async function _loadRiskScore(row) {
   const panel   = document.getElementById("risk-score-panel");
   const content = document.getElementById("risk-score-content");
   try {
-    const params = new URLSearchParams({ table: row.keyword || row._table || "" });
+    const params = new URLSearchParams({ table: row._table || row.keyword || "" });
     const r = await fetch(`${API}/api/risk/${encodeURIComponent(row.cve_id)}?${params}`);
+    if (!r.ok) { panel.style.display = "none"; return; }
     const d = await r.json();
     if (!d || d.score == null) { panel.style.display = "none"; return; }
     panel.style.display = "";
@@ -3111,7 +3145,7 @@ document.getElementById("btn-detail-check-exposure").addEventListener("click", a
   btn.disabled = true;
   msg.textContent = "Fetching…"; msg.className = "form-msg";
   try {
-    const r = await fetch(`${API}/api/exposure/${encodeURIComponent(_detailRow.cve_id)}`, { method: "POST" });
+    const r = await fetch(`${API}/api/exposure/${encodeURIComponent(_detailRow.cve_id)}`, { method: "POST", headers: { "X-CSRF-Token": _csrfToken() } });
     const d = await r.json();
     const content = document.getElementById("exposure-content");
     const advisories = (d.advisories || []);
@@ -3188,7 +3222,7 @@ document.getElementById("comment-input").addEventListener("keydown", e => {
 const _origOpenDetail2 = openDetail;
 openDetail = async function(row) {
   await _origOpenDetail2(row);
-  await Promise.all([
+  await Promise.allSettled([
     _loadThreatIntel(row),
     _loadRiskScore(row),
     _loadCompliance(row),
