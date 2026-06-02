@@ -599,9 +599,9 @@ def get_top_cves(limit: int = 20) -> list[dict]:
         for tbl in tables:
             try:
                 res = conn.execute(text(
-                    f'SELECT *, "{tbl}" as _table FROM "{tbl}" '
-                    f'WHERE severity IN (\'CRITICAL\',\'HIGH\',\'MEDIUM\') '
-                    f'ORDER BY {rank_expr}, cvss_score DESC NULLS LAST LIMIT 100'
+                    f"SELECT *, '{tbl.replace(chr(39), chr(39)+chr(39))}' as _table FROM \"{tbl}\" "
+                    f"WHERE severity IN ('CRITICAL','HIGH','MEDIUM') "
+                    f"ORDER BY {rank_expr}, cvss_score DESC NULLS LAST LIMIT 100"
                 )).fetchall()
                 rows.extend(_row_to_dict(r) for r in res)
             except Exception:
@@ -785,11 +785,12 @@ def get_keyword_perf() -> list[dict]:
                 )).fetchone()
                 d = _row_to_dict(row)
 
-                # Last scan that touched this keyword
+                # Last scan that touched this keyword — match whole token to avoid
+                # "apache" matching "apache tomcat" scans.
                 last_row = conn.execute(text(
                     "SELECT MAX(started_at) as last_scan FROM scan_history "
-                    "WHERE keywords LIKE :kw"
-                ), {"kw": f"%{tbl}%"}).fetchone()
+                    "WHERE ',' || keywords || ',' LIKE :kw"
+                ), {"kw": f"%,{tbl},%"}).fetchone()
 
                 result.append({
                     "keyword":   tbl,
@@ -817,8 +818,8 @@ def export_all_cves_csv() -> str:
         for tbl in tables:
             try:
                 rows = conn.execute(text(
-                    f'SELECT *, "{tbl}" as keyword_table FROM "{tbl}" '
-                    f'ORDER BY {rank_expr}, publish_date DESC'
+                    f"SELECT *, '{tbl.replace(chr(39), chr(39)+chr(39))}' as keyword_table FROM \"{tbl}\" "
+                    f"ORDER BY {rank_expr}, publish_date DESC"
                 )).fetchall()
                 for row in rows:
                     d = _row_to_dict(row)
@@ -947,9 +948,9 @@ def get_scatter_data(limit: int = 500) -> list[dict]:
         for tbl in tables:
             try:
                 res = conn.execute(text(
-                    f'SELECT cve_id, severity, cvss_score, epss_score, kev, "{tbl}" as keyword '
-                    f'FROM "{tbl}" WHERE cvss_score IS NOT NULL AND epss_score IS NOT NULL '
-                    f'ORDER BY {rank_expr} LIMIT 200'
+                    f"SELECT cve_id, severity, cvss_score, epss_score, kev, '{tbl.replace(chr(39), chr(39)+chr(39))}' as keyword "
+                    f"FROM \"{tbl}\" WHERE cvss_score IS NOT NULL AND epss_score IS NOT NULL "
+                    f"ORDER BY {rank_expr} LIMIT 200"
                 )).fetchall()
                 rows.extend(_row_to_dict(r) for r in res)
             except Exception:

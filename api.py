@@ -352,10 +352,12 @@ def api_scan_log():
                 break
         for line in recent[-50:]:
             yield f"data: {line}\n\n"
-            tmp.put_nowait(line)
-        # Restore ring buffer
-        while not tmp.empty():
-            _log_queue.put_nowait(tmp.get_nowait())
+        # Restore all drained items (not just the 50 sent to client)
+        for line in recent:
+            try:
+                _log_queue.put_nowait(line)
+            except _queue.Full:
+                break
 
         try:
             while True:
@@ -828,7 +830,11 @@ def _parse_cvss_vector(v: str) -> dict:
     }
     if not v:
         return {}
-    parts = v.lstrip("CVSS:3.0/").lstrip("CVSS:3.1/").split("/")
+    for prefix in ("CVSS:3.1/", "CVSS:3.0/"):
+        if v.startswith(prefix):
+            v = v[len(prefix):]
+            break
+    parts = v.split("/")
     result = {}
     for part in parts:
         if ":" not in part:
@@ -1109,8 +1115,9 @@ def api_cve_related():
                 if not conditions:
                     continue
                 where = " AND ".join(conditions) + " AND cve_id != :self_id"
+                tbl_lit = tbl.replace("'", "''")
                 rows = conn.execute(_text(
-                    f'SELECT *, "{tbl}" as _keyword FROM "{tbl}" WHERE {where} '
+                    f"SELECT *, '{tbl_lit}' as _keyword FROM \"{tbl}\" WHERE {where} "
                     f'ORDER BY {rank_expr} LIMIT :lim'
                 ), params).fetchall()
                 for r in rows:
@@ -1600,10 +1607,11 @@ def api_risk_top():
     with database._connect() as conn:
         for tbl in tables:
             try:
+                tbl_lit = tbl.replace("'", "''")
                 rows = conn.execute(_text(
-                    f'SELECT *, "{tbl}" as _table FROM "{tbl}" '
-                    f'WHERE severity IN (\'CRITICAL\',\'HIGH\',\'MEDIUM\') '
-                    f'ORDER BY {rank_expr}, cvss_score DESC NULLS LAST LIMIT 50'
+                    f"SELECT *, '{tbl_lit}' as _table FROM \"{tbl}\" "
+                    f"WHERE severity IN ('CRITICAL','HIGH','MEDIUM') "
+                    f"ORDER BY {rank_expr}, cvss_score DESC NULLS LAST LIMIT 50"
                 )).fetchall()
                 for r in rows:
                     d = database._row_to_dict(r)

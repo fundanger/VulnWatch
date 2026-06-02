@@ -485,33 +485,6 @@ document.getElementById("btn-watchlist-add").addEventListener("click", async () 
   } catch (e) { console.error(e); }
 });
 
-// ── Profiles ──────────────────────────────────────────────────────────────────
-
-async function loadProfiles() {
-  try {
-    const r = await fetch(`${API}/api/profiles`);
-    const rows = await r.json();
-    const tbody = document.getElementById("profiles-tbody");
-    tbody.innerHTML = "";
-    rows.forEach(p => {
-      const digest = p.digest_mode
-        ? (p.digest_schedule || "daily").charAt(0).toUpperCase() + (p.digest_schedule || "daily").slice(1)
-        : "Immediate";
-      tbody.insertAdjacentHTML("beforeend", `
-        <tr>
-          <td>${escHtml(p.name)}</td>
-          <td>${escHtml(p.min_severity || "NONE")}</td>
-          <td><small>${escHtml(truncate(p.recipients || "", 50))}</small></td>
-          <td>${escHtml(digest)}</td>
-          <td>${p.webhook_url || p.slack_webhook ? "Yes" : "—"}</td>
-        </tr>
-      `);
-    });
-  } catch (e) {
-    console.error("loadProfiles:", e);
-  }
-}
-
 // ── XSS-safe HTML escape ──────────────────────────────────────────────────────
 
 function escHtml(str) {
