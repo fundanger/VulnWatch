@@ -976,6 +976,7 @@ function buildSettingsField(id, field) {
   input.disabled = locked;
   if (locked) input.title = "Set via environment variable — edit your .env file to change this.";
 
+  container.innerHTML = "";
   container.appendChild(labelEl);
   container.appendChild(input);
 }
