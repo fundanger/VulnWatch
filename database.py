@@ -341,7 +341,13 @@ def get_history(limit: int = 50) -> list[dict]:
 
 def list_cve_tables() -> list[str]:
     """Return all CVE keyword table names (excludes system tables)."""
-    system = {"scan_history", "notification_profiles", "digest_queue", "sqlite_sequence"}
+    system = {
+        "scan_history", "notification_profiles", "digest_queue", "sqlite_sequence",
+        "cve_watchlist", "cve_reviews", "cve_triage", "cve_suppressions",
+        "saved_views", "notification_log", "exploit_intel", "assets",
+        "cvss_overrides", "users", "threat_intel", "cve_comments",
+        "audit_log", "routing_rules", "alert_dedup",
+    }
     engine = _get_engine()
     insp = inspect(engine)
     return sorted(t for t in insp.get_table_names() if t not in system)

@@ -22,7 +22,7 @@ import logging
 import os
 import re
 import secrets
-from datetime import datetime
+from datetime import datetime, timezone
 from functools import wraps
 from pathlib import Path
 
@@ -73,7 +73,7 @@ def _security_headers(response):
         "script-src 'self' https://cdn.jsdelivr.net; "
         "style-src 'self' 'unsafe-inline'; "
         "img-src 'self' data:; "
-        "connect-src 'self'; "
+        "connect-src 'self' https://cdn.jsdelivr.net; "
         "frame-ancestors 'none';"
     )
     return response
@@ -187,13 +187,18 @@ def serve_static(filename):
     return send_from_directory(_DASHBOARD_DIR, filename)
 
 
+@app.route("/<path:filename>")
+def serve_root_static(filename):
+    return send_from_directory(_DASHBOARD_DIR, filename)
+
+
 # ── Health & metrics ──────────────────────────────────────────────────────────
 
 @app.route("/health")
 def health():
     try:
         database.list_cve_tables()
-        return jsonify({"status": "ok", "ts": datetime.utcnow().isoformat()})
+        return jsonify({"status": "ok", "ts": datetime.now(timezone.utc).isoformat()})
     except Exception as exc:
         return jsonify({"status": "error", "error": str(exc)}), 500
 
@@ -1068,7 +1073,7 @@ def api_export_all():
     return app.response_class(
         csv_str,
         mimetype="text/csv",
-        headers={"Content-Disposition": f"attachment; filename=cve_export_all_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.csv"},
+        headers={"Content-Disposition": f"attachment; filename=cve_export_all_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.csv"},
     )
 
 
@@ -1851,7 +1856,7 @@ def api_report_html():
     breached = database.triage_sla_breached()
     mttr    = database.get_mttr_stats()
     kw_perf = database.get_keyword_perf()
-    now_str = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+    now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
     def _sev_color(sev: str) -> str:
         return {"CRITICAL": "#dc2626", "HIGH": "#ea580c", "MEDIUM": "#d97706",
@@ -1939,7 +1944,7 @@ def api_report_html():
 
     return app.response_class(
         html, mimetype="text/html",
-        headers={"Content-Disposition": f"attachment; filename=cve_report_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.html"},
+        headers={"Content-Disposition": f"attachment; filename=cve_report_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.html"},
     )
 
 
