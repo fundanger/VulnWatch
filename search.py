@@ -128,8 +128,14 @@ def _get_cpe(cve: dict) -> str:
     return ", ".join(sorted(cpes)[:10])
 
 
-def _get_refs(cve: dict) -> list[str]:
-    return [r["url"] for r in cve.get("references", [])[:5] if "url" in r]
+def _get_refs(cve: dict) -> list[dict]:
+    """Return up to 10 reference objects with url and tags."""
+    refs = []
+    for r in cve.get("references", [])[:10]:
+        if "url" not in r:
+            continue
+        refs.append({"url": r["url"], "tags": r.get("tags", [])})
+    return refs
 
 
 def _parse_dt(raw: str) -> str:
@@ -479,7 +485,8 @@ def _build_email_body(cves: list[dict], label: str = "") -> str:
         lines.append(f"Modified:    {c['last_modified']}")
         lines.append(f"Description: {c['description']}")
         if c.get("refs"):
-            lines.append("References:  " + " | ".join(c["refs"]))
+            urls = [r["url"] if isinstance(r, dict) else r for r in c["refs"]]
+            lines.append("References:  " + " | ".join(urls))
         lines.append("")
     return "\n".join(lines)
 

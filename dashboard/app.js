@@ -946,6 +946,10 @@ const FIELD_META = {
   "DEFAULT__opsgenieKey":       { label: "Opsgenie API key",                 placeholder: "", password: true },
   "REPORT__reportSchedule":     { label: "Report schedule",                  placeholder: "off / daily / weekly" },
   "REPORT__reportRecipients":   { label: "Report recipient email(s)",        placeholder: "ciso@org.com, team@org.com" },
+  "LLM__provider":  { label: "LLM provider",   placeholder: "openai / deepseek / anthropic / ollama / custom" },
+  "LLM__model":     { label: "Model name",      placeholder: "gpt-4o-mini / deepseek-chat / claude-haiku-4-5-20251001" },
+  "LLM__apiKey":    { label: "LLM API key",     placeholder: "", password: true },
+  "LLM__baseUrl":   { label: "LLM base URL",    placeholder: "leave blank to use provider default" },
 };
 
 let _settingsData = {};
@@ -3217,6 +3221,126 @@ document.getElementById("comment-input").addEventListener("keydown", e => {
   if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); document.getElementById("btn-comment-add").click(); }
 });
 
+// ── Remediation panel (detail overlay) ───────────────────────────────────────
+
+async function _loadRemediationPanel(row) {
+  const tmplEl  = document.getElementById("remediation-template-cmds");
+  const aiEl    = document.getElementById("remediation-ai-cmds");
+  const aiBlock = document.getElementById("remediation-ai-block");
+  const refsEl  = document.getElementById("remediation-patch-refs");
+  const notesEl = document.getElementById("remediation-notes");
+  const aiBtn   = document.getElementById("btn-remediation-ai");
+
+  tmplEl.textContent = "Loading…";
+  refsEl.innerHTML = "";
+  notesEl.value = "";
+  aiBlock.style.display = "none";
+
+  try {
+    const params = new URLSearchParams({ table: row._table || row.keyword || "" });
+    const r = await fetch(`${API}/api/remediation/${encodeURIComponent(row.cve_id)}?${params}`);
+    if (!r.ok) { tmplEl.textContent = "Could not load remediation data."; return; }
+    const d = await r.json();
+
+    tmplEl.textContent = d.template_commands || "No template commands available.";
+    notesEl.value = d.notes || "";
+
+    if (d.ai_commands) {
+      aiEl.textContent = d.ai_commands;
+      aiBlock.style.display = "";
+    }
+
+    // Patch / advisory reference links
+    if (d.patch_refs && d.patch_refs.length) {
+      refsEl.innerHTML = d.patch_refs.map(ref => {
+        const tags = (ref.tags || []).join(", ");
+        const tagBadges = (ref.tags || []).map(t =>
+          `<span class="badge" style="background:var(--accent);font-size:10px;margin-right:.2rem">${escHtml(t)}</span>`
+        ).join("");
+        return `<div style="margin-bottom:.3rem;display:flex;align-items:center;gap:.4rem;flex-wrap:wrap">
+          ${tagBadges}
+          <a href="${escHtml(ref.url)}" target="_blank" rel="noopener"
+             style="font-size:11px;color:#60a5fa;word-break:break-all">${escHtml(ref.url)}</a>
+        </div>`;
+      }).join("");
+    } else {
+      refsEl.innerHTML = '<span class="muted" style="font-size:11px">No patch/advisory references in NVD data.</span>';
+    }
+
+    aiBtn.disabled  = !d.llm_configured;
+    aiBtn.title     = d.llm_configured ? "Generate AI-powered commands" : "Configure LLM in Settings to enable";
+  } catch {
+    tmplEl.textContent = "Error loading remediation data.";
+  }
+}
+
+document.getElementById("btn-copy-template-cmds").addEventListener("click", () => {
+  const text = document.getElementById("remediation-template-cmds").textContent;
+  navigator.clipboard?.writeText(text).catch(() => {});
+  const btn = document.getElementById("btn-copy-template-cmds");
+  btn.textContent = "Copied!";
+  setTimeout(() => { btn.textContent = "Copy"; }, 1500);
+});
+
+document.getElementById("btn-copy-ai-cmds").addEventListener("click", () => {
+  const text = document.getElementById("remediation-ai-cmds").textContent;
+  navigator.clipboard?.writeText(text).catch(() => {});
+  const btn = document.getElementById("btn-copy-ai-cmds");
+  btn.textContent = "Copied!";
+  setTimeout(() => { btn.textContent = "Copy"; }, 1500);
+});
+
+document.getElementById("btn-remediation-ai").addEventListener("click", async () => {
+  if (!_detailRow) return;
+  const btn = document.getElementById("btn-remediation-ai");
+  const msg = document.getElementById("remediation-ai-msg");
+  btn.disabled = true;
+  msg.textContent = "Generating…"; msg.className = "form-msg";
+  try {
+    const r = await fetch(
+      `${API}/api/remediation/${encodeURIComponent(_detailRow.cve_id)}/generate`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-CSRF-Token": _csrfToken() },
+        body: JSON.stringify({ table: _detailRow._table || _detailRow.keyword || "" }),
+      }
+    );
+    const d = await r.json();
+    if (!r.ok || !d.ok) throw new Error(d.error || "Generation failed");
+    const aiEl    = document.getElementById("remediation-ai-cmds");
+    const aiBlock = document.getElementById("remediation-ai-block");
+    aiEl.textContent = d.ai_commands;
+    aiBlock.style.display = "";
+    msg.textContent = "Done."; msg.className = "form-msg ok";
+  } catch(e) {
+    msg.textContent = e.message || "Error"; msg.className = "form-msg err";
+  }
+  btn.disabled = false;
+  setTimeout(() => { msg.textContent = ""; }, 5000);
+});
+
+document.getElementById("btn-remediation-notes-save").addEventListener("click", async () => {
+  if (!_detailRow) return;
+  const notes = document.getElementById("remediation-notes").value;
+  const msg   = document.getElementById("remediation-notes-msg");
+  try {
+    const r = await fetch(
+      `${API}/api/remediation/${encodeURIComponent(_detailRow.cve_id)}/notes`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-CSRF-Token": _csrfToken() },
+        body: JSON.stringify({ table: _detailRow._table || _detailRow.keyword || "", notes }),
+      }
+    );
+    const d = await r.json();
+    if (!r.ok || !d.ok) throw new Error(d.error || "Save failed");
+    msg.textContent = "Saved."; msg.className = "form-msg ok";
+  } catch(e) {
+    msg.textContent = e.message || "Error"; msg.className = "form-msg err";
+  }
+  setTimeout(() => { msg.textContent = ""; }, 3000);
+});
+
 // ── Extend openDetail to load new panels ─────────────────────────────────────
 
 const _origOpenDetail2 = openDetail;
@@ -3228,6 +3352,7 @@ openDetail = async function(row) {
     _loadCompliance(row),
     _loadExposurePanel(row),
     _loadComments(row),
+    _loadRemediationPanel(row),
   ]);
 };
 

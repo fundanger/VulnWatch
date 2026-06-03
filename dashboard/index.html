@@ -735,6 +735,15 @@
               </div>
             </div>
             <div class="settings-group">
+              <div class="settings-group-title">AI / LLM Integration <span class="form-hint">(optional — used for remediation command generation)</span></div>
+              <div class="settings-grid">
+                <div class="form-group" id="fg-LLM__provider"></div>
+                <div class="form-group" id="fg-LLM__model"></div>
+                <div class="form-group" id="fg-LLM__apiKey"></div>
+                <div class="form-group" id="fg-LLM__baseUrl"></div>
+              </div>
+            </div>
+            <div class="settings-group">
               <div class="settings-group-title">Scheduled Report <span class="form-hint">(optional)</span></div>
               <div class="settings-grid">
                 <div class="form-group" id="fg-REPORT__reportSchedule"></div>
@@ -1448,6 +1457,35 @@
               <button class="btn-sm" id="btn-detail-patch-save" style="align-self:flex-end">Save</button>
             </div>
             <div id="detail-patch-msg" class="form-msg" style="margin-top:.3rem"></div>
+          </div>
+        </div>
+        <div class="detail-block" style="margin-top:.75rem" id="remediation-panel">
+          <div class="detail-block-header">
+            <span class="detail-block-icon">🛠</span>
+            <span class="detail-block-title">Remediation &amp; Patch Commands</span>
+            <button class="btn-sm" id="btn-remediation-ai" style="margin-left:auto" title="Generate AI-powered commands">Generate with AI</button>
+            <span id="remediation-ai-msg" class="form-msg" style="margin-left:.5rem"></span>
+          </div>
+          <div class="detail-block-body">
+            <div id="remediation-patch-refs" style="margin-bottom:.5rem"></div>
+            <div style="margin-bottom:.5rem">
+              <div class="form-label" style="margin-bottom:.25rem">Template Commands</div>
+              <div id="remediation-template-cmds" class="code-block"></div>
+              <button class="btn-sm" id="btn-copy-template-cmds" style="margin-top:.25rem;font-size:11px">Copy</button>
+            </div>
+            <div id="remediation-ai-block" style="display:none;margin-bottom:.5rem">
+              <div class="form-label" style="margin-bottom:.25rem">AI-Generated Commands</div>
+              <div id="remediation-ai-cmds" class="code-block"></div>
+              <button class="btn-sm" id="btn-copy-ai-cmds" style="margin-top:.25rem;font-size:11px">Copy</button>
+            </div>
+            <div style="margin-top:.5rem">
+              <div class="form-label" style="margin-bottom:.25rem">Analyst Remediation Notes</div>
+              <textarea class="textarea-sm" id="remediation-notes" rows="3" placeholder="Internal notes, compensating controls, ticket references…" style="width:100%"></textarea>
+              <div style="display:flex;gap:.5rem;margin-top:.3rem;align-items:center">
+                <button class="btn-sm" id="btn-remediation-notes-save">Save Notes</button>
+                <span id="remediation-notes-msg" class="form-msg"></span>
+              </div>
+            </div>
           </div>
         </div>
         <div class="detail-block" style="margin-top:.75rem">

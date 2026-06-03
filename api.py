@@ -571,6 +571,10 @@ _CONFIG_FIELDS = [
     ("DEFAULT",     "teamsWebhook",   False),
     ("DEFAULT",     "pagerdutyKey",   True),
     ("DEFAULT",     "opsgenieKey",    True),
+    ("LLM",         "provider",       False),
+    ("LLM",         "apiKey",         True),
+    ("LLM",         "baseUrl",        False),
+    ("LLM",         "model",          False),
 ]
 
 # Env vars that override config.ini (values are read-only in the UI)
@@ -593,6 +597,8 @@ _ENV_OVERRIDES = {
     ("DEFAULT",    "teamsWebhook"):   "TEAMS_WEBHOOK",
     ("DEFAULT",    "pagerdutyKey"):   "PAGERDUTY_ROUTING_KEY",
     ("DEFAULT",    "opsgenieKey"):    "OPSGENIE_API_KEY",
+    ("LLM",        "apiKey"):         "LLM_API_KEY",
+    ("LLM",        "baseUrl"):        "LLM_BASE_URL",
 }
 
 
@@ -1383,6 +1389,235 @@ def api_triage_patch(cve_id: str):
     database.audit_log_insert("patch_set", cve_id,
         f"version={data.get('patched_version','')} by={data.get('patched_by','')}",
         actor=user["username"] if user else "")
+    return jsonify({"ok": True})
+
+
+# ── Remediation ──────────────────────────────────────────────────────────────
+
+# CPE vendor:product → (package_manager, package_name_template)
+# {version} is replaced with the patched version when known.
+_CPE_PATCH_TEMPLATES: list[tuple[str, str, str]] = [
+    # (vendor_fragment, product_fragment, command_template)
+    # Linux package managers
+    ("apache", "http_server",     "sudo apt-get install --only-upgrade apache2\nsudo yum update httpd"),
+    ("apache", "tomcat",          "sudo apt-get install --only-upgrade tomcat9\nsudo yum update tomcat"),
+    ("nginx",  "nginx",           "sudo apt-get install --only-upgrade nginx\nsudo yum update nginx"),
+    ("openssl","openssl",         "sudo apt-get install --only-upgrade openssl\nsudo yum update openssl"),
+    ("openssh","openssh",         "sudo apt-get install --only-upgrade openssh-server\nsudo yum update openssh-server"),
+    # Python
+    ("python", "python",          "pip install --upgrade python\n# Or update via system package manager:\nsudo apt-get install --only-upgrade python3"),
+    ("",       "requests",        "pip install --upgrade requests"),
+    ("",       "django",          "pip install --upgrade django"),
+    ("",       "flask",           "pip install --upgrade flask"),
+    ("",       "cryptography",    "pip install --upgrade cryptography"),
+    ("",       "pillow",          "pip install --upgrade pillow"),
+    ("",       "paramiko",        "pip install --upgrade paramiko"),
+    ("",       "urllib3",         "pip install --upgrade urllib3"),
+    ("",       "setuptools",      "pip install --upgrade setuptools"),
+    ("",       "werkzeug",        "pip install --upgrade werkzeug"),
+    # Node / npm
+    ("",       "express",         "npm install express@latest\n# or pin to patched version:\nnpm install express@{version}"),
+    ("",       "lodash",          "npm install lodash@latest"),
+    ("",       "axios",           "npm install axios@latest"),
+    ("",       "node-fetch",      "npm install node-fetch@latest"),
+    ("",       "jsonwebtoken",    "npm install jsonwebtoken@latest"),
+    ("nodejs", "node.js",         "# Update Node.js via nvm:\nnvm install --lts\nnvm use --lts"),
+    # Java / Maven
+    ("",       "log4j",           "# Update log4j in pom.xml:\n# <log4j.version>{version}</log4j.version>\nmvn dependency:resolve"),
+    ("",       "spring",          "# Update Spring Boot in pom.xml:\n# <parent><version>{version}</version></parent>\nmvn dependency:resolve"),
+    # Databases
+    ("mysql",  "mysql",           "sudo apt-get install --only-upgrade mysql-server\nsudo yum update mysql-server"),
+    ("mariadb","mariadb",         "sudo apt-get install --only-upgrade mariadb-server\nsudo yum update mariadb-server"),
+    ("postgresql","postgresql",   "sudo apt-get install --only-upgrade postgresql\nsudo yum update postgresql"),
+    ("redis",  "redis",           "sudo apt-get install --only-upgrade redis-server\nsudo yum update redis"),
+    # Containers / infra
+    ("docker", "docker",          "# Update Docker Engine:\nsudo apt-get install --only-upgrade docker-ce docker-ce-cli\n# Or:\ncurl -fsSL https://get.docker.com | sh"),
+    ("kubernetes","kubernetes",   "# Update kubectl:\ncurl -LO https://dl.k8s.io/release/$(curl -Ls https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"),
+    # Windows / .NET
+    ("microsoft","dotnet",        "# Update .NET SDK/runtime:\nwinget upgrade Microsoft.DotNet.Runtime\n# Or download from https://dotnet.microsoft.com/download"),
+    ("microsoft","windows",       "# Apply Windows Update:\nwuauclt /detectnow /updatenow\n# Or via PowerShell:\nInstall-Module PSWindowsUpdate; Get-WindowsUpdate -Install"),
+    # Catch-all for common OS packages
+    ("",       "",                "# Generic — check your package manager:\nsudo apt-get update && sudo apt-get upgrade {product}\nsudo yum update {product}\n# Windows: winget upgrade {product}"),
+]
+
+
+def _template_commands(cve_row: dict) -> str:
+    """Generate patch commands from CPE data using static templates."""
+    cpe_str = (cve_row.get("cpe") or "").lower()
+    keyword = (cve_row.get("keyword") or "").lower()
+
+    # Extract vendor and product from CPE 2.3: cpe:2.3:a:vendor:product:version:...
+    vendor, product = "", ""
+    parts = cpe_str.split(":")
+    if len(parts) >= 5:
+        vendor  = parts[3]
+        product = parts[4]
+
+    # Fall back to keyword if CPE is absent
+    if not vendor and not product:
+        product = keyword.replace(" ", "_")
+
+    # Match against templates — most specific first
+    for tmpl_vendor, tmpl_product, cmd in _CPE_PATCH_TEMPLATES[:-1]:  # skip catch-all
+        v_match = not tmpl_vendor or tmpl_vendor in vendor or tmpl_vendor in product
+        p_match = not tmpl_product or tmpl_product in product or tmpl_product in keyword
+        if v_match and p_match:
+            return cmd.replace("{version}", cve_row.get("cvss_score") and "" or "").replace("{product}", product or keyword)
+
+    # Catch-all
+    return _CPE_PATCH_TEMPLATES[-1][2].replace("{product}", product or keyword)
+
+
+def _llm_config() -> dict:
+    """Read LLM provider config from env vars then config.ini."""
+    cfg = _read_config()
+    provider = os.environ.get("LLM_PROVIDER", "").strip() or cfg.get("LLM", "provider", fallback="").strip()
+    api_key  = os.environ.get("LLM_API_KEY",  "").strip() or cfg.get("LLM", "apiKey",   fallback="").strip()
+    base_url = os.environ.get("LLM_BASE_URL", "").strip() or cfg.get("LLM", "baseUrl",  fallback="").strip()
+    model    = cfg.get("LLM", "model", fallback="").strip()
+
+    # Defaults per provider
+    _defaults = {
+        "openai":    ("https://api.openai.com/v1",              "gpt-4o-mini"),
+        "deepseek":  ("https://api.deepseek.com/v1",            "deepseek-chat"),
+        "anthropic": ("https://api.anthropic.com/v1",           "claude-haiku-4-5-20251001"),
+        "ollama":    ("http://localhost:11434/v1",               "llama3"),
+    }
+    if provider in _defaults and not base_url:
+        base_url = _defaults[provider][0]
+    if provider in _defaults and not model:
+        model = _defaults[provider][1]
+
+    return {"provider": provider, "api_key": api_key, "base_url": base_url, "model": model}
+
+
+def _llm_generate(cve_id: str, cve_row: dict, template_cmds: str) -> str:
+    """
+    Call the configured LLM to generate platform-specific patch/remediation commands.
+    Uses the OpenAI-compatible chat completions API (works with OpenAI, DeepSeek,
+    Anthropic-compatible proxies, Ollama, and any custom endpoint).
+    """
+    import urllib.request, urllib.error
+
+    cfg = _llm_config()
+    if not cfg["api_key"] and cfg["provider"] not in ("ollama",):
+        raise ValueError("LLM API key not configured. Set LLM_API_KEY env var or configure via Settings.")
+    if not cfg["base_url"]:
+        raise ValueError("LLM base URL not configured.")
+
+    cpe = cve_row.get("cpe") or ""
+    desc = (cve_row.get("description") or "")[:600]
+    severity = cve_row.get("severity") or ""
+    cvss = cve_row.get("cvss_score") or ""
+
+    prompt = (
+        f"You are a security engineer. Generate concise, copy-paste-ready remediation commands "
+        f"for the following CVE. Include commands for multiple platforms where applicable "
+        f"(Linux apt/yum, Windows winget/PowerShell, pip, npm, etc.). "
+        f"Be specific — include exact package names and version pins where known. "
+        f"Do not include explanatory prose, only the commands with brief inline comments.\n\n"
+        f"CVE: {cve_id}\n"
+        f"Severity: {severity} (CVSS {cvss})\n"
+        f"Affected CPE: {cpe}\n"
+        f"Description: {desc}\n\n"
+        f"Template commands already generated (improve/expand on these):\n{template_cmds}"
+    )
+
+    payload = json.dumps({
+        "model": cfg["model"],
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": 600,
+        "temperature": 0.2,
+    }).encode()
+
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {cfg['api_key']}",
+    }
+    # Anthropic requires a different auth header
+    if cfg["provider"] == "anthropic":
+        headers["x-api-key"] = cfg["api_key"]
+        del headers["Authorization"]
+        headers["anthropic-version"] = "2023-06-01"
+
+    url = cfg["base_url"].rstrip("/") + "/chat/completions"
+    req = urllib.request.Request(url, data=payload, headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = json.loads(resp.read())
+            return data["choices"][0]["message"]["content"].strip()
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode(errors="replace")[:200]
+        raise RuntimeError(f"LLM API error {exc.code}: {body}") from exc
+
+
+@app.route("/api/remediation/<string:cve_id>")
+def api_remediation_get(cve_id: str):
+    _assert_cve_id(cve_id)
+    table = request.args.get("table", "")
+    if table not in database.list_cve_tables():
+        return jsonify({"error": "table not found"}), 404
+    row = database.get_cve(table, cve_id)
+    if not row:
+        return jsonify({"error": "CVE not found"}), 404
+
+    # Parse refs to find patch/advisory links
+    try:
+        refs = json.loads(row.get("references_json") or "[]")
+    except Exception:
+        refs = []
+    patch_refs = [r for r in refs if isinstance(r, dict) and
+                  any(t in ("Patch", "Vendor Advisory", "Mitigation") for t in r.get("tags", []))]
+
+    template_cmds = _template_commands(row)
+    saved = database.remediation_get(table, cve_id)
+
+    return jsonify({
+        "template_commands": template_cmds,
+        "ai_commands":       saved.get("remediation_cmds", ""),
+        "notes":             saved.get("remediation_notes", ""),
+        "patch_refs":        patch_refs,
+        "llm_configured":    bool(_llm_config()["api_key"] or _llm_config()["provider"] == "ollama"),
+    })
+
+
+@app.route("/api/remediation/<string:cve_id>/generate", methods=["POST"])
+@_require_auth
+def api_remediation_generate(cve_id: str):
+    _assert_cve_id(cve_id)
+    data = request.get_json(force=True) or {}
+    table = data.get("table", "")
+    if table not in database.list_cve_tables():
+        return _safe_error("table not found", 404)
+    row = database.get_cve(table, cve_id)
+    if not row:
+        return _safe_error("CVE not found", 404)
+    template_cmds = _template_commands(row)
+    try:
+        ai_cmds = _llm_generate(cve_id, row, template_cmds)
+    except Exception as exc:
+        _log.error("LLM generate error: %s", exc)
+        return _safe_error(str(exc), 500)
+    database.remediation_save(table, cve_id,
+                              notes=database.remediation_get(table, cve_id).get("remediation_notes", ""),
+                              cmds=ai_cmds)
+    return jsonify({"ok": True, "ai_commands": ai_cmds})
+
+
+@app.route("/api/remediation/<string:cve_id>/notes", methods=["POST"])
+@_require_auth
+def api_remediation_notes(cve_id: str):
+    _assert_cve_id(cve_id)
+    data = request.get_json(force=True) or {}
+    table = data.get("table", "")
+    if table not in database.list_cve_tables():
+        return _safe_error("table not found", 404)
+    notes = str(data.get("notes", ""))[:4000]
+    saved = database.remediation_get(table, cve_id)
+    database.remediation_save(table, cve_id, notes=notes, cmds=saved.get("remediation_cmds", ""))
+    user = _get_user_from_request()
+    database.audit_log_insert("remediation_notes", cve_id, f"notes updated ({len(notes)} chars)",
+                               actor=user["username"] if user else "")
     return jsonify({"ok": True})
 
 

@@ -194,7 +194,9 @@ def _cve_columns_ddl() -> str:
         "epss_score       REAL,"
         "epss_percentile  REAL,"
         "kev              INTEGER DEFAULT 0,"
-        "scan_source      TEXT DEFAULT 'keyword'"
+        "scan_source      TEXT DEFAULT 'keyword',"
+        "remediation_notes TEXT DEFAULT '',"
+        "remediation_cmds  TEXT DEFAULT ''"
     )
 
 
@@ -210,8 +212,10 @@ def create_table(service_name: str) -> None:
             ("alerted_score",    "REAL"),
             ("epss_score",       "REAL"),
             ("epss_percentile",  "REAL"),
-            ("kev",              "INTEGER DEFAULT 0"),
-            ("scan_source",      "TEXT DEFAULT 'keyword'"),
+            ("kev",               "INTEGER DEFAULT 0"),
+            ("scan_source",       "TEXT DEFAULT 'keyword'"),
+            ("remediation_notes", "TEXT DEFAULT ''"),
+            ("remediation_cmds",  "TEXT DEFAULT ''"),
         ]:
             _add_column_if_missing(conn, f'"{service_name}"', col, typedef)
         trans.commit()
@@ -1178,6 +1182,28 @@ def triage_sla_breached() -> list[dict]:
             "ORDER BY due_date"
         ), {"today": today}).fetchall()
         return [_row_to_dict(r) for r in rows]
+
+
+def remediation_save(table: str, cve_id: str, notes: str = "", cmds: str = "") -> None:
+    """Persist analyst remediation notes and/or AI-generated commands for a CVE."""
+    with _connect() as conn:
+        conn.execute(text(
+            f'UPDATE "{table}" SET remediation_notes=:notes, remediation_cmds=:cmds WHERE cve_id=:cid'
+        ), {"notes": notes, "cmds": cmds, "cid": cve_id})
+
+
+def remediation_get(table: str, cve_id: str) -> dict:
+    """Return remediation_notes and remediation_cmds for a CVE row."""
+    with _connect() as conn:
+        try:
+            row = conn.execute(text(
+                f'SELECT remediation_notes, remediation_cmds FROM "{table}" WHERE cve_id=:cid'
+            ), {"cid": cve_id}).fetchone()
+            if row:
+                return {"remediation_notes": row[0] or "", "remediation_cmds": row[1] or ""}
+        except Exception:
+            pass
+    return {"remediation_notes": "", "remediation_cmds": ""}
 
 
 def get_cpe_scanned_cve_ids(table: str) -> set[str]:
