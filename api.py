@@ -178,6 +178,11 @@ def _safe_error(exc: Exception, public_msg: str = "An internal error occurred") 
     return public_msg
 
 
+def _err(msg: str, status: int = 400):
+    """Return a JSON error response tuple. Use as: return _err('reason', 400)"""
+    return jsonify({"ok": False, "error": msg}), status
+
+
 # ── Dashboard static files ────────────────────────────────────────────────────
 
 @app.route("/")
@@ -189,6 +194,12 @@ def serve_dashboard():
 @app.route("/docs")
 def serve_docs():
     return send_from_directory(_DASHBOARD_DIR, "docs.html")
+
+
+@app.route("/favicon.ico")
+def favicon():
+    return send_from_directory(_DASHBOARD_DIR, "favicon.svg",
+                               mimetype="image/svg+xml")
 
 
 @app.route("/dashboard/<path:filename>")
@@ -1588,16 +1599,20 @@ def api_remediation_generate(cve_id: str):
     data = request.get_json(force=True) or {}
     table = data.get("table", "")
     if table not in database.list_cve_tables():
-        return _safe_error("table not found", 404)
+        return _err("table not found", 404)
     row = database.get_cve(table, cve_id)
     if not row:
-        return _safe_error("CVE not found", 404)
+        return _err("CVE not found", 404)
     template_cmds = _template_commands(row)
     try:
         ai_cmds = _llm_generate(cve_id, row, template_cmds)
+    except ValueError as exc:
+        return _err(str(exc), 400)
+    except RuntimeError as exc:
+        return _err(str(exc), 502)
     except Exception as exc:
-        _log.error("LLM generate error: %s", exc)
-        return _safe_error(str(exc), 500)
+        _log.error("LLM generate error: %s", exc, exc_info=True)
+        return _err(str(exc), 500)
     database.remediation_save(table, cve_id,
                               notes=database.remediation_get(table, cve_id).get("remediation_notes", ""),
                               cmds=ai_cmds)
@@ -1611,7 +1626,7 @@ def api_remediation_notes(cve_id: str):
     data = request.get_json(force=True) or {}
     table = data.get("table", "")
     if table not in database.list_cve_tables():
-        return _safe_error("table not found", 404)
+        return _err("table not found", 404)
     notes = str(data.get("notes", ""))[:4000]
     saved = database.remediation_get(table, cve_id)
     database.remediation_save(table, cve_id, notes=notes, cmds=saved.get("remediation_cmds", ""))
@@ -1662,6 +1677,8 @@ def _llm_chat(prompt: str, max_tokens: int = 600, system: str = "") -> str:
     except urllib.error.HTTPError as exc:
         body = exc.read().decode(errors="replace")[:300]
         raise RuntimeError(f"LLM API error {exc.code}: {body}") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"LLM unreachable: {exc.reason}") from exc
 
 
 @app.route("/api/llm/nl-search", methods=["POST"])
@@ -1670,7 +1687,7 @@ def api_llm_nl_search():
     data = request.get_json(force=True) or {}
     query = str(data.get("query", "")).strip()[:500]
     if not query:
-        return _safe_error("query required", 400)
+        return _err("query required", 400)
 
     system = (
         "You are a security data analyst assistant. Convert the user's natural language "
@@ -1690,9 +1707,13 @@ def api_llm_nl_search():
         allowed = {"search", "severity", "date_from", "date_to", "kev"}
         filters = {k: v for k, v in filters.items() if k in allowed}
         return jsonify({"ok": True, "filters": filters, "interpreted": raw})
+    except (ValueError, json.JSONDecodeError) as exc:
+        return _err(str(exc), 400)
+    except RuntimeError as exc:
+        return _err(str(exc), 502)
     except Exception as exc:
-        _log.error("nl-search error: %s", exc)
-        return _safe_error(str(exc), 500)
+        _log.error("nl-search error: %s", exc, exc_info=True)
+        return _err(str(exc), 500)
 
 
 @app.route("/api/llm/summarize/<string:cve_id>")
@@ -1701,10 +1722,10 @@ def api_llm_summarize(cve_id: str):
     _assert_cve_id(cve_id)
     table = request.args.get("table", "")
     if table not in database.list_cve_tables():
-        return _safe_error("table not found", 404)
+        return _err("table not found", 404)
     row = database.get_cve(table, cve_id)
     if not row:
-        return _safe_error("CVE not found", 404)
+        return _err("CVE not found", 404)
 
     assets = database.assets_match_cpe(row.get("cpe") or "")
     asset_names = ", ".join(a["name"] for a in assets[:5]) if assets else "none identified"
@@ -1725,9 +1746,13 @@ def api_llm_summarize(cve_id: str):
         summary = _llm_chat(prompt, max_tokens=300,
                             system="You are a security engineer writing for a CISO audience.")
         return jsonify({"ok": True, "summary": summary})
+    except ValueError as exc:
+        return _err(str(exc), 400)
+    except RuntimeError as exc:
+        return _err(str(exc), 502)
     except Exception as exc:
-        _log.error("summarize error: %s", exc)
-        return _safe_error(str(exc), 500)
+        _log.error("summarize error: %s", exc, exc_info=True)
+        return _err(str(exc), 500)
 
 
 @app.route("/api/llm/triage-suggest/<string:cve_id>")
@@ -1736,10 +1761,10 @@ def api_llm_triage_suggest(cve_id: str):
     _assert_cve_id(cve_id)
     table = request.args.get("table", "")
     if table not in database.list_cve_tables():
-        return _safe_error("table not found", 404)
+        return _err("table not found", 404)
     row = database.get_cve(table, cve_id)
     if not row:
-        return _safe_error("CVE not found", 404)
+        return _err("CVE not found", 404)
 
     # Pull recent similar triage decisions (same CWE or same product) for context
     recent = database.triage_get_all()[:20]
@@ -1775,26 +1800,39 @@ def api_llm_triage_suggest(cve_id: str):
         allowed = {"status", "due_days", "rationale"}
         suggestion = {k: v for k, v in suggestion.items() if k in allowed}
         return jsonify({"ok": True, "suggestion": suggestion})
+    except (ValueError, json.JSONDecodeError) as exc:
+        return _err(str(exc), 400)
+    except RuntimeError as exc:
+        return _err(str(exc), 502)
     except Exception as exc:
-        _log.error("triage-suggest error: %s", exc)
-        return _safe_error(str(exc), 500)
+        _log.error("triage-suggest error: %s", exc, exc_info=True)
+        return _err(str(exc), 500)
 
 
 @app.route("/api/llm/noise-rank", methods=["POST"])
+@_require_auth
 def api_llm_noise_rank():
     """Rank a list of CVEs by actual risk relevance to the environment."""
     data = request.get_json(force=True) or {}
-    cve_ids = (data.get("cve_ids") or [])[:30]
-    table   = str(data.get("table", ""))
+    # Accept either a flat cve_ids list (single table) or a list of {cve_id, table} objects
+    raw_ids  = (data.get("cve_ids") or [])[:30]
+    table    = str(data.get("table", ""))
+    valid_tables = set(database.list_cve_tables())
 
-    if not cve_ids:
-        return _safe_error("cve_ids required", 400)
-    if table not in database.list_cve_tables():
-        return _safe_error("table not found", 404)
+    if not raw_ids:
+        return _err("cve_ids required", 400)
 
     rows = []
-    for cid in cve_ids:
-        r = database.get_cve(table, cid)
+    for item in raw_ids:
+        if isinstance(item, dict):
+            cid = str(item.get("cve_id", ""))
+            tbl = str(item.get("table", table))
+        else:
+            cid = str(item)
+            tbl = table
+        if tbl not in valid_tables:
+            continue
+        r = database.get_cve(tbl, cid)
         if r:
             rows.append(r)
 
@@ -1829,9 +1867,13 @@ def api_llm_noise_rank():
         valid = set(r["cve_id"] for r in rows)
         ranked = [c for c in ranked if c in valid]
         return jsonify({"ok": True, "ranked": ranked})
+    except ValueError as exc:
+        return _err(str(exc), 400)
+    except RuntimeError as exc:
+        return _err(str(exc), 502)
     except Exception as exc:
-        _log.error("noise-rank error: %s", exc)
-        return _safe_error(str(exc), 500)
+        _log.error("noise-rank error: %s", exc, exc_info=True)
+        return _err(str(exc), 500)
 
 
 @app.route("/api/llm/keyword-expand", methods=["POST"])
@@ -1840,7 +1882,7 @@ def api_llm_keyword_expand():
     data = request.get_json(force=True) or {}
     current_keywords = (data.get("keywords") or [])[:50]
     if not current_keywords:
-        return _safe_error("keywords required", 400)
+        return _err("keywords required", 400)
 
     assets = database.inventory_get_all()
     asset_products = list({a["name"] for a in assets[:30]})
@@ -1870,7 +1912,7 @@ def api_llm_keyword_expand():
         return jsonify({"ok": True, "suggestions": suggestions})
     except Exception as exc:
         _log.error("keyword-expand error: %s", exc)
-        return _safe_error(str(exc), 500)
+        return _err(str(exc), 500)
 
 
 @app.route("/api/llm/digest-narrative", methods=["POST"])
@@ -1880,7 +1922,7 @@ def api_llm_digest_narrative():
     cve_list = (data.get("cves") or [])[:50]
     period   = str(data.get("period", "this scan"))
     if not cve_list:
-        return _safe_error("cves required", 400)
+        return _err("cves required", 400)
 
     by_severity: dict[str, int] = {}
     kev_count = 0
@@ -1914,7 +1956,105 @@ def api_llm_digest_narrative():
         return jsonify({"ok": True, "narrative": narrative})
     except Exception as exc:
         _log.error("digest-narrative error: %s", exc)
-        return _safe_error(str(exc), 500)
+        return _err(str(exc), 500)
+
+
+@app.route("/api/llm/chat", methods=["POST"])
+@_require_auth
+def api_llm_chat():
+    """Free-form AI chat with optional dashboard context injected as system prompt."""
+    data = request.get_json(force=True) or {}
+    messages_in = data.get("messages", [])
+    context = data.get("context", {})
+
+    if not isinstance(messages_in, list) or not messages_in:
+        return _err("messages required", 400)
+
+    # Sanitise messages — only role/content, max 40 turns, content truncated to 2000 chars
+    history = []
+    for m in messages_in[-40:]:
+        role = str(m.get("role", "")).strip()
+        content = str(m.get("content", "")).strip()[:2000]
+        if role in ("user", "assistant") and content:
+            history.append({"role": role, "content": content})
+    if not history:
+        return _err("no valid messages", 400)
+
+    # Build system prompt with dashboard context
+    ctx_parts = [
+        "You are a security analyst assistant embedded in CVE Emailer, a self-hosted CVE "
+        "monitoring platform. You have access to the user's current dashboard context and can "
+        "answer questions about vulnerabilities, triage decisions, remediation, threat intel, "
+        "asset risk, and general security topics. Be concise and actionable."
+    ]
+    if context.get("section"):
+        ctx_parts.append(f"Current dashboard section: {context['section']}")
+    if context.get("activeCve"):
+        ctx_parts.append(f"Currently open CVE: {context['activeCve']}")
+    if context.get("stats"):
+        s = context["stats"]
+        ctx_parts.append(
+            f"Dashboard stats — Total: {s.get('total','?')}, Critical: {s.get('critical','?')}, "
+            f"High: {s.get('high','?')}, Medium: {s.get('medium','?')}, Low: {s.get('low','?')}"
+        )
+    if context.get("keywords"):
+        kws = str(context["keywords"])[:300]
+        ctx_parts.append(f"Monitored keywords: {kws}")
+    if context.get("triageBreached"):
+        ctx_parts.append(f"SLA-breached CVEs: {context['triageBreached']}")
+    if context.get("topCves"):
+        top = context["topCves"]
+        if isinstance(top, list):
+            lines = []
+            for c in top[:10]:
+                cid  = str(c.get("id", ""))[:20]
+                sev  = str(c.get("severity", ""))[:10]
+                score = c.get("score", "?")
+                kev  = " [KEV]" if c.get("kev") else ""
+                desc = str(c.get("desc", ""))[:120]
+                lines.append(f"  {cid} | {sev} | CVSS {score}{kev} — {desc}")
+            ctx_parts.append("Top CVEs by severity/score:\n" + "\n".join(lines))
+
+    system = "\n".join(ctx_parts)
+
+    cfg = _llm_config()
+    if not cfg["api_key"] and cfg["provider"] not in ("ollama",):
+        return _err("LLM not configured — add LLM_API_KEY in Settings.", 400)
+
+    import urllib.request, urllib.error
+    if not cfg["base_url"]:
+        return _err("LLM base URL not configured.", 400)
+
+    messages = [{"role": "system", "content": system}] + history
+    payload = json.dumps({
+        "model": cfg["model"],
+        "messages": messages,
+        "max_tokens": 800,
+        "temperature": 0.3,
+    }).encode()
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {cfg['api_key']}",
+    }
+    if cfg["provider"] == "anthropic":
+        headers["x-api-key"] = cfg["api_key"]
+        del headers["Authorization"]
+        headers["anthropic-version"] = "2023-06-01"
+
+    url = cfg["base_url"].rstrip("/") + "/chat/completions"
+    req = urllib.request.Request(url, data=payload, headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=45) as resp:
+            body = json.loads(resp.read())
+            reply = body["choices"][0]["message"]["content"].strip()
+            return jsonify({"ok": True, "reply": reply})
+    except urllib.error.HTTPError as exc:
+        err_body = exc.read().decode(errors="replace")[:300]
+        _log.error("llm/chat error %s: %s", exc.code, err_body)
+        return _err(f"LLM API error {exc.code}", 500)
+    except Exception as exc:
+        _log.error("llm/chat error: %s", exc)
+        return _err(str(exc), 500)
 
 
 # ── Internal CVSS overrides ───────────────────────────────────────────────────

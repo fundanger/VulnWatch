@@ -4,6 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>CVE Emailer — Dashboard</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.ico" />
   <link rel="stylesheet" href="style.css" />
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 </head>
@@ -1583,6 +1584,39 @@
           </tbody>
         </table>
       </div>
+    </div>
+  </div>
+
+  <!-- ── AI Chat widget ──────────────────────────────────────────────────────── -->
+  <button id="chat-fab" class="chat-fab" title="Ask the AI assistant">
+    <span class="chat-fab-icon">✦</span>
+  </button>
+
+  <div id="chat-panel" class="chat-panel hidden">
+    <div class="chat-panel-header">
+      <div class="chat-panel-title">
+        <span class="chat-panel-icon">✦</span>
+        AI Assistant
+        <span class="chat-context-badge" id="chat-context-badge"></span>
+      </div>
+      <div class="chat-header-actions">
+        <button class="btn-icon" id="btn-chat-clear" title="Clear conversation">⟳</button>
+        <button class="btn-icon" id="btn-chat-close" title="Close">✕</button>
+      </div>
+    </div>
+    <div class="chat-messages" id="chat-messages">
+      <div class="chat-welcome">
+        <p>Ask me anything about your CVEs, triage decisions, remediation steps, or threat intel.</p>
+        <div class="chat-suggestions">
+          <button class="chat-suggestion">What are my most critical open CVEs?</button>
+          <button class="chat-suggestion">Summarize today's top risks</button>
+          <button class="chat-suggestion">Which CVEs should I patch first?</button>
+        </div>
+      </div>
+    </div>
+    <div class="chat-input-area">
+      <textarea id="chat-input" class="chat-input" placeholder="Ask about CVEs, triage, remediation…" rows="1"></textarea>
+      <button id="btn-chat-send" class="btn-chat-send" title="Send (Enter)">➤</button>
     </div>
   </div>
 

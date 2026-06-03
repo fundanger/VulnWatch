@@ -788,6 +788,471 @@ function Get-ListeningPortItems {
     return $items
 }
 
+# -- NuGet packages (.NET dependencies) ---------------------------------------
+
+function Get-NuGetItems {
+    $items = [System.Collections.Generic.List[Software]]::new()
+
+    # Search paths: project directories, common solution roots, IIS wwwroot
+    $searchRoots = @(
+        $env:USERPROFILE,
+        "C:\inetpub\wwwroot",
+        "C:\Projects",
+        "C:\src",
+        "C:\dev",
+        "C:\repos",
+        "C:\code",
+        "C:\Workspace"
+    ) | Where-Object { $_ -and (Test-Path $_) }
+
+    $seen = [System.Collections.Generic.HashSet[string]]::new()
+
+    # -- packages.config (classic .NET / NuGet v2) ---------------------------------
+    foreach ($root in $searchRoots) {
+        Get-ChildItem -Path $root -Filter "packages.config" -Recurse -ErrorAction SilentlyContinue -Depth 8 |
+        ForEach-Object {
+            try {
+                [xml]$xml = Get-Content $_.FullName -ErrorAction SilentlyContinue
+                foreach ($pkg in $xml.packages.package) {
+                    $id  = $pkg.id
+                    $ver = $pkg.version
+                    if ($id -and $ver -and $seen.Add("$id@$ver")) {
+                        $items.Add((New-Software $id $ver "nuget" "HIGH" "" "nuget:packages.config"))
+                    }
+                }
+            } catch { }
+        }
+    }
+
+    # -- *.csproj / *.fsproj / *.vbproj (SDK-style PackageReference) ----------------
+    foreach ($root in $searchRoots) {
+        Get-ChildItem -Path $root -Include "*.csproj","*.fsproj","*.vbproj" -Recurse -ErrorAction SilentlyContinue -Depth 8 |
+        ForEach-Object {
+            try {
+                [xml]$xml = Get-Content $_.FullName -ErrorAction SilentlyContinue
+                $refs = $xml.SelectNodes("//*[local-name()='PackageReference']")
+                foreach ($ref in $refs) {
+                    $id  = $ref.GetAttribute("Include")
+                    $ver = $ref.GetAttribute("Version")
+                    if (-not $ver) {
+                        # Some projects use a child <Version> element
+                        $verNode = $ref.SelectSingleNode("*[local-name()='Version']")
+                        if ($verNode) { $ver = $verNode.InnerText }
+                    }
+                    if ($id -and $ver -and $seen.Add("$id@$ver")) {
+                        $items.Add((New-Software $id $ver "nuget" "HIGH" "" "nuget:csproj"))
+                    }
+                }
+            } catch { }
+        }
+    }
+
+    # -- packages.lock.json (NuGet lock file, most accurate) -----------------------
+    foreach ($root in $searchRoots) {
+        Get-ChildItem -Path $root -Filter "packages.lock.json" -Recurse -ErrorAction SilentlyContinue -Depth 8 |
+        ForEach-Object {
+            try {
+                $raw = Get-Content $_.FullName -Raw -ErrorAction SilentlyContinue
+                $lock = $raw | ConvertFrom-Json
+                # Structure: { "version": 1, "dependencies": { "net8.0": { "PackageName": { "resolved": "1.2.3" } } } }
+                foreach ($tfm in $lock.dependencies.PSObject.Properties) {
+                    foreach ($pkg in $tfm.Value.PSObject.Properties) {
+                        $id  = $pkg.Name
+                        $ver = $pkg.Value.resolved
+                        if ($id -and $ver -and $seen.Add("$id@$ver")) {
+                            $items.Add((New-Software $id $ver "nuget" "HIGH" "" "nuget:packages.lock.json"))
+                        }
+                    }
+                }
+            } catch { }
+        }
+    }
+
+    # -- Global NuGet cache (fallback — catches packages not in solution files) ----
+    $nugetCache = "$env:USERPROFILE\.nuget\packages"
+    if ((Test-Path $nugetCache) -and $items.Count -eq 0) {
+        Get-ChildItem -Path $nugetCache -Directory -ErrorAction SilentlyContinue |
+        ForEach-Object {
+            $pkgName = $_.Name
+            Get-ChildItem -Path $_.FullName -Directory -ErrorAction SilentlyContinue |
+            Select-Object -First 1 |
+            ForEach-Object {
+                $ver = $_.Name
+                if ($pkgName -and $ver -and $seen.Add("$pkgName@$ver")) {
+                    $items.Add((New-Software $pkgName $ver "nuget" "HIGH" "" "nuget:global-cache"))
+                }
+            }
+        }
+    }
+
+    if ($items.Count -gt 0) {
+        Write-Host "  Found $($items.Count) NuGet package(s)" -ForegroundColor DarkGray
+    }
+    return $items
+}
+
+# -- WSL distros ---------------------------------------------------------------
+
+function Get-WslItems {
+    $items = [System.Collections.Generic.List[Software]]::new()
+    if (-not (Test-CommandExists "wsl")) { return $items }
+
+    $raw = Invoke-SafeCommand "wsl" @("--list", "--verbose")
+    # Output is UTF-16 encoded; Invoke-SafeCommand reads it as a string already.
+    foreach ($line in ($raw -split "`n")) {
+        $line = $line -replace "[^\x20-\x7E]", "" # strip non-printable chars from UTF-16 BOM artifacts
+        $line = $line.Trim()
+        if (-not $line -or $line -match "^NAME" -or $line -match "^-") { continue }
+        # Format: "* Ubuntu-22.04   Running   2"  or "  Debian   Stopped   2"
+        $line = $line -replace "^\*\s+", ""
+        $parts = $line -split "\s{2,}"
+        $distroName = $parts[0].Trim()
+        $wslVer     = if ($parts.Count -ge 3) { $parts[2].Trim() } else { "" }
+        if (-not $distroName) { continue }
+
+        $nvdName = switch -Wildcard ($distroName.ToLower()) {
+            "ubuntu*"       { "Ubuntu Linux" }
+            "debian*"       { "Debian Linux" }
+            "kali*"         { "Kali Linux" }
+            "fedora*"       { "Fedora" }
+            "opensuse*"     { "openSUSE" }
+            "alpine*"       { "Alpine Linux" }
+            "arch*"         { "Arch Linux" }
+            default         { $distroName }
+        }
+        $label = if ($wslVer) { "WSL$wslVer ($distroName)" } else { "WSL ($distroName)" }
+        $items.Add((New-Software $nvdName "" "os" "HIGH" "" $label))
+    }
+    return $items
+}
+
+# -- Windows Defender status ---------------------------------------------------
+
+function Get-DefenderItems {
+    $items = [System.Collections.Generic.List[Software]]::new()
+
+    $status = Get-MpComputerStatus -ErrorAction SilentlyContinue
+    if (-not $status) { return $items }
+
+    # Defender engine version as a software item (CVEs exist for specific engine versions)
+    $engineVer = $status.AMEngineVersion
+    if ($engineVer) {
+        $items.Add((New-Software "Windows Defender" $engineVer "tool" "HIGH" `
+            "cpe:2.3:a:microsoft:windows_defender:*:*:*:*:*:*:*:*" "Get-MpComputerStatus"))
+    }
+
+    # Flag stale signatures as a HIGH severity posture signal
+    $sigAge = (Get-Date) - $status.AntivirusSignatureLastUpdated
+    if ($sigAge.TotalDays -gt 7) {
+        Write-Host "  [WARN] Defender signatures are $([int]$sigAge.TotalDays) days old" -ForegroundColor Yellow
+    }
+
+    # Real-time protection disabled is a direct exposure signal
+    if (-not $status.RealTimeProtectionEnabled) {
+        Write-Host "  [WARN] Windows Defender real-time protection is DISABLED" -ForegroundColor Red
+    }
+
+    return $items
+}
+
+# -- pip packages (Python) -----------------------------------------------------
+
+function Get-PipItems {
+    $items = [System.Collections.Generic.List[Software]]::new()
+
+    $bins = @("pip", "pip3")
+    foreach ($bin in $bins) {
+        if (-not (Test-CommandExists $bin)) { continue }
+        $raw = Invoke-SafeCommand $bin @("list", "--format=json")
+        if (-not $raw) { continue }
+        try {
+            $pkgs = $raw | ConvertFrom-Json
+            foreach ($pkg in $pkgs) {
+                $name = $pkg.name
+                $ver  = $pkg.version
+                if ($name -and $ver) {
+                    $items.Add((New-Software $name $ver "runtime" "MEDIUM" "" "pip:$bin"))
+                }
+            }
+        } catch { }
+        break  # one pip is enough; pip3 is usually the same as pip on Windows
+    }
+
+    if ($items.Count -gt 0) {
+        Write-Host "  Found $($items.Count) pip package(s)" -ForegroundColor DarkGray
+    }
+    return $items
+}
+
+# -- npm global packages + package-lock.json -----------------------------------
+
+function Get-NpmItems {
+    $items = [System.Collections.Generic.List[Software]]::new()
+    if (-not (Test-CommandExists "npm")) { return $items }
+
+    # Global packages
+    $raw = Invoke-SafeCommand "npm" @("list", "-g", "--depth=0", "--json")
+    if ($raw) {
+        try {
+            $tree = $raw | ConvertFrom-Json
+            if ($tree.dependencies) {
+                foreach ($prop in $tree.dependencies.PSObject.Properties) {
+                    $name = $prop.Name
+                    $ver  = $prop.Value.version
+                    if ($name -and $ver) {
+                        $items.Add((New-Software $name $ver "runtime" "MEDIUM" "" "npm:global"))
+                    }
+                }
+            }
+        } catch { }
+    }
+
+    # package-lock.json files in common project roots
+    $searchRoots = @(
+        $env:USERPROFILE,
+        "C:\inetpub\wwwroot",
+        "C:\Projects",
+        "C:\src",
+        "C:\dev",
+        "C:\repos",
+        "C:\code",
+        "C:\Workspace"
+    ) | Where-Object { $_ -and (Test-Path $_) }
+
+    $seen = [System.Collections.Generic.HashSet[string]]::new()
+    # Pre-seed seen with globals so we don't double-report
+    foreach ($item in $items) { $null = $seen.Add("$($item.Name)@$($item.Version)") }
+
+    foreach ($root in $searchRoots) {
+        Get-ChildItem -Path $root -Filter "package-lock.json" -Recurse -ErrorAction SilentlyContinue -Depth 6 |
+        ForEach-Object {
+            try {
+                $raw2 = Get-Content $_.FullName -Raw -ErrorAction SilentlyContinue
+                $lock = $raw2 | ConvertFrom-Json
+                # npm v2/v3 lock: { "packages": { "node_modules/NAME": { "version": "x" } } }
+                if ($lock.packages) {
+                    foreach ($prop in $lock.packages.PSObject.Properties) {
+                        $key = $prop.Name  # "node_modules/express" or "" (root)
+                        if (-not $key -or $key -eq "") { continue }
+                        $name = ($key -split "/")[-1]
+                        $ver  = $prop.Value.version
+                        if ($name -and $ver -and $seen.Add("$name@$ver")) {
+                            $items.Add((New-Software $name $ver "runtime" "MEDIUM" "" "npm:package-lock.json"))
+                        }
+                    }
+                } elseif ($lock.dependencies) {
+                    # npm v1 lock
+                    foreach ($prop in $lock.dependencies.PSObject.Properties) {
+                        $name = $prop.Name
+                        $ver  = $prop.Value.version
+                        if ($name -and $ver -and $seen.Add("$name@$ver")) {
+                            $items.Add((New-Software $name $ver "runtime" "MEDIUM" "" "npm:package-lock.json"))
+                        }
+                    }
+                }
+            } catch { }
+        }
+    }
+
+    if ($items.Count -gt 0) {
+        Write-Host "  Found $($items.Count) npm package(s)" -ForegroundColor DarkGray
+    }
+    return $items
+}
+
+# -- Java JARs (MANIFEST.MF version extraction) --------------------------------
+
+function Get-JavaJarItems {
+    $items = [System.Collections.Generic.List[Software]]::new()
+
+    $searchRoots = @(
+        "C:\inetpub\wwwroot",
+        "C:\Program Files\Apache Software Foundation",
+        "C:\Program Files (x86)\Apache Software Foundation",
+        "C:\tomcat",
+        "C:\jetty",
+        "C:\jboss",
+        "C:\wildfly",
+        "C:\apps",
+        "C:\deploy",
+        "C:\opt"
+    ) | Where-Object { $_ -and (Test-Path $_) }
+
+    # Also check Tomcat webapps if service is installed
+    $tomcatSvc = Get-Service -Name "Tomcat*" -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($tomcatSvc) {
+        $tomcatImagePath = (Get-WmiObject Win32_Service -Filter "Name='$($tomcatSvc.Name)'" -ErrorAction SilentlyContinue).PathName
+        if ($tomcatImagePath -match '([A-Za-z]:\\[^"]+)') {
+            $tomcatDir = Split-Path $Matches[1] -Parent
+            if (Test-Path $tomcatDir) { $searchRoots += $tomcatDir }
+        }
+    }
+
+    $seen = [System.Collections.Generic.HashSet[string]]::new()
+    $add  = [System.IO.Compression.ZipArchiveMode]::Read
+
+    # Known JAR name patterns -> NVD product name + CPE
+    $jarPatterns = [ordered]@{
+        "log4j"           = @("Apache Log4j",         "cpe:2.3:a:apache:log4j:*:*:*:*:*:*:*:*",           "CRITICAL")
+        "log4j-core"      = @("Apache Log4j",         "cpe:2.3:a:apache:log4j:*:*:*:*:*:*:*:*",           "CRITICAL")
+        "spring-core"     = @("Spring Framework",     "cpe:2.3:a:vmware:spring_framework:*:*:*:*:*:*:*:*", "HIGH")
+        "spring-web"      = @("Spring Framework",     "cpe:2.3:a:vmware:spring_framework:*:*:*:*:*:*:*:*", "HIGH")
+        "spring-webmvc"   = @("Spring MVC",           "cpe:2.3:a:vmware:spring_framework:*:*:*:*:*:*:*:*", "HIGH")
+        "struts2"         = @("Apache Struts",        "cpe:2.3:a:apache:struts:*:*:*:*:*:*:*:*",           "CRITICAL")
+        "struts-core"     = @("Apache Struts",        "cpe:2.3:a:apache:struts:*:*:*:*:*:*:*:*",           "CRITICAL")
+        "commons-collections" = @("Apache Commons Collections","cpe:2.3:a:apache:commons_collections:*:*:*:*:*:*:*:*","HIGH")
+        "commons-text"    = @("Apache Commons Text",  "cpe:2.3:a:apache:commons_text:*:*:*:*:*:*:*:*",     "CRITICAL")
+        "jackson-databind"= @("FasterXML Jackson",    "cpe:2.3:a:fasterxml:jackson-databind:*:*:*:*:*:*:*:*","HIGH")
+        "xstream"         = @("XStream",              "cpe:2.3:a:xstream_project:xstream:*:*:*:*:*:*:*:*", "CRITICAL")
+        "shiro-core"      = @("Apache Shiro",         "cpe:2.3:a:apache:shiro:*:*:*:*:*:*:*:*",            "HIGH")
+        "tomcat-embed"    = @("Apache Tomcat",        "cpe:2.3:a:apache:tomcat:*:*:*:*:*:*:*:*",           "CRITICAL")
+        "hibernate-core"  = @("Hibernate ORM",        "cpe:2.3:a:hibernate:hibernate_orm:*:*:*:*:*:*:*:*", "HIGH")
+        "netty-all"       = @("Netty",                "cpe:2.3:a:netty:netty:*:*:*:*:*:*:*:*",             "HIGH")
+        "netty-handler"   = @("Netty",                "cpe:2.3:a:netty:netty:*:*:*:*:*:*:*:*",             "HIGH")
+        "guava"           = @("Google Guava",         "cpe:2.3:a:google:guava:*:*:*:*:*:*:*:*",            "MEDIUM")
+        "okhttp"          = @("OkHttp",               "cpe:2.3:a:squareup:okhttp:*:*:*:*:*:*:*:*",         "HIGH")
+        "gson"            = @("Google Gson",          "cpe:2.3:a:google:gson:*:*:*:*:*:*:*:*",             "MEDIUM")
+        "bouncy-castle"   = @("Bouncy Castle",        "cpe:2.3:a:bouncycastle:bouncy_castle_crypto_package:*:*:*:*:*:*:*:*","HIGH")
+        "bcprov"          = @("Bouncy Castle",        "cpe:2.3:a:bouncycastle:bouncy_castle_crypto_package:*:*:*:*:*:*:*:*","HIGH")
+        "poi-ooxml"       = @("Apache POI",           "cpe:2.3:a:apache:poi:*:*:*:*:*:*:*:*",              "HIGH")
+        "opensaml"        = @("OpenSAML",             "cpe:2.3:a:shibboleth:opensaml:*:*:*:*:*:*:*:*",     "CRITICAL")
+        "jenkins"         = @("Jenkins",              "cpe:2.3:a:jenkins:jenkins:*:*:*:*:*:*:*:*",          "CRITICAL")
+    }
+
+    Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction SilentlyContinue
+
+    foreach ($root in $searchRoots) {
+        Get-ChildItem -Path $root -Filter "*.jar" -Recurse -ErrorAction SilentlyContinue -Depth 6 |
+        ForEach-Object {
+            $jarFile = $_.FullName
+            $jarBase = $_.BaseName.ToLower()
+
+            # Match against known patterns first
+            $matchedName = $null; $matchedCpe = ""; $matchedSev = "HIGH"
+            foreach ($pat in $jarPatterns.Keys) {
+                if ($jarBase -like "*$pat*") {
+                    $matchedName, $matchedCpe, $matchedSev = $jarPatterns[$pat]
+                    break
+                }
+            }
+            if (-not $matchedName) { return }  # skip unknown JARs
+
+            # Try to read version from MANIFEST.MF inside the JAR
+            $ver = ""
+            try {
+                $zip = [System.IO.Compression.ZipFile]::OpenRead($jarFile)
+                $manifest = $zip.Entries | Where-Object { $_.FullName -eq "META-INF/MANIFEST.MF" } | Select-Object -First 1
+                if ($manifest) {
+                    $reader  = [System.IO.StreamReader]::new($manifest.Open())
+                    $content = $reader.ReadToEnd()
+                    $reader.Close()
+                    if ($content -match "Implementation-Version:\s*(\S+)") {
+                        $ver = $Matches[1].Trim()
+                    } elseif ($content -match "Bundle-Version:\s*(\S+)") {
+                        $ver = $Matches[1].Trim()
+                    }
+                }
+                $zip.Dispose()
+            } catch { }
+
+            # Fall back to version number in filename: log4j-core-2.14.1.jar
+            if (-not $ver -and $_.BaseName -match '-(\d+\.\d+[\.\d]*)$') {
+                $ver = $Matches[1]
+            }
+
+            if ($seen.Add("$matchedName@$ver")) {
+                $items.Add((New-Software $matchedName $ver "runtime" $matchedSev $matchedCpe "jar:$($_.Name)"))
+            }
+        }
+    }
+
+    if ($items.Count -gt 0) {
+        Write-Host "  Found $($items.Count) Java JAR(s)" -ForegroundColor DarkGray
+    }
+    return $items
+}
+
+# -- Windows Update / patch staleness -----------------------------------------
+
+function Get-PatchStalenessItems {
+    $items = [System.Collections.Generic.List[Software]]::new()
+
+    # Most recent hotfix date
+    $hotfixes = Get-HotFix -ErrorAction SilentlyContinue | Sort-Object InstalledOn -Descending
+    if ($hotfixes) {
+        $latest    = $hotfixes[0]
+        $daysAgo   = [int]((Get-Date) - $latest.InstalledOn).TotalDays
+        $patchCount = $hotfixes.Count
+
+        if ($daysAgo -gt 90) {
+            Write-Host "  [WARN] Last Windows patch was $daysAgo days ago ($($latest.HotFixID))" -ForegroundColor Red
+            # Emit a scannable item so the dashboard shows patch staleness
+            $items.Add((New-Software "Windows Update" "" "os" "HIGH" `
+                "cpe:2.3:o:microsoft:windows:*:*:*:*:*:*:*:*" "HotFix: $($latest.HotFixID) ($daysAgo days ago)"))
+        } elseif ($daysAgo -gt 30) {
+            Write-Host "  [INFO] Last Windows patch was $daysAgo days ago ($($latest.HotFixID))" -ForegroundColor Yellow
+        } else {
+            Write-Host "  Patch current. Last patch: $($latest.HotFixID) ($daysAgo days ago)" -ForegroundColor DarkGray
+        }
+    } else {
+        Write-Host "  [WARN] Could not retrieve Windows patch history" -ForegroundColor Yellow
+    }
+
+    return $items
+}
+
+# -- Credential / secrets manager tools ----------------------------------------
+
+function Get-CredentialToolItems {
+    $items = [System.Collections.Generic.List[Software]]::new()
+
+    # CLI / service detection for secret managers
+    $checks = @(
+        @{ Bin="vault";           Args="version";   Name="HashiCorp Vault";  Cat="tool"; Sev="CRITICAL"; Cpe="cpe:2.3:a:hashicorp:vault:*:*:*:*:*:*:*:*" },
+        @{ Bin="op";              Args="--version"; Name="1Password CLI";     Cat="tool"; Sev="HIGH";     Cpe="" },
+        @{ Bin="bitwarden";       Args="--version"; Name="Bitwarden CLI";     Cat="tool"; Sev="HIGH";     Cpe="cpe:2.3:a:bitwarden:bitwarden:*:*:*:*:*:*:*:*" },
+        @{ Bin="bw";              Args="--version"; Name="Bitwarden CLI";     Cat="tool"; Sev="HIGH";     Cpe="cpe:2.3:a:bitwarden:bitwarden:*:*:*:*:*:*:*:*" },
+        @{ Bin="aws";             Args="--version"; Name="AWS CLI";           Cat="tool"; Sev="HIGH";     Cpe="cpe:2.3:a:amazon:aws_cli:*:*:*:*:*:*:*:*" },
+        @{ Bin="az";              Args="--version"; Name="Azure CLI";         Cat="tool"; Sev="HIGH";     Cpe="cpe:2.3:a:microsoft:azure_cli:*:*:*:*:*:*:*:*" },
+        @{ Bin="gcloud";          Args="version";   Name="Google Cloud SDK";  Cat="tool"; Sev="HIGH";     Cpe="" },
+        @{ Bin="kubectl";         Args="version --client"; Name="Kubernetes"; Cat="container"; Sev="CRITICAL"; Cpe="cpe:2.3:a:kubernetes:kubernetes:*:*:*:*:*:*:*:*" }
+    )
+
+    $seen = [System.Collections.Generic.HashSet[string]]::new()
+    foreach ($c in $checks) {
+        if (-not (Test-CommandExists $c.Bin)) { continue }
+        $raw = Invoke-SafeCommand $c.Bin @($c.Args -split " ")
+        $ver = Get-FirstVersion $raw
+        if ($seen.Add($c.Name)) {
+            $items.Add((New-Software $c.Name $ver $c.Cat $c.Sev $c.Cpe "$($c.Bin) $($c.Args)"))
+        }
+    }
+
+    # KeePass — registry detection (no CLI)
+    $kpKey = "HKLM:\SOFTWARE\KeePass Password Safe 2"
+    $kpKeyAlt = "HKLM:\SOFTWARE\WOW6432Node\KeePass Password Safe 2"
+    foreach ($kp in @($kpKey, $kpKeyAlt)) {
+        if (Test-Path $kp) {
+            $kpProps = Get-ItemProperty $kp -ErrorAction SilentlyContinue
+            $kpVer   = if ($kpProps.Version) { $kpProps.Version } else { "" }
+            if ($seen.Add("KeePass")) {
+                $items.Add((New-Software "KeePass" $kpVer "tool" "HIGH" `
+                    "cpe:2.3:a:keepass:keepass:*:*:*:*:*:*:*:*" "registry: KeePass"))
+            }
+            break
+        }
+    }
+
+    # HashiCorp Vault agent service
+    $vaultSvc = Get-Service -Name "vault" -ErrorAction SilentlyContinue
+    if ($vaultSvc -and $seen.Add("HashiCorp Vault agent")) {
+        $items.Add((New-Software "HashiCorp Vault" "" "tool" "CRITICAL" `
+            "cpe:2.3:a:hashicorp:vault:*:*:*:*:*:*:*:*" "vault service"))
+    }
+
+    return $items
+}
+
 # -- Windows roles / features --------------------------------------------------
 
 function Get-WindowsFeatureItems {
@@ -1031,7 +1496,8 @@ function Upload-ToDashboard {
     if ($assetId -and -not $DryRun) {
         Write-Host "  Uploading software inventory..." -ForegroundColor Cyan
         try {
-            $invItems = $SoftwareItems | Where-Object { $_.Version -and $_.Cpe } | ForEach-Object {
+            # Include items with CPE (NVD scan) OR items from nuget source (OSV scan)
+            $invItems = $SoftwareItems | Where-Object { $_.Version -and ($_.Cpe -or $_.Source -like "nuget:*") } | ForEach-Object {
                 @{
                     name     = $_.Name
                     version  = $_.Version
@@ -1135,7 +1601,15 @@ $collectors = @(
     { Get-StandaloneToolItems },
     { Get-InstalledProgramItems },
     { Get-ListeningPortItems },
-    { Get-WindowsFeatureItems }
+    { Get-WindowsFeatureItems },
+    { Get-NuGetItems },
+    { Get-WslItems },
+    { Get-DefenderItems },
+    { Get-PipItems },
+    { Get-NpmItems },
+    { Get-JavaJarItems },
+    { Get-PatchStalenessItems },
+    { Get-CredentialToolItems }
 )
 
 foreach ($c in $collectors) {

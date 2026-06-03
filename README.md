@@ -79,6 +79,7 @@ Provider-agnostic — works with OpenAI, DeepSeek, Anthropic, Ollama, or any Ope
 - **Noise ranking** — re-sorts current browse results by relevance to your installed asset inventory
 - **Digest narrative** — generates a human-readable security digest paragraph for team leads
 - **Keyword expansion** — suggests missing coverage based on current keywords and asset inventory
+- **AI chat** — floating chat panel (bottom-right) with full dashboard context: current section, open CVE, stat counts, top 10 CVEs by risk. Provides answers grounded in your actual data.
 
 ### Remediation & Patch Guidance
 - NVD reference tags surfaced as Patch / Vendor Advisory / Mitigation badges with direct links
@@ -86,6 +87,9 @@ Provider-agnostic — works with OpenAI, DeepSeek, Anthropic, Ollama, or any Ope
 - AI-generated platform-specific commands (cached per CVE)
 - Analyst remediation notes field (saved per CVE)
 - **Auto-patching** — when a rescan shows an installed version is no longer vulnerable per NVD, the CVE is automatically marked `patched` in triage
+
+### OSV.dev Integration
+A second-pass vulnerability scan runs alongside NVD CPE scanning using the [OSV.dev](https://osv.dev) API. OSV handles distro backpatches and package-registry version matching that NVD/CPE misses — especially for Python (PyPI), Node.js (npm), Java (Maven), .NET (NuGet), Ruby (RubyGems), Go, Rust (crates.io), PHP (Packagist), and Linux distro packages.
 
 ### Environment Scanners
 Three scanners fingerprint installed software, running services, and listening ports on target machines, then upload asset records and software inventory to the dashboard. CVEs are then automatically correlated to specific hosts.
@@ -210,7 +214,19 @@ All scanners:
 - Filter generic noise names and use a Docker image whitelist
 - Store `last_scanned_at` and `scan_source` on the Asset record
 
-After uploading, the next scan cycle will query NVD by versioned CPE for each software item. CVEs where the exact installed version is no longer in the vulnerable range are automatically marked `patched` in triage.
+After uploading, the next scan cycle runs two passes:
+1. **NVD CPE pass** — queries NVD by exact versioned CPE for items with a CPE string
+2. **OSV pass** — queries OSV.dev by package name + version for pip, npm, NuGet, Maven (JARs), and other ecosystem items
+
+CVEs where the exact installed version is no longer in the vulnerable range are automatically marked `patched` in triage.
+
+### What each scanner discovers
+
+| Scanner | Language coverage | Notable extras |
+|---|---|---|
+| `scan_environment.py` | Python pip | OS, runtimes, web servers, DBs, containers, ports |
+| `scan_environment.sh` | pip (all packages), npm (global + package-lock.json), Java JARs | Patch staleness (apt/dnf/yum), credential tool CLIs, systemd services, snap |
+| `Scan-Environment.ps1` | pip (all packages), npm (global + package-lock.json), NuGet (packages.config, csproj, lock files, global cache), Java JARs | WSL distros, Windows Defender status, patch staleness, credential tools (KeePass, AWS CLI, Azure CLI, Vault, 1Password) |
 
 ---
 
@@ -250,7 +266,7 @@ Manage users via the dashboard Users section or `POST /api/users`. Per-user API 
 CVE-Emailer-v2/
 ├── main.py               # Entry point — calls tui.run()
 ├── tui.py                # Textual TUI: all screens, setup wizard, config helpers
-├── search.py             # NVD fetch, CVE enrichment, CPE scanning, dispatch, scan loop
+├── search.py             # NVD fetch, CVE enrichment, CPE/OSV scanning, dispatch, scan loop
 ├── database.py           # SQLite backend: all tables, migrations, risk scoring
 ├── api.py                # Flask REST API + web dashboard + LLM endpoints
 ├── mail.py               # Gmail SMTP: plain-text + styled HTML email
@@ -265,7 +281,8 @@ CVE-Emailer-v2/
 ├── dashboard/
 │   ├── index.html        # Single-page web dashboard
 │   ├── app.js            # Dashboard frontend logic
-│   └── style.css         # Dashboard styles
+│   ├── style.css         # Dashboard styles
+│   └── favicon.svg       # Dashboard favicon
 ├── config.ini            # Credentials and settings (gitignored)
 └── requirements.txt
 ```

@@ -1670,6 +1670,36 @@ def inventory_get_cpe_items() -> list[dict]:
         return [_row_to_dict(r) for r in rows]
 
 
+def inventory_get_osv_items() -> list[dict]:
+    """Return inventory items suitable for OSV.dev lookup (have name + version)."""
+    with _connect() as conn:
+        # Add osv_ecosystem column if it doesn't exist yet
+        try:
+            conn.execute(text(
+                "ALTER TABLE software_inventory ADD COLUMN osv_ecosystem TEXT DEFAULT ''"
+            ))
+            conn.commit()
+        except Exception:
+            pass
+        rows = conn.execute(text(
+            "SELECT si.id, si.name, si.version, si.cpe, si.category, si.source, "
+            "si.osv_ecosystem, a.name AS asset_name "
+            "FROM software_inventory si "
+            "LEFT JOIN assets a ON a.id = si.asset_id "
+            "WHERE si.version != '' AND si.version IS NOT NULL"
+        )).fetchall()
+        return [_row_to_dict(r) for r in rows]
+
+
+def inventory_set_osv_ecosystem(item_id: int, ecosystem: str) -> None:
+    """Cache the resolved OSV ecosystem on the inventory row."""
+    with _connect() as conn:
+        conn.execute(text(
+            "UPDATE software_inventory SET osv_ecosystem=:eco WHERE id=:id"
+        ), {"eco": ecosystem, "id": item_id})
+        conn.commit()
+
+
 # ── Internal CVSS override ────────────────────────────────────────────────────
 
 def bootstrap_cvss_overrides() -> None:

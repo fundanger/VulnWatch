@@ -151,6 +151,13 @@ function kevBadge(kev) {
   return kev ? `<span class="badge badge-kev">KEV</span>` : "";
 }
 
+function sourceBadge(src) {
+  if (!src || src === "keyword") return "";
+  if (src === "osv")     return `<span class="badge badge-osv" title="Discovered via OSV.dev — ecosystem-aware version matching">OSV</span>`;
+  if (src === "cpe")     return `<span class="badge badge-cpe" title="Discovered via NVD CPE versioned lookup">CPE</span>`;
+  return `<span class="badge" style="background:var(--surface3);font-size:10px">${escHtml(src)}</span>`;
+}
+
 function epssStr(val) {
   if (val == null) return "—";
   return (val * 100).toFixed(2) + "%";
@@ -351,6 +358,7 @@ async function openDetail(row) {
       <dt>Severity</dt>   <dd>${sevBadge(row.severity)} ${scoreStr(row.cvss_score)} CVSS</dd>
       <dt>EPSS</dt>       <dd>${escHtml(epss)}</dd>
       <dt>CISA KEV</dt>   <dd>${row.kev ? `<span class="badge badge-kev">Actively Exploited</span>` : "No"}</dd>
+      <dt>Source</dt>     <dd>${sourceBadge(row.scan_source) || escHtml(row.scan_source || "keyword")}</dd>
       <dt>Keyword</dt>    <dd>${escHtml(row.keyword || "")}</dd>
       <dt>Published</dt>  <dd>${escHtml((row.publish_date || "").slice(0, 10))}</dd>
       <dt>Modified</dt>   <dd>${escHtml((row.last_modified || "").slice(0, 10))}</dd>
@@ -2368,7 +2376,9 @@ async function _loadExploitIntel(row) {
     const r = await fetch(`${API}/api/exploit/${encodeURIComponent(row.cve_id)}`);
     const d = await r.json();
     if (!d || !d.cve_id) {
-      content.innerHTML = '<span class="muted">No exploit data yet — click Check for Exploits.</span>';
+      const edbQ = row.cve_id.replace(/^CVE-/i, "");
+      content.innerHTML = `<span class="muted">No exploit data yet — click Check for Exploits.</span>
+        <a href="https://www.exploit-db.com/search?cve=${encodeURIComponent(edbQ)}" target="_blank" rel="noopener" class="btn-sm" style="font-size:.75rem;text-decoration:none;margin-left:.5rem">🔍 ExploitDB</a>`;
       return;
     }
     const refs = (d.exploit_refs || []).map(u =>
@@ -2377,9 +2387,13 @@ async function _loadExploitIntel(row) {
     const badge = d.has_exploit
       ? `<span class="badge badge-CRITICAL">PoC / Exploit Known</span>`
       : `<span class="badge" style="background:var(--surface3);color:var(--text2)">No known exploit</span>`;
+    // ExploitDB search URL — strip "CVE-" prefix for their query format
+    const edbQuery = row.cve_id.replace(/^CVE-/i, "");
+    const edbLink = `<a href="https://www.exploit-db.com/search?cve=${encodeURIComponent(edbQuery)}" target="_blank" rel="noopener" class="btn-sm" style="font-size:.75rem;text-decoration:none">🔍 ExploitDB</a>`;
     content.innerHTML = `
-      <div style="display:flex;align-items:center;gap:.5rem;margin-bottom:.4rem">
+      <div style="display:flex;align-items:center;gap:.5rem;flex-wrap:wrap;margin-bottom:.4rem">
         ${badge}
+        ${edbLink}
         <span class="muted" style="font-size:11px">Source: ${escHtml(d.source || "unknown")} · Checked: ${escHtml((d.checked_at||"").slice(0,16))}</span>
       </div>
       ${refs ? `<div class="exploit-refs-list">${refs}</div>` : ""}
@@ -3316,6 +3330,8 @@ document.getElementById("btn-remediation-ai").addEventListener("click", async ()
         body: JSON.stringify({ table: _detailRow._table || _detailRow.keyword || "" }),
       }
     );
+    const ct = r.headers.get("content-type") || "";
+    if (!ct.includes("application/json")) throw new Error(`Server error ${r.status}`);
     const d = await r.json();
     if (!r.ok || !d.ok) throw new Error(d.error || "Generation failed");
     const aiEl    = document.getElementById("remediation-ai-cmds");
@@ -3386,7 +3402,7 @@ async function _doNlSearch() {
   try {
     const r = await fetch(`${API}/api/llm/nl-search`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": _csrfToken() },
       body: JSON.stringify({ query }),
     });
     const d = await r.json();
@@ -3457,13 +3473,14 @@ document.getElementById("btn-noise-rank").addEventListener("click", async () => 
   const btn = document.getElementById("btn-noise-rank");
   btn.disabled = true; btn.textContent = "Ranking…";
   try {
-    const tableEl = document.getElementById("br-table");
-    const table   = tableEl.value || (_browseRows[0] && (_browseRows[0]._table || _browseRows[0].keyword)) || "";
-    const cve_ids = _browseRows.slice(0, 30).map(r => r.cve_id);
+    const cve_ids = _browseRows.slice(0, 30).map(r => ({
+      cve_id: r.cve_id,
+      table:  r._table || r.keyword || "",
+    }));
     const r = await fetch(`${API}/api/llm/noise-rank`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ cve_ids, table }),
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": _csrfToken() },
+      body: JSON.stringify({ cve_ids }),
     });
     const d = await r.json();
     if (!r.ok || !d.ok) throw new Error(d.error || "Ranking failed");
@@ -3503,7 +3520,7 @@ document.getElementById("btn-digest-narrative").addEventListener("click", async 
     if (!rows.length) { msg.textContent = "No CVEs in queue."; msg.className = "form-msg"; btn.disabled = false; return; }
     const r = await fetch(`${API}/api/llm/digest-narrative`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": _csrfToken() },
       body: JSON.stringify({ cves: rows, period: "this digest batch" }),
     });
     const d = await r.json();
@@ -3532,7 +3549,7 @@ document.getElementById("btn-keyword-expand").addEventListener("click", async ()
     const keywords = raw.split("\n").map(k => k.trim()).filter(Boolean);
     const r = await fetch(`${API}/api/llm/keyword-expand`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": _csrfToken() },
       body: JSON.stringify({ keywords }),
     });
     const d = await r.json();
@@ -3753,6 +3770,213 @@ async function loadAuditLog() {
 }
 
 document.getElementById("btn-audit-refresh").addEventListener("click", loadAuditLog);
+
+
+// ── AI Chat widget ────────────────────────────────────────────────────────────
+
+(function initChat() {
+  const fab       = document.getElementById("chat-fab");
+  const panel     = document.getElementById("chat-panel");
+  const msgArea   = document.getElementById("chat-messages");
+  const input     = document.getElementById("chat-input");
+  const sendBtn   = document.getElementById("btn-chat-send");
+  const closeBtn  = document.getElementById("btn-chat-close");
+  const clearBtn  = document.getElementById("btn-chat-clear");
+  const ctxBadge  = document.getElementById("chat-context-badge");
+
+  let _chatHistory = [];  // [{role, content}]
+  let _sending     = false;
+
+  function _activeSection() {
+    const active = document.querySelector(".section.active");
+    return active ? active.id.replace("section-", "") : "";
+  }
+
+  function _buildContext() {
+    const ctx = { section: _activeSection() };
+    if (_detailRow) ctx.activeCve = _detailRow.cve_id;
+    const total = document.getElementById("stat-total");
+    const crit  = document.getElementById("stat-critical");
+    const high  = document.getElementById("stat-high");
+    const med   = document.getElementById("stat-medium");
+    const low   = document.getElementById("stat-low");
+    if (total) ctx.stats = {
+      total:    total.textContent,
+      critical: crit  ? crit.textContent  : "?",
+      high:     high  ? high.textContent  : "?",
+      medium:   med   ? med.textContent   : "?",
+      low:      low   ? low.textContent   : "?",
+    };
+    // include cached top CVEs if available
+    if (_chatTopCves.length) ctx.topCves = _chatTopCves;
+    // grab keywords from settings textarea if populated
+    const kwEl = document.getElementById("cfg-DEFAULT__keywords");
+    if (kwEl && kwEl.value) ctx.keywords = kwEl.value.slice(0, 400);
+    return ctx;
+  }
+
+  // Fetch top 10 CVEs once when chat opens; refresh on each new open
+  let _chatTopCves = [];
+  async function _refreshTopCves() {
+    try {
+      const r = await fetch(`${API}/api/cves/top?limit=10`);
+      const ct = r.headers.get("content-type") || "";
+      if (!ct.includes("application/json")) return;
+      const d = await r.json();
+      _chatTopCves = (Array.isArray(d) ? d : []).map(c => ({
+        id:       c.cve_id,
+        severity: c.severity,
+        score:    c.cvss_score,
+        kev:      c.kev,
+        desc:     (c.description || "").slice(0, 120),
+      }));
+    } catch { /* non-fatal — context just won't include top CVEs */ }
+  }
+
+  function _updateContextBadge() {
+    const sec = _activeSection();
+    if (_detailRow) {
+      ctxBadge.textContent = _detailRow.cve_id;
+    } else if (sec) {
+      ctxBadge.textContent = sec;
+    } else {
+      ctxBadge.textContent = "";
+    }
+  }
+
+  function _appendMsg(role, text) {
+    // Remove welcome block on first real message
+    const welcome = msgArea.querySelector(".chat-welcome");
+    if (welcome) welcome.remove();
+
+    const div = document.createElement("div");
+    div.className = `chat-msg ${role}`;
+    div.textContent = text;
+    msgArea.appendChild(div);
+    msgArea.scrollTop = msgArea.scrollHeight;
+    return div;
+  }
+
+  function _showThinking() {
+    const div = document.createElement("div");
+    div.className = "chat-msg thinking";
+    div.id = "chat-thinking";
+    div.textContent = "Thinking…";
+    msgArea.appendChild(div);
+    msgArea.scrollTop = msgArea.scrollHeight;
+  }
+  function _removeThinking() {
+    const el = document.getElementById("chat-thinking");
+    if (el) el.remove();
+  }
+
+  async function _sendMessage(text) {
+    if (_sending || !text.trim()) return;
+    _sending = true;
+    sendBtn.disabled = true;
+
+    _chatHistory.push({ role: "user", content: text });
+    _appendMsg("user", text);
+    _showThinking();
+
+    try {
+      const resp = await fetch(`${API}/api/llm/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-CSRF-Token": _csrfToken() },
+        body: JSON.stringify({
+          messages: _chatHistory,
+          context:  _buildContext(),
+        }),
+      });
+      _removeThinking();
+      const data = await resp.json();
+      if (!resp.ok || !data.ok) {
+        const msg = data.error || `Error ${resp.status}`;
+        _appendMsg("error", msg);
+      } else {
+        _chatHistory.push({ role: "assistant", content: data.reply });
+        _appendMsg("assistant", data.reply);
+      }
+    } catch (e) {
+      _removeThinking();
+      _appendMsg("error", "Network error — could not reach the API.");
+    }
+
+    _sending = false;
+    sendBtn.disabled = false;
+    input.focus();
+  }
+
+  // Toggle panel open/close
+  fab.addEventListener("click", () => {
+    const isOpen = !panel.classList.contains("hidden");
+    panel.classList.toggle("hidden", isOpen);
+    if (!isOpen) {
+      _updateContextBadge();
+      _refreshTopCves();
+      input.focus();
+    }
+  });
+
+  closeBtn.addEventListener("click", () => panel.classList.add("hidden"));
+
+  clearBtn.addEventListener("click", () => {
+    _chatHistory = [];
+    msgArea.innerHTML = `
+      <div class="chat-welcome">
+        <p>Ask me anything about your CVEs, triage decisions, remediation steps, or threat intel.</p>
+        <div class="chat-suggestions">
+          <button class="chat-suggestion">What are my most critical open CVEs?</button>
+          <button class="chat-suggestion">Summarize today's top risks</button>
+          <button class="chat-suggestion">Which CVEs should I patch first?</button>
+        </div>
+      </div>`;
+    _bindSuggestions();
+  });
+
+  // Send on button click
+  sendBtn.addEventListener("click", () => {
+    const text = input.value.trim();
+    if (!text) return;
+    input.value = "";
+    input.style.height = "";
+    _sendMessage(text);
+  });
+
+  // Send on Enter (Shift+Enter = newline)
+  input.addEventListener("keydown", e => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      sendBtn.click();
+    }
+  });
+
+  // Auto-grow textarea
+  input.addEventListener("input", () => {
+    input.style.height = "auto";
+    input.style.height = Math.min(input.scrollHeight, 120) + "px";
+  });
+
+  // Suggestion chips
+  function _bindSuggestions() {
+    msgArea.querySelectorAll(".chat-suggestion").forEach(btn => {
+      btn.addEventListener("click", () => {
+        const text = btn.textContent.trim();
+        panel.classList.remove("hidden");
+        _updateContextBadge();
+        _sendMessage(text);
+      });
+    });
+  }
+  _bindSuggestions();
+
+  // Update context badge whenever section changes
+  const _origShowSection = showSection;
+  window.showSection = function(name) {
+    _origShowSection(name);
+    _updateContextBadge();
+  };
+})();
 
 
 // ── Initial load ──────────────────────────────────────────────────────────────

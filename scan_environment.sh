@@ -825,12 +825,18 @@ to_json() {
 }
 
 to_inventory_json() {
-    # Emit JSON array of items that have both a version and a CPE (for CPE-based NVD scanning)
+    # Emit JSON array of items suitable for CPE-based NVD scanning (has cpe+version)
+    # OR OSV-based scanning (pip/npm/jar source with a version — no CPE needed).
     local first=1
     echo "["
     for item in "${ITEMS[@]}"; do
         IFS=$'\t' read -r name ver cat sev cpe src <<< "$item"
-        [[ -z "$ver" || -z "$cpe" ]] && continue
+        [[ -z "$ver" ]] && continue
+        # Include if: has CPE (NVD path), or source is pip/npm/jar (OSV path)
+        local include=0
+        [[ -n "$cpe" ]] && include=1
+        [[ "$src" == pip:* || "$src" == npm:* || "$src" == jar:* ]] && include=1
+        [[ $include -eq 0 ]] && continue
         _is_generic "$name" && continue
         [[ $first -eq 0 ]] && echo ","
         first=0
@@ -1129,10 +1135,9 @@ collect_standalone_tools() {
 }
 
 # ---------------------------------------------------------------------------
-# pip package inventory (high-value packages with CVE histories)
+# pip package inventory — emit ALL installed packages for OSV matching
 # ---------------------------------------------------------------------------
 collect_pip_packages() {
-    # Only run if pip is available
     local pip_bin=""
     for b in pip3 pip; do _cmd "$b" && pip_bin="$b" && break; done
     [[ -z "$pip_bin" ]] && return 0
@@ -1141,45 +1146,266 @@ collect_pip_packages() {
     raw=$(_run "$pip_bin" list --format=json 2>/dev/null || true)
     [[ -z "$raw" || "${raw:0:1}" != "[" ]] && return 0
 
-    # Packages worth monitoring in NVD
-    declare -A PIP_MAP=(
-        [cryptography]="cryptography:tool:HIGH:cpe:2.3:a:cryptography.io:cryptography:*:*:*:*:*:*:*:*"
-        [paramiko]="paramiko:network:HIGH:cpe:2.3:a:paramiko:paramiko:*:*:*:*:*:*:*:*"
-        [requests]="Python Requests:tool:MEDIUM:cpe:2.3:a:python-requests:requests:*:*:*:*:*:*:*:*"
-        [urllib3]="urllib3:tool:HIGH:cpe:2.3:a:urllib3_project:urllib3:*:*:*:*:*:*:*:*"
-        [pillow]="Pillow:tool:HIGH:cpe:2.3:a:python:pillow:*:*:*:*:*:*:*:*"
-        [jinja2]="Jinja2:tool:HIGH:cpe:2.3:a:palletsprojects:jinja:*:*:*:*:*:*:*:*"
-        [django]="Django:tool:HIGH:cpe:2.3:a:djangoproject:django:*:*:*:*:*:*:*:*"
-        [flask]="Flask:tool:HIGH:cpe:2.3:a:palletsprojects:flask:*:*:*:*:*:*:*:*"
-        [fastapi]="FastAPI:tool:HIGH:"
-        [aiohttp]="aiohttp:tool:HIGH:cpe:2.3:a:aiohttp_project:aiohttp:*:*:*:*:*:*:*:*"
-        [pyyaml]="PyYAML:tool:HIGH:cpe:2.3:a:pyyaml:pyyaml:*:*:*:*:*:*:*:*"
-        [lxml]="lxml:tool:HIGH:cpe:2.3:a:lxml:lxml:*:*:*:*:*:*:*:*"
-        [ansible]="Ansible:tool:HIGH:cpe:2.3:a:redhat:ansible:*:*:*:*:*:*:*:*"
-        [werkzeug]="Werkzeug:tool:HIGH:cpe:2.3:a:palletsprojects:werkzeug:*:*:*:*:*:*:*:*"
-        [celery]="Celery:tool:HIGH:cpe:2.3:a:celeryproject:celery:*:*:*:*:*:*:*:*"
-        [gunicorn]="Gunicorn:web:HIGH:cpe:2.3:a:gunicorn:gunicorn:*:*:*:*:*:*:*:*"
-        [pyopenssl]="pyOpenSSL:network:HIGH:cpe:2.3:a:pyopenssl_project:pyopenssl:*:*:*:*:*:*:*:*"
-        [pyjwt]="PyJWT:tool:HIGH:cpe:2.3:a:pyjwt_project:pyjwt:*:*:*:*:*:*:*:*"
-        [numpy]="NumPy:tool:MEDIUM:cpe:2.3:a:numpy:numpy:*:*:*:*:*:*:*:*"
-        [tensorflow]="TensorFlow:tool:HIGH:cpe:2.3:a:google:tensorflow:*:*:*:*:*:*:*:*"
-        [torch]="PyTorch:tool:HIGH:cpe:2.3:a:pytorch:pytorch:*:*:*:*:*:*:*:*"
-        [scrapy]="Scrapy:tool:HIGH:cpe:2.3:a:scrapy:scrapy:*:*:*:*:*:*:*:*"
-    )
-
-    # Parse JSON with awk (no jq/python required)
-    # Each package line: {"name": "Foo", "version": "1.2.3"}
+    local count=0
     while IFS= read -r line; do
         local pkg_name pkg_ver
         pkg_name=$(echo "$line" | grep -oP '"name":\s*"\K[^"]+' | head -1 || true)
         pkg_ver=$(echo "$line"  | grep -oP '"version":\s*"\K[^"]+' | head -1 || true)
-        [[ -z "$pkg_name" ]] && continue
-        local key="${pkg_name,,}"
-        if [[ -n "${PIP_MAP[$key]+_}" ]]; then
-            IFS=':' read -r nvd_name cat sev cpe <<< "${PIP_MAP[$key]}"
-            _add "$nvd_name" "$(_ver "$pkg_ver")" "$cat" "$sev" "$cpe" "pip $pkg_name"
-        fi
+        [[ -z "$pkg_name" || -z "$pkg_ver" ]] && continue
+        _add "$pkg_name" "$pkg_ver" "runtime" "MEDIUM" "" "pip:$pip_bin"
+        ((count++)) || true
     done < <(echo "$raw" | tr ',' '\n' | grep '"name"')
+
+    [[ $count -gt 0 ]] && echo "  Found $count pip package(s)" >&2
+}
+
+# ---------------------------------------------------------------------------
+# npm global packages + package-lock.json scanning
+# ---------------------------------------------------------------------------
+collect_npm_packages() {
+    _cmd npm || return 0
+
+    local count=0
+    declare -A seen_npm=()
+
+    # Global packages
+    local raw
+    raw=$(_run npm list -g --depth=0 --json 2>/dev/null || true)
+    if [[ -n "$raw" && "${raw:0:1}" == "{" ]]; then
+        while IFS= read -r line; do
+            local pkg_name pkg_ver
+            pkg_name=$(echo "$line" | grep -oP '^\s*"\K[^"]+(?=":\s*\{)' | head -1 || true)
+            pkg_ver=$(echo "$line"  | grep -oP '"version":\s*"\K[^"]+' | head -1 || true)
+            [[ -z "$pkg_name" || -z "$pkg_ver" ]] && continue
+            [[ "$pkg_name" == "npm" ]] && continue
+            local key="${pkg_name}@${pkg_ver}"
+            if [[ -z "${seen_npm[$key]+_}" ]]; then
+                seen_npm[$key]=1
+                _add "$pkg_name" "$pkg_ver" "runtime" "MEDIUM" "" "npm:global"
+                ((count++)) || true
+            fi
+        done < <(echo "$raw" | grep -E '"[^"]+": \{|"version":')
+    fi
+
+    # package-lock.json files in common project roots
+    local search_roots=("$HOME" /var/www /opt /srv /app /apps /deploy /home)
+    local lockfile
+    while IFS= read -r lockfile; do
+        [[ -z "$lockfile" ]] && continue
+        local lock_raw
+        lock_raw=$(cat "$lockfile" 2>/dev/null || true)
+        [[ -z "$lock_raw" ]] && continue
+
+        # npm v2/v3: "packages": { "node_modules/NAME": { "version": "x" } }
+        # npm v1:    "dependencies": { "NAME": { "version": "x" } }
+        # Extract name+version pairs using grep patterns — no jq needed
+        while IFS= read -r pkg_line; do
+            local pkg_name pkg_ver
+            # "node_modules/express": or "express":
+            pkg_name=$(echo "$pkg_line" | grep -oP '(?<=node_modules/)[^"]+|^[[:space:]]*"\K[^"]+(?=":\s*\{)' | tail -1 || true)
+            pkg_ver=$(echo "$pkg_line"  | grep -oP '"version":\s*"\K[^"]+' | head -1 || true)
+            [[ -z "$pkg_name" || -z "$pkg_ver" ]] && continue
+            # Skip nested node_modules (scoped packages under a parent)
+            [[ "$pkg_name" == *"node_modules"* ]] && continue
+            local key="${pkg_name}@${pkg_ver}"
+            if [[ -z "${seen_npm[$key]+_}" ]]; then
+                seen_npm[$key]=1
+                _add "$pkg_name" "$pkg_ver" "runtime" "MEDIUM" "" "npm:package-lock.json"
+                ((count++)) || true
+            fi
+        done < <(python3 -c "
+import json,sys
+try:
+    d=json.load(open('$lockfile'))
+    pkgs=d.get('packages',d.get('dependencies',{}))
+    for k,v in pkgs.items():
+        if not isinstance(v,dict): continue
+        ver=v.get('version','')
+        if ver: print(k+'|'+ver)
+except: pass
+" 2>/dev/null || true)
+    done < <(find "${search_roots[@]}" -maxdepth 6 -name "package-lock.json" \
+                 ! -path "*/node_modules/*" -readable 2>/dev/null | head -50)
+
+    [[ $count -gt 0 ]] && echo "  Found $count npm package(s)" >&2
+}
+
+# ---------------------------------------------------------------------------
+# Java JAR scanning (Log4j, Spring, Struts, etc.)
+# ---------------------------------------------------------------------------
+collect_java_jars() {
+    _cmd unzip || _cmd python3 || true  # need one of these to read MANIFEST.MF
+
+    local search_roots=(/opt /var/lib /usr/share /srv /app /apps /deploy /home /root)
+    # Add Tomcat webapps dir if present
+    for d in /var/lib/tomcat*/webapps /opt/tomcat*/webapps /usr/share/tomcat*/webapps; do
+        [[ -d "$d" ]] && search_roots+=("$d")
+    done
+
+    declare -A JAR_PATTERNS=(
+        [log4j]="Apache Log4j:runtime:CRITICAL:cpe:2.3:a:apache:log4j:*:*:*:*:*:*:*:*"
+        [log4j-core]="Apache Log4j:runtime:CRITICAL:cpe:2.3:a:apache:log4j:*:*:*:*:*:*:*:*"
+        [spring-core]="Spring Framework:runtime:HIGH:cpe:2.3:a:vmware:spring_framework:*:*:*:*:*:*:*:*"
+        [spring-web]="Spring Framework:runtime:HIGH:cpe:2.3:a:vmware:spring_framework:*:*:*:*:*:*:*:*"
+        [spring-webmvc]="Spring MVC:runtime:HIGH:cpe:2.3:a:vmware:spring_framework:*:*:*:*:*:*:*:*"
+        [struts2]="Apache Struts:runtime:CRITICAL:cpe:2.3:a:apache:struts:*:*:*:*:*:*:*:*"
+        [struts-core]="Apache Struts:runtime:CRITICAL:cpe:2.3:a:apache:struts:*:*:*:*:*:*:*:*"
+        [commons-collections]="Apache Commons Collections:runtime:HIGH:cpe:2.3:a:apache:commons_collections:*:*:*:*:*:*:*:*"
+        [commons-text]="Apache Commons Text:runtime:CRITICAL:cpe:2.3:a:apache:commons_text:*:*:*:*:*:*:*:*"
+        [jackson-databind]="FasterXML Jackson:runtime:HIGH:cpe:2.3:a:fasterxml:jackson-databind:*:*:*:*:*:*:*:*"
+        [xstream]="XStream:runtime:CRITICAL:cpe:2.3:a:xstream_project:xstream:*:*:*:*:*:*:*:*"
+        [shiro-core]="Apache Shiro:runtime:HIGH:cpe:2.3:a:apache:shiro:*:*:*:*:*:*:*:*"
+        [tomcat-embed]="Apache Tomcat:web:CRITICAL:cpe:2.3:a:apache:tomcat:*:*:*:*:*:*:*:*"
+        [hibernate-core]="Hibernate ORM:runtime:HIGH:cpe:2.3:a:hibernate:hibernate_orm:*:*:*:*:*:*:*:*"
+        [netty-all]="Netty:runtime:HIGH:cpe:2.3:a:netty:netty:*:*:*:*:*:*:*:*"
+        [netty-handler]="Netty:runtime:HIGH:cpe:2.3:a:netty:netty:*:*:*:*:*:*:*:*"
+        [guava]="Google Guava:runtime:MEDIUM:cpe:2.3:a:google:guava:*:*:*:*:*:*:*:*"
+        [okhttp]="OkHttp:runtime:HIGH:cpe:2.3:a:squareup:okhttp:*:*:*:*:*:*:*:*"
+        [gson]="Google Gson:runtime:MEDIUM:cpe:2.3:a:google:gson:*:*:*:*:*:*:*:*"
+        [bcprov]="Bouncy Castle:runtime:HIGH:cpe:2.3:a:bouncycastle:bouncy_castle_crypto_package:*:*:*:*:*:*:*:*"
+        [bouncy-castle]="Bouncy Castle:runtime:HIGH:cpe:2.3:a:bouncycastle:bouncy_castle_crypto_package:*:*:*:*:*:*:*:*"
+        [poi-ooxml]="Apache POI:runtime:HIGH:cpe:2.3:a:apache:poi:*:*:*:*:*:*:*:*"
+        [opensaml]="OpenSAML:runtime:CRITICAL:cpe:2.3:a:shibboleth:opensaml:*:*:*:*:*:*:*:*"
+        [jenkins]="Jenkins:tool:CRITICAL:cpe:2.3:a:jenkins:jenkins:*:*:*:*:*:*:*:*"
+    )
+
+    declare -A seen_jars=()
+    local count=0
+    local jarfile
+
+    while IFS= read -r jarfile; do
+        [[ -z "$jarfile" ]] && continue
+        local base
+        base=$(basename "$jarfile" .jar | tr '[:upper:]' '[:lower:]')
+
+        # Match against known patterns
+        local matched_key=""
+        for pat in "${!JAR_PATTERNS[@]}"; do
+            if [[ "$base" == *"$pat"* ]]; then
+                matched_key="$pat"
+                break
+            fi
+        done
+        [[ -z "$matched_key" ]] && continue
+
+        IFS=':' read -r nvd_name cat sev cpe <<< "${JAR_PATTERNS[$matched_key]}"
+
+        # Extract version from MANIFEST.MF (prefer) or filename
+        local ver=""
+        if _cmd python3; then
+            ver=$(python3 -c "
+import zipfile, sys
+try:
+    z=zipfile.ZipFile('$jarfile')
+    m=z.read('META-INF/MANIFEST.MF').decode(errors='replace')
+    for line in m.splitlines():
+        if line.startswith('Implementation-Version:') or line.startswith('Bundle-Version:'):
+            print(line.split(':',1)[1].strip()); break
+except: pass
+" 2>/dev/null || true)
+        fi
+        if [[ -z "$ver" ]]; then
+            # Fall back: last version-looking segment in filename
+            ver=$(echo "$base" | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)*' | tail -1 || true)
+        fi
+
+        local key="${nvd_name}@${ver}"
+        if [[ -z "${seen_jars[$key]+_}" ]]; then
+            seen_jars[$key]=1
+            _add "$nvd_name" "$ver" "$cat" "$sev" "$cpe" "jar:$(basename "$jarfile")"
+            ((count++)) || true
+        fi
+    done < <(find "${search_roots[@]}" -maxdepth 8 -name "*.jar" -readable 2>/dev/null | head -500)
+
+    [[ $count -gt 0 ]] && echo "  Found $count Java JAR(s)" >&2
+}
+
+# ---------------------------------------------------------------------------
+# OS patch staleness (Linux)
+# ---------------------------------------------------------------------------
+collect_patch_staleness() {
+    [[ "$(uname -s)" != "Linux" ]] && return 0
+
+    # Debian/Ubuntu: check apt-get upgrade simulation for pending security patches
+    if _cmd apt-get; then
+        local pending
+        pending=$(apt-get -s upgrade 2>/dev/null | grep -c "^Inst" || true)
+        if [[ "$pending" -gt 0 ]]; then
+            echo "  [INFO] $pending pending apt upgrade(s) available" >&2
+        fi
+        # Security-only count
+        local sec_pending=0
+        if _cmd apt-get && [[ -f /usr/lib/apt/apt-helper ]] || _cmd unattended-upgrade; then
+            sec_pending=$(apt-get -s upgrade 2>/dev/null | grep -c "^Inst.*security" || true)
+            if [[ "$sec_pending" -gt 0 ]]; then
+                echo "  [WARN] $sec_pending pending SECURITY update(s)" >&2
+                _add "Linux kernel" "" "os" "HIGH" "" "apt-get: $sec_pending security updates pending"
+            fi
+        fi
+    fi
+
+    # RHEL/CentOS/Fedora: yum/dnf security check
+    if _cmd dnf; then
+        local sec
+        sec=$(dnf updateinfo list security 2>/dev/null | grep -c "^[A-Z]" || true)
+        if [[ "$sec" -gt 0 ]]; then
+            echo "  [WARN] $sec pending DNF security update(s)" >&2
+            _add "Linux kernel" "" "os" "HIGH" "" "dnf: $sec security updates pending"
+        fi
+    elif _cmd yum; then
+        local sec
+        sec=$(yum check-update --security 2>/dev/null | grep -c "^[a-zA-Z]" || true)
+        if [[ "$sec" -gt 0 ]]; then
+            echo "  [WARN] $sec pending YUM security update(s)" >&2
+        fi
+    fi
+
+    # Check time since last successful package DB update (apt)
+    if [[ -f /var/lib/apt/periodic/update-success-stamp ]]; then
+        local stamp_age
+        stamp_age=$(( ( $(date +%s) - $(stat -c %Y /var/lib/apt/periodic/update-success-stamp 2>/dev/null || echo 0) ) / 86400 ))
+        if [[ "$stamp_age" -gt 7 ]]; then
+            echo "  [WARN] apt package database is $stamp_age days old (last apt-get update)" >&2
+        fi
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# Credential / secrets manager CLIs
+# ---------------------------------------------------------------------------
+collect_credential_tools() {
+    local raw
+
+    if _cmd op; then
+        raw=$(_run op --version)
+        _add "1Password CLI" "$(_ver "$raw")" "tool" "HIGH" "" "op --version"
+    fi
+
+    for bin in bw bitwarden; do
+        if _cmd "$bin"; then
+            raw=$(_run "$bin" --version)
+            _add "Bitwarden CLI" "$(_ver "$raw")" "tool" "HIGH" \
+                "cpe:2.3:a:bitwarden:bitwarden:*:*:*:*:*:*:*:*" "$bin --version"
+            break
+        fi
+    done
+
+    if _cmd aws; then
+        raw=$(_run aws --version)
+        _add "AWS CLI" "$(_ver "$raw")" "tool" "HIGH" \
+            "cpe:2.3:a:amazon:aws_cli:*:*:*:*:*:*:*:*" "aws --version"
+    fi
+
+    if _cmd az; then
+        raw=$(_run az --version)
+        _add "Azure CLI" "$(_ver "$raw")" "tool" "HIGH" \
+            "cpe:2.3:a:microsoft:azure_cli:*:*:*:*:*:*:*:*" "az --version"
+    fi
+
+    if _cmd gcloud; then
+        raw=$(_run gcloud version)
+        _add "Google Cloud SDK" "$(_ver "$raw")" "tool" "HIGH" "" "gcloud version"
+    fi
 }
 
 # ---------------------------------------------------------------------------
@@ -1312,6 +1538,10 @@ collect_containers
 collect_network
 collect_standalone_tools
 collect_pip_packages
+collect_npm_packages
+collect_java_jars
+collect_patch_staleness
+collect_credential_tools
 collect_packages
 collect_brew
 collect_ports

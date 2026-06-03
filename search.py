@@ -332,6 +332,246 @@ def _versioned_cpe(cpe_template: str, version: str) -> str:
     return cpe_template
 
 
+# ── OSV.dev ecosystem mapping ─────────────────────────────────────────────────
+
+# Maps (name_fragment_lower, category, source_fragment) → OSV ecosystem.
+# OSV ecosystem strings: https://ossf.github.io/osv-schema/#affectedpackagename-field
+_OSV_ECOSYSTEM_MAP: list[tuple[str, str, str, str]] = [
+    # (name_substr, category, source_substr, ecosystem)
+    # Python packages
+    ("",        "python",    "pip",       "PyPI"),
+    ("",        "",          "pip",       "PyPI"),
+    ("",        "",          "pip3",      "PyPI"),
+    # Node / npm
+    ("",        "node",      "npm",       "npm"),
+    ("",        "",          "npm",       "npm"),
+    ("",        "",          "yarn",      "npm"),
+    ("",        "",          "pnpm",      "npm"),
+    # Java / Maven
+    ("",        "java",      "maven",     "Maven"),
+    ("",        "",          "mvn",       "Maven"),
+    ("",        "",          "gradle",    "Maven"),
+    # Ruby
+    ("",        "ruby",      "gem",       "RubyGems"),
+    ("",        "",          "gem",       "RubyGems"),
+    # Go
+    ("go",      "runtime",   "",          "Go"),
+    ("",        "go",        "",          "Go"),
+    # Rust / Cargo
+    ("",        "",          "cargo",     "crates.io"),
+    # PHP / Composer
+    ("",        "php",       "composer",  "Packagist"),
+    ("",        "",          "composer",  "Packagist"),
+    # Linux distros — use distro-specific ecosystems for backpatch awareness
+    ("",        "os",        "dpkg",      "Debian"),
+    ("",        "os",        "apt",       "Debian"),
+    ("",        "os",        "rpm",       "Red Hat"),
+    ("",        "os",        "yum",       "Red Hat"),
+    ("",        "os",        "dnf",       "Red Hat"),
+    ("",        "os",        "apk",       "Alpine"),
+    ("",        "os",        "brew",      "Homebrew"),
+    # NuGet (.NET packages) — source set by PS1 scanner
+    ("",        "nuget",     "nuget:",    "NuGet"),
+    ("",        "",          "nuget:",    "NuGet"),
+    # Java JARs — source is "jar:<filename>"; Maven is the best OSV ecosystem
+    ("",        "",          "jar:",      "Maven"),
+    # Catch-all runtimes by name
+    ("python",  "",          "",          "PyPI"),
+    ("node",    "",          "",          "npm"),
+    ("nodejs",  "",          "",          "npm"),
+    ("nginx",   "",          "",          "OSS-Fuzz"),
+    ("linux",   "",          "",          "Linux"),
+]
+
+# Package name normalisation per ecosystem (OSV is case-sensitive in places)
+_OSV_NAME_MAP: dict[str, str] = {
+    # common NVD names → OSV package names
+    "openssl":              "openssl",
+    "openssh":              "openssh",
+    "apache http server":   "httpd",
+    "nginx":                "nginx",
+    "python":               "python3",
+    "node.js":              "node",
+    "nodejs":               "node",
+    "go":                   "stdlib",
+    "linux kernel":         "linux",
+}
+
+
+def _osv_ecosystem(name: str, category: str, source: str) -> str:
+    """Infer the OSV ecosystem string from inventory metadata."""
+    nl = name.lower()
+    cl = category.lower()
+    sl = source.lower()
+    for name_sub, cat_sub, src_sub, eco in _OSV_ECOSYSTEM_MAP:
+        if name_sub and name_sub not in nl:
+            continue
+        if cat_sub and cat_sub not in cl:
+            continue
+        if src_sub and src_sub not in sl:
+            continue
+        return eco
+    return ""
+
+
+def _osv_package_name(name: str, ecosystem: str) -> str:
+    """Normalise a product name to what OSV expects for the given ecosystem."""
+    normalised = _OSV_NAME_MAP.get(name.lower(), name)
+    # PyPI names are lowercase with hyphens
+    if ecosystem == "PyPI":
+        return normalised.lower().replace("_", "-")
+    return normalised
+
+
+OSV_BATCH_URL = "https://api.osv.dev/v1/querybatch"
+OSV_QUERY_URL = "https://api.osv.dev/v1/query"
+
+
+def _osv_severity(vuln: dict) -> tuple[str, float | None]:
+    """Extract severity label and CVSS score from an OSV vulnerability dict."""
+    # OSV embeds CVSS in severity[] or database_specific
+    for sev in vuln.get("severity", []):
+        score_str = sev.get("score", "")
+        stype = sev.get("type", "")
+        if "CVSS" in stype and score_str:
+            try:
+                score = float(score_str.split("/")[0]) if "/" not in score_str else None
+                # CVSS vectors look like "CVSS:3.1/AV:N/..." — extract base score differently
+                if score is None or score > 10:
+                    # It's a vector string, skip score extraction here
+                    score = None
+            except (ValueError, AttributeError):
+                score = None
+            # Map severity from CVSS score buckets
+            if score is not None:
+                if score >= 9.0:   return "CRITICAL", score
+                if score >= 7.0:   return "HIGH",     score
+                if score >= 4.0:   return "MEDIUM",   score
+                if score > 0:      return "LOW",      score
+    # Fall back to aliases in the OSV record
+    aliases = vuln.get("aliases", [])
+    return "UNKNOWN", None
+
+
+def process_osv(
+    name: str,
+    version: str,
+    ecosystem: str,
+    cfg,
+    log=print,
+    min_severity: str = "NONE",
+) -> tuple[list[dict], list[dict]]:
+    """
+    Query OSV.dev for vulnerabilities affecting a specific package version.
+    Handles ecosystem-aware version matching (including distro backpatches).
+    Returns (new_cves, upgraded_cves).
+    """
+    osv_name = _osv_package_name(name, ecosystem)
+    table_key = f"{name} {version}"
+    table = re.sub(r"\W+", "_", table_key)
+    database.create_table(table)
+
+    payload = {
+        "version": version,
+        "package": {"name": osv_name, "ecosystem": ecosystem},
+    }
+    try:
+        resp = requests.post(OSV_QUERY_URL, json=payload, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as exc:
+        log(f"  [yellow]OSV query failed for {name} {version} ({ecosystem}): {exc}[/yellow]")
+        return [], []
+
+    vulns = data.get("vulns", [])
+    if not vulns:
+        return [], []
+
+    # Enrich: fetch full details for each vuln to get CVE aliases + CVSS
+    candidates: list[dict] = []
+    now = datetime.utcnow().isoformat(timespec="seconds")
+
+    for v in vulns:
+        osv_id = v.get("id", "")
+        aliases = v.get("aliases", [])
+        # Find the CVE ID — prefer the canonical CVE alias
+        cve_id = next((a for a in aliases if a.startswith("CVE-")), None)
+        if not cve_id:
+            # Use OSV ID if no CVE alias (GHSA- etc.)
+            cve_id = osv_id
+
+        severity, cvss_score = _osv_severity(v)
+        if not _passes_threshold(severity, min_severity) and severity != "UNKNOWN":
+            continue
+
+        # Build a description from OSV summary/details
+        description = v.get("summary") or v.get("details") or "No description available."
+        description = description[:1000]
+
+        published = (v.get("published") or now)[:19].replace("T", " ")
+        modified  = (v.get("modified")  or now)[:19].replace("T", " ")
+
+        # Extract reference URLs
+        refs = [
+            {"url": r["url"], "tags": r.get("type", "").split(",")}
+            for r in v.get("references", [])[:10]
+            if r.get("url")
+        ]
+
+        # CWE from database_specific or severity
+        cwe = ""
+        db_specific = v.get("database_specific", {})
+        if isinstance(db_specific, dict):
+            cwe = db_specific.get("cwe_ids", [""])[0] if db_specific.get("cwe_ids") else ""
+
+        candidates.append({
+            "keyword":         table_key,
+            "id":              cve_id,
+            "publish_date":    published,
+            "last_modified":   modified,
+            "description":     description,
+            "severity":        severity,
+            "cvss_score":      cvss_score,
+            "cwe":             cwe,
+            "cpe":             "",
+            "refs":            refs,
+            "epss_score":      None,
+            "epss_percentile": None,
+            "kev":             False,
+            "osv_id":          osv_id,
+        })
+
+    if candidates:
+        try:
+            epss_mod.enrich_cves(candidates, log=log)
+        except Exception as exc:
+            log(f"  [yellow]EPSS enrichment failed: {exc}[/yellow]")
+
+    new_cves: list[dict] = []
+    upgraded_cves: list[dict] = []
+
+    for entry in candidates:
+        is_new, is_upgraded = database.insert_cve(
+            table, entry["id"], entry["publish_date"], entry["last_modified"],
+            entry["description"], entry["severity"], entry["cvss_score"],
+            entry["cwe"], entry["cpe"], json.dumps(entry["refs"]), table_key,
+            epss_score=entry.get("epss_score"),
+            epss_percentile=entry.get("epss_percentile"),
+            kev=entry.get("kev", False),
+            scan_source="osv",
+        )
+        if is_new:
+            new_cves.append(entry)
+        elif is_upgraded:
+            upgraded_cves.append({**entry, "upgraded": True})
+
+    new_cves.sort(key=lambda c: SEVERITY_ORDER.get(c["severity"], 5))
+    upgraded_cves.sort(key=lambda c: SEVERITY_ORDER.get(c["severity"], 5))
+    if new_cves or upgraded_cves:
+        log(f"  {table_key} [OSV/{ecosystem}]: {len(new_cves)} new, {len(upgraded_cves)} upgraded CVE(s)")
+    return new_cves, upgraded_cves
+
+
 def process_cpe(
     name: str,
     version: str,
@@ -431,28 +671,30 @@ def run_inventory_scan(
     min_severity: str = "NONE",
 ) -> tuple[int, int]:
     """
-    Scan CVEs for every software item in the inventory that has a version and CPE.
-    Runs after the normal keyword scan. Returns (new_count, upgraded_count).
+    Scan CVEs for every software item in the inventory.
+    Runs two complementary passes:
+      1. NVD CPE scan — for items with a known CPE string
+      2. OSV.dev scan — for items where an ecosystem can be inferred
+    Returns (new_count, upgraded_count).
     """
     cfg = _load_config()
-    items = database.inventory_get_cpe_items()
-    if not items:
-        return 0, 0
-
-    # Deduplicate by (name, version) — multiple assets may run the same software
-    seen: set[tuple[str, str]] = set()
-    unique = []
-    for item in items:
-        key = (item["name"], item["version"])
-        if key not in seen:
-            seen.add(key)
-            unique.append(item)
-
-    log(f"CPE inventory scan: {len(unique)} unique software version(s)...")
     all_new, all_upgraded = 0, 0
-    for item in unique:
+
+    # ── Pass 1: NVD CPE scan (unchanged) ─────────────────────────────────────
+    cpe_items = database.inventory_get_cpe_items()
+    seen_cpe: set[tuple[str, str]] = set()
+    unique_cpe = []
+    for item in cpe_items:
+        key = (item["name"], item["version"])
+        if key not in seen_cpe:
+            seen_cpe.add(key)
+            unique_cpe.append(item)
+
+    if unique_cpe:
+        log(f"NVD CPE inventory scan: {len(unique_cpe)} unique software version(s)...")
+    for item in unique_cpe:
         if stop_event and stop_event.is_set():
-            break
+            return all_new, all_upgraded
         try:
             new, upgraded = process_cpe(
                 item["name"], item["version"], item["cpe"],
@@ -462,6 +704,39 @@ def run_inventory_scan(
             all_upgraded += len(upgraded)
         except Exception as exc:
             log(f"  [yellow]CPE scan failed for {item['name']} {item['version']}: {exc}[/yellow]")
+
+    # ── Pass 2: OSV.dev scan ──────────────────────────────────────────────────
+    osv_items = database.inventory_get_osv_items()
+    seen_osv: set[tuple[str, str, str]] = set()
+    unique_osv = []
+    for item in osv_items:
+        # Resolve ecosystem — use cached value if present
+        eco = item.get("osv_ecosystem") or _osv_ecosystem(
+            item["name"], item.get("category", ""), item.get("source", "")
+        )
+        if not eco:
+            continue  # No ecosystem mapping — skip OSV for this item
+        if item.get("id") and not item.get("osv_ecosystem"):
+            database.inventory_set_osv_ecosystem(item["id"], eco)
+        key = (item["name"], item["version"], eco)
+        if key not in seen_osv:
+            seen_osv.add(key)
+            unique_osv.append({**item, "osv_ecosystem": eco})
+
+    if unique_osv:
+        log(f"OSV.dev inventory scan: {len(unique_osv)} unique package/ecosystem pair(s)...")
+    for item in unique_osv:
+        if stop_event and stop_event.is_set():
+            return all_new, all_upgraded
+        try:
+            new, upgraded = process_osv(
+                item["name"], item["version"], item["osv_ecosystem"],
+                cfg, log=log, min_severity=min_severity,
+            )
+            all_new += len(new)
+            all_upgraded += len(upgraded)
+        except Exception as exc:
+            log(f"  [yellow]OSV scan failed for {item['name']} {item['version']}: {exc}[/yellow]")
 
     return all_new, all_upgraded
 
