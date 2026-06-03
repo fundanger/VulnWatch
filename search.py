@@ -383,7 +383,9 @@ def process_cpe(
 
     new_cves: list[dict] = []
     upgraded_cves: list[dict] = []
+    current_cve_ids: set[str] = set()
     for entry in candidates:
+        current_cve_ids.add(entry["id"])
         is_new, is_upgraded = database.insert_cve(
             table, entry["id"], entry["publish_date"], entry["last_modified"],
             entry["description"], entry["severity"], entry["cvss_score"],
@@ -391,11 +393,25 @@ def process_cpe(
             epss_score=entry.get("epss_score"),
             epss_percentile=entry.get("epss_percentile"),
             kev=entry.get("kev", False),
+            scan_source="cpe",
         )
         if is_new:
             new_cves.append(entry)
         elif is_upgraded:
             upgraded_cves.append({**entry, "upgraded": True})
+
+    # Auto-patch: find CVEs previously inserted by a CPE scan for this table
+    # that NVD no longer returns — the installed version is no longer vulnerable.
+    previously_cpe_scanned = database.get_cpe_scanned_cve_ids(table)
+    no_longer_vulnerable = previously_cpe_scanned - current_cve_ids
+    if no_longer_vulnerable:
+        patched_count = database.triage_auto_patch(
+            list(no_longer_vulnerable),
+            patched_version=version,
+            actor="inventory-scan",
+        )
+        if patched_count:
+            log(f"  {table_key}: auto-patched {patched_count} CVE(s) no longer vulnerable in v{version}")
 
     new_cves.sort(key=lambda c: SEVERITY_ORDER.get(c["severity"], 5))
     upgraded_cves.sort(key=lambda c: SEVERITY_ORDER.get(c["severity"], 5))

@@ -193,7 +193,8 @@ def _cve_columns_ddl() -> str:
         "alerted_score    REAL,"
         "epss_score       REAL,"
         "epss_percentile  REAL,"
-        "kev              INTEGER DEFAULT 0"
+        "kev              INTEGER DEFAULT 0,"
+        "scan_source      TEXT DEFAULT 'keyword'"
     )
 
 
@@ -210,6 +211,7 @@ def create_table(service_name: str) -> None:
             ("epss_score",       "REAL"),
             ("epss_percentile",  "REAL"),
             ("kev",              "INTEGER DEFAULT 0"),
+            ("scan_source",      "TEXT DEFAULT 'keyword'"),
         ]:
             _add_column_if_missing(conn, f'"{service_name}"', col, typedef)
         trans.commit()
@@ -230,6 +232,7 @@ def insert_cve(
     epss_score: float | None = None,
     epss_percentile: float | None = None,
     kev: bool = False,
+    scan_source: str = "keyword",
 ) -> tuple[bool, bool]:
     """
     Returns (is_new, is_upgraded).
@@ -243,20 +246,20 @@ def insert_cve(
                 f'INSERT OR IGNORE INTO "{table}" '
                 "(cve_id, publish_date, last_modified, description, severity, cvss_score, "
                 "cwe, cpe, references_json, keyword, alerted_severity, alerted_score, "
-                "epss_score, epss_percentile, kev) "
+                "epss_score, epss_percentile, kev, scan_source) "
                 "VALUES (:cve_id,:publish_date,:last_modified,:description,:severity,:cvss_score,"
                 ":cwe,:cpe,:references_json,:keyword,:severity2,:cvss_score2,"
-                ":epss_score,:epss_percentile,:kev)"
+                ":epss_score,:epss_percentile,:kev,:scan_source)"
             )
         else:
             ins = text(
                 f'INSERT INTO "{table}" '
                 "(cve_id, publish_date, last_modified, description, severity, cvss_score, "
                 "cwe, cpe, references_json, keyword, alerted_severity, alerted_score, "
-                "epss_score, epss_percentile, kev) "
+                "epss_score, epss_percentile, kev, scan_source) "
                 "VALUES (:cve_id,:publish_date,:last_modified,:description,:severity,:cvss_score,"
                 ":cwe,:cpe,:references_json,:keyword,:severity2,:cvss_score2,"
-                ":epss_score,:epss_percentile,:kev) "
+                ":epss_score,:epss_percentile,:kev,:scan_source) "
                 "ON CONFLICT (cve_id) DO NOTHING"
             )
 
@@ -266,6 +269,7 @@ def insert_cve(
             cwe=cwe, cpe=cpe, references_json=references_json, keyword=keyword,
             severity2=severity, cvss_score2=cvss_score,
             epss_score=epss_score, epss_percentile=epss_percentile, kev=int(kev),
+            scan_source=scan_source,
         )
         result = conn.execute(ins, params)
         if result.rowcount > 0:
@@ -1105,11 +1109,14 @@ def bootstrap_triage() -> None:
                 updated_at  TEXT NOT NULL
             )
         """))
-        _add_column_if_missing(conn, "cve_triage", "status",     "TEXT DEFAULT 'open'")
-        _add_column_if_missing(conn, "cve_triage", "assignee",   "TEXT DEFAULT ''")
-        _add_column_if_missing(conn, "cve_triage", "due_date",   "TEXT DEFAULT ''")
-        _add_column_if_missing(conn, "cve_triage", "created_at", "TEXT NOT NULL DEFAULT ''")
-        _add_column_if_missing(conn, "cve_triage", "updated_at", "TEXT NOT NULL DEFAULT ''")
+        _add_column_if_missing(conn, "cve_triage", "status",          "TEXT DEFAULT 'open'")
+        _add_column_if_missing(conn, "cve_triage", "assignee",        "TEXT DEFAULT ''")
+        _add_column_if_missing(conn, "cve_triage", "due_date",        "TEXT DEFAULT ''")
+        _add_column_if_missing(conn, "cve_triage", "created_at",      "TEXT NOT NULL DEFAULT ''")
+        _add_column_if_missing(conn, "cve_triage", "updated_at",      "TEXT NOT NULL DEFAULT ''")
+        _add_column_if_missing(conn, "cve_triage", "patched_version", "TEXT DEFAULT ''")
+        _add_column_if_missing(conn, "cve_triage", "patched_at",      "TEXT DEFAULT ''")
+        _add_column_if_missing(conn, "cve_triage", "patched_by",      "TEXT DEFAULT ''")
         trans.commit()
 
 
@@ -1171,6 +1178,66 @@ def triage_sla_breached() -> list[dict]:
             "ORDER BY due_date"
         ), {"today": today}).fetchall()
         return [_row_to_dict(r) for r in rows]
+
+
+def get_cpe_scanned_cve_ids(table: str) -> set[str]:
+    """Return all CVE IDs in a table that were inserted by a CPE (inventory) scan."""
+    with _connect() as conn:
+        try:
+            rows = conn.execute(
+                text(f'SELECT cve_id FROM "{table}" WHERE scan_source=\'cpe\'')
+            ).fetchall()
+            return {r[0] for r in rows}
+        except Exception:
+            return set()
+
+
+def triage_auto_patch(cve_ids: list[str], patched_version: str = "", actor: str = "inventory-scan") -> int:
+    """
+    Mark CVEs as patched=True in triage when a CPE rescan shows they are no longer
+    vulnerable for the installed version. Only updates rows that aren't already in a
+    terminal state (closed/patched/wont_fix/false_positive).
+
+    Returns the number of rows actually updated.
+    """
+    if not cve_ids:
+        return 0
+    now = datetime.now().isoformat(timespec="seconds")
+    today = now[:10]
+    updated = 0
+    with _connect() as conn:
+        for cve_id in cve_ids:
+            # Upsert: create triage row if none exists, otherwise update only non-terminal rows
+            existing = conn.execute(
+                text("SELECT status FROM cve_triage WHERE cve_id=:cid"), {"cid": cve_id}
+            ).fetchone()
+            if existing:
+                if existing[0] in ("closed", "patched", "wont_fix", "false_positive"):
+                    continue
+                conn.execute(text(
+                    "UPDATE cve_triage SET status='patched', patched_at=:pa, patched_version=:pv, "
+                    "patched_by=:pb, updated_at=:now WHERE cve_id=:cid"
+                ), {"pa": today, "pv": patched_version, "pb": actor, "now": now, "cid": cve_id})
+            else:
+                if _IS_SQLITE:
+                    conn.execute(text(
+                        "INSERT OR IGNORE INTO cve_triage "
+                        "(cve_id, status, assignee, due_date, patched_at, patched_version, patched_by, created_at, updated_at) "
+                        "VALUES (:cid,'patched','','', :pa,:pv,:pb,:now,:now)"
+                    ), {"cid": cve_id, "pa": today, "pv": patched_version, "pb": actor, "now": now})
+                else:
+                    conn.execute(text(
+                        "INSERT INTO cve_triage "
+                        "(cve_id, status, assignee, due_date, patched_at, patched_version, patched_by, created_at, updated_at) "
+                        "VALUES (:cid,'patched','','', :pa,:pv,:pb,:now,:now) ON CONFLICT (cve_id) DO NOTHING"
+                    ), {"cid": cve_id, "pa": today, "pv": patched_version, "pb": actor, "now": now})
+            updated += 1
+            audit_log_insert(
+                "auto_patched", cve_id,
+                f"version={patched_version} no longer vulnerable per CPE rescan",
+                actor=actor,
+            )
+    return updated
 
 
 # ── False-positive suppression ────────────────────────────────────────────────
