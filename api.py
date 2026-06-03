@@ -1621,6 +1621,302 @@ def api_remediation_notes(cve_id: str):
     return jsonify({"ok": True})
 
 
+# ── LLM intelligence endpoints ───────────────────────────────────────────────
+
+def _llm_chat(prompt: str, max_tokens: int = 600, system: str = "") -> str:
+    """Shared helper: call the configured LLM and return the assistant text."""
+    import urllib.request, urllib.error
+    cfg = _llm_config()
+    if not cfg["api_key"] and cfg["provider"] not in ("ollama",):
+        raise ValueError("LLM API key not configured — set LLM_API_KEY or configure in Settings.")
+    if not cfg["base_url"]:
+        raise ValueError("LLM base URL not configured.")
+
+    messages = []
+    if system:
+        messages.append({"role": "system", "content": system})
+    messages.append({"role": "user", "content": prompt})
+
+    payload = json.dumps({
+        "model": cfg["model"],
+        "messages": messages,
+        "max_tokens": max_tokens,
+        "temperature": 0.2,
+    }).encode()
+
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {cfg['api_key']}",
+    }
+    if cfg["provider"] == "anthropic":
+        headers["x-api-key"] = cfg["api_key"]
+        del headers["Authorization"]
+        headers["anthropic-version"] = "2023-06-01"
+
+    url = cfg["base_url"].rstrip("/") + "/chat/completions"
+    req = urllib.request.Request(url, data=payload, headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = json.loads(resp.read())
+            return data["choices"][0]["message"]["content"].strip()
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode(errors="replace")[:300]
+        raise RuntimeError(f"LLM API error {exc.code}: {body}") from exc
+
+
+@app.route("/api/llm/nl-search", methods=["POST"])
+def api_llm_nl_search():
+    """Translate a natural-language query into Browse CVEs filter params."""
+    data = request.get_json(force=True) or {}
+    query = str(data.get("query", "")).strip()[:500]
+    if not query:
+        return _safe_error("query required", 400)
+
+    system = (
+        "You are a security data analyst assistant. Convert the user's natural language "
+        "query into JSON filter parameters for a CVE database. "
+        "Return ONLY valid JSON with these optional keys: "
+        '{"search": "text", "severity": "CRITICAL|HIGH|MEDIUM|LOW|NONE", '
+        '"date_from": "YYYY-MM-DD", "date_to": "YYYY-MM-DD", "kev": true/false}. '
+        "No other text, no markdown, no explanation."
+    )
+    try:
+        raw = _llm_chat(query, max_tokens=200, system=system)
+        # Strip markdown fences if present
+        raw = re.sub(r"^```[a-z]*\n?", "", raw.strip())
+        raw = re.sub(r"\n?```$", "", raw.strip())
+        filters = json.loads(raw)
+        # Validate keys
+        allowed = {"search", "severity", "date_from", "date_to", "kev"}
+        filters = {k: v for k, v in filters.items() if k in allowed}
+        return jsonify({"ok": True, "filters": filters, "interpreted": raw})
+    except Exception as exc:
+        _log.error("nl-search error: %s", exc)
+        return _safe_error(str(exc), 500)
+
+
+@app.route("/api/llm/summarize/<string:cve_id>")
+def api_llm_summarize(cve_id: str):
+    """Generate an executive summary for a CVE."""
+    _assert_cve_id(cve_id)
+    table = request.args.get("table", "")
+    if table not in database.list_cve_tables():
+        return _safe_error("table not found", 404)
+    row = database.get_cve(table, cve_id)
+    if not row:
+        return _safe_error("CVE not found", 404)
+
+    assets = database.assets_match_cpe(row.get("cpe") or "")
+    asset_names = ", ".join(a["name"] for a in assets[:5]) if assets else "none identified"
+    triage = database.triage_get(cve_id)
+    status = (triage or {}).get("status", "untriaged")
+
+    prompt = (
+        f"Write a 3-sentence executive summary of this vulnerability for a non-technical audience. "
+        f"Include what it is, what the impact is, and what action is recommended. Be concise.\n\n"
+        f"CVE: {cve_id}\n"
+        f"Severity: {row.get('severity')} (CVSS {row.get('cvss_score')})\n"
+        f"Affected software: {row.get('cpe') or row.get('keyword')}\n"
+        f"Description: {(row.get('description') or '')[:500]}\n"
+        f"Affected internal assets: {asset_names}\n"
+        f"Current status: {status}"
+    )
+    try:
+        summary = _llm_chat(prompt, max_tokens=300,
+                            system="You are a security engineer writing for a CISO audience.")
+        return jsonify({"ok": True, "summary": summary})
+    except Exception as exc:
+        _log.error("summarize error: %s", exc)
+        return _safe_error(str(exc), 500)
+
+
+@app.route("/api/llm/triage-suggest/<string:cve_id>")
+def api_llm_triage_suggest(cve_id: str):
+    """Suggest triage status, assignee bucket, and due date based on CVE data + history."""
+    _assert_cve_id(cve_id)
+    table = request.args.get("table", "")
+    if table not in database.list_cve_tables():
+        return _safe_error("table not found", 404)
+    row = database.get_cve(table, cve_id)
+    if not row:
+        return _safe_error("CVE not found", 404)
+
+    # Pull recent similar triage decisions (same CWE or same product) for context
+    recent = database.triage_get_all()[:20]
+    recent_summary = "; ".join(
+        f"{t['cve_id']}→{t['status']}" for t in recent[:10]
+    ) if recent else "none"
+
+    assets = database.assets_match_cpe(row.get("cpe") or "")
+    asset_env = ", ".join(set(a.get("environment", "") for a in assets if a.get("environment"))) or "unknown"
+
+    system = (
+        "You are a security triage analyst. Suggest triage fields for a CVE. "
+        "Return ONLY JSON with keys: "
+        '{"status": "open|investigating|mitigated|wont_fix|false_positive", '
+        '"due_days": <integer days from today>, '
+        '"rationale": "<one sentence>"}. '
+        "No other text."
+    )
+    prompt = (
+        f"CVE: {cve_id}\n"
+        f"Severity: {row.get('severity')} CVSS {row.get('cvss_score')}\n"
+        f"KEV: {bool(row.get('kev'))}\n"
+        f"EPSS: {row.get('epss_score')}\n"
+        f"Affected asset environments: {asset_env}\n"
+        f"Description: {(row.get('description') or '')[:400]}\n"
+        f"Recent triage history: {recent_summary}"
+    )
+    try:
+        raw = _llm_chat(prompt, max_tokens=200, system=system)
+        raw = re.sub(r"^```[a-z]*\n?", "", raw.strip())
+        raw = re.sub(r"\n?```$", "", raw.strip())
+        suggestion = json.loads(raw)
+        allowed = {"status", "due_days", "rationale"}
+        suggestion = {k: v for k, v in suggestion.items() if k in allowed}
+        return jsonify({"ok": True, "suggestion": suggestion})
+    except Exception as exc:
+        _log.error("triage-suggest error: %s", exc)
+        return _safe_error(str(exc), 500)
+
+
+@app.route("/api/llm/noise-rank", methods=["POST"])
+def api_llm_noise_rank():
+    """Rank a list of CVEs by actual risk relevance to the environment."""
+    data = request.get_json(force=True) or {}
+    cve_ids = (data.get("cve_ids") or [])[:30]
+    table   = str(data.get("table", ""))
+
+    if not cve_ids:
+        return _safe_error("cve_ids required", 400)
+    if table not in database.list_cve_tables():
+        return _safe_error("table not found", 404)
+
+    rows = []
+    for cid in cve_ids:
+        r = database.get_cve(table, cid)
+        if r:
+            rows.append(r)
+
+    assets = database.inventory_get_all()
+    asset_summary = ", ".join(
+        f"{a['name']} {a.get('version','')}".strip() for a in assets[:20]
+    ) if assets else "no inventory data"
+
+    cve_lines = "\n".join(
+        f"- {r['cve_id']}: {r.get('severity')} CVSS={r.get('cvss_score')} KEV={bool(r.get('kev'))} "
+        f"EPSS={r.get('epss_score')} | {(r.get('description') or '')[:120]}"
+        for r in rows
+    )
+
+    system = (
+        "You are a security analyst. Rank the provided CVEs from most to least actionable "
+        "given the asset inventory. Return ONLY a JSON array of CVE IDs in ranked order, "
+        'e.g. ["CVE-2024-1234", "CVE-2024-5678", ...]. No other text.'
+    )
+    prompt = (
+        f"Asset inventory: {asset_summary}\n\n"
+        f"CVEs to rank:\n{cve_lines}"
+    )
+    try:
+        raw = _llm_chat(prompt, max_tokens=400, system=system)
+        raw = re.sub(r"^```[a-z]*\n?", "", raw.strip())
+        raw = re.sub(r"\n?```$", "", raw.strip())
+        ranked = json.loads(raw)
+        if not isinstance(ranked, list):
+            raise ValueError("Expected JSON array")
+        # Only return IDs that were in the input
+        valid = set(r["cve_id"] for r in rows)
+        ranked = [c for c in ranked if c in valid]
+        return jsonify({"ok": True, "ranked": ranked})
+    except Exception as exc:
+        _log.error("noise-rank error: %s", exc)
+        return _safe_error(str(exc), 500)
+
+
+@app.route("/api/llm/keyword-expand", methods=["POST"])
+def api_llm_keyword_expand():
+    """Suggest additional CVE search keywords based on current keyword list."""
+    data = request.get_json(force=True) or {}
+    current_keywords = (data.get("keywords") or [])[:50]
+    if not current_keywords:
+        return _safe_error("keywords required", 400)
+
+    assets = database.inventory_get_all()
+    asset_products = list({a["name"] for a in assets[:30]})
+
+    system = (
+        "You are a threat intelligence analyst. Suggest additional CVE search keywords "
+        "that the user is likely missing. Return ONLY a JSON array of keyword strings. "
+        "Each keyword should be a product name, library name, or vendor name suitable "
+        "for NVD keyword search. No duplicates of existing keywords. Max 15 suggestions. "
+        "No other text, no explanation."
+    )
+    prompt = (
+        f"Current keywords: {', '.join(current_keywords)}\n"
+        f"Known installed software: {', '.join(asset_products)}\n\n"
+        "Suggest related keywords that cover the same tech stack but may be missing."
+    )
+    try:
+        raw = _llm_chat(prompt, max_tokens=300, system=system)
+        raw = re.sub(r"^```[a-z]*\n?", "", raw.strip())
+        raw = re.sub(r"\n?```$", "", raw.strip())
+        suggestions = json.loads(raw)
+        if not isinstance(suggestions, list):
+            raise ValueError("Expected JSON array")
+        # Strip any that already exist (case-insensitive)
+        existing_lower = {k.lower() for k in current_keywords}
+        suggestions = [s for s in suggestions if str(s).lower() not in existing_lower][:15]
+        return jsonify({"ok": True, "suggestions": suggestions})
+    except Exception as exc:
+        _log.error("keyword-expand error: %s", exc)
+        return _safe_error(str(exc), 500)
+
+
+@app.route("/api/llm/digest-narrative", methods=["POST"])
+def api_llm_digest_narrative():
+    """Generate a human-readable narrative summary of a scan digest batch."""
+    data = request.get_json(force=True) or {}
+    cve_list = (data.get("cves") or [])[:50]
+    period   = str(data.get("period", "this scan"))
+    if not cve_list:
+        return _safe_error("cves required", 400)
+
+    by_severity: dict[str, int] = {}
+    kev_count = 0
+    top_lines = []
+    for c in cve_list:
+        sev = (c.get("severity") or "UNKNOWN").upper()
+        by_severity[sev] = by_severity.get(sev, 0) + 1
+        if c.get("kev"):
+            kev_count += 1
+        if len(top_lines) < 5:
+            top_lines.append(
+                f"  - {c.get('cve_id')}: {sev} CVSS={c.get('cvss_score')} — "
+                f"{(c.get('description') or '')[:100]}"
+            )
+
+    sev_str = ", ".join(f"{k}: {v}" for k, v in by_severity.items())
+    top_str = "\n".join(top_lines)
+
+    prompt = (
+        f"Write a 4-6 sentence security digest narrative for {period}. "
+        f"Summarize the findings, highlight the most important CVEs, "
+        f"and recommend priority actions. Write for a security team lead.\n\n"
+        f"Total CVEs: {len(cve_list)}\n"
+        f"Breakdown: {sev_str}\n"
+        f"CISA KEV entries: {kev_count}\n"
+        f"Top CVEs:\n{top_str}"
+    )
+    try:
+        narrative = _llm_chat(prompt, max_tokens=500,
+                              system="You are a security analyst writing a weekly digest for a security team.")
+        return jsonify({"ok": True, "narrative": narrative})
+    except Exception as exc:
+        _log.error("digest-narrative error: %s", exc)
+        return _safe_error(str(exc), 500)
+
+
 # ── Internal CVSS overrides ───────────────────────────────────────────────────
 
 @app.route("/api/cvss-override/<string:cve_id>")

@@ -407,6 +407,11 @@
             </div>
           </div>
 
+          <div class="nl-search-bar" id="nl-search-bar">
+            <input class="input-sm" id="nl-search-input" placeholder="Ask in plain English… e.g. critical RCE in web servers last 30 days" style="flex:1" />
+            <button class="btn-sm" id="btn-nl-search">Ask AI</button>
+            <span id="nl-search-msg" class="form-msg" style="margin-left:.25rem"></span>
+          </div>
           <div class="quick-filters" id="quick-filters">
             <span class="quick-label">Quick:</span>
             <button class="qf-chip" data-sev="CRITICAL" data-kev="">Critical only</button>
@@ -438,6 +443,7 @@
             </select>
             <button class="btn-primary" id="btn-browse-search">Search</button>
             <button class="btn-sm" id="btn-browse-export">⬇ CSV</button>
+            <button class="btn-sm" id="btn-noise-rank" title="AI: rank current results by relevance to your environment">AI Rank</button>
           </div>
 
           <div class="table-wrap">
@@ -661,6 +667,14 @@
             </div>
           </div>
           <div id="digest-groups"></div>
+          <div class="panel" style="margin-top:1.25rem" id="digest-narrative-panel">
+            <div class="panel-header" style="display:flex;align-items:center;gap:.75rem">
+              <h2 style="margin:0">AI Digest Narrative</h2>
+              <button class="btn-sm" id="btn-digest-narrative">Generate Narrative</button>
+              <span id="digest-narrative-msg" class="form-msg"></span>
+            </div>
+            <div id="digest-narrative-content" class="panel-body" style="white-space:pre-wrap;font-size:13px;color:var(--text);padding:1rem;display:none"></div>
+          </div>
         </div>
       </section>
 
@@ -689,6 +703,14 @@
                 <label class="form-label">Keywords <span class="form-hint">(one per line; append ::HIGH to override per-keyword severity)</span></label>
                 <textarea class="input-sm textarea-sm" id="cfg-DEFAULT__keywords" rows="6"
                   placeholder="Apache Knox&#10;log4j::CRITICAL&#10;OpenSSL::MEDIUM"></textarea>
+              </div>
+              <div style="display:flex;align-items:center;gap:.75rem;margin-top:.5rem">
+                <button class="btn-sm" id="btn-keyword-expand" type="button">Suggest Keywords with AI</button>
+                <span id="keyword-expand-msg" class="form-msg"></span>
+              </div>
+              <div id="keyword-suggestions" style="display:none;margin-top:.75rem">
+                <div class="form-label" style="margin-bottom:.4rem">Suggestions — click to add:</div>
+                <div id="keyword-suggestion-chips" style="display:flex;flex-wrap:wrap;gap:.4rem"></div>
               </div>
             </div>
             <div class="settings-group">
@@ -1306,6 +1328,21 @@
       </div>
       <div class="detail-panel-body">
         <div id="detail-content"></div>
+        <div id="llm-summary-block" class="detail-block" style="display:none;margin-top:.5rem;background:var(--surface2);border-left:3px solid var(--accent)">
+          <div class="detail-block-body" style="padding:.6rem .75rem">
+            <div style="font-size:10px;font-weight:600;color:var(--accent);letter-spacing:.05em;margin-bottom:.25rem">AI SUMMARY</div>
+            <div class="llm-summary-text" style="font-size:13px;line-height:1.6;color:var(--text)"></div>
+          </div>
+        </div>
+        <div id="llm-triage-suggest" class="detail-block" style="display:none;margin-top:.5rem;background:var(--surface2);border-left:3px solid #a78bfa">
+          <div class="detail-block-body" style="padding:.6rem .75rem;display:flex;align-items:center;gap:.75rem;flex-wrap:wrap">
+            <div style="font-size:10px;font-weight:600;color:#a78bfa;letter-spacing:.05em">AI TRIAGE SUGGESTION</div>
+            <span class="triage-badge suggest-status"></span>
+            <span class="muted suggest-due" style="font-size:11px"></span>
+            <span class="suggest-rationale" style="font-size:12px;color:var(--text);flex:1"></span>
+            <button class="btn-sm btn-apply-suggestion" style="font-size:11px">Apply</button>
+          </div>
+        </div>
         <div class="detail-actions">
           <button class="btn-sm" id="btn-detail-watchlist">⭐ Watchlist</button>
           <button class="btn-sm" id="btn-detail-reviewed">✓ Reviewed</button>

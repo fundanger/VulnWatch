@@ -1262,7 +1262,9 @@ async function loadDigestQueue() {
               <th>Keyword</th><th>Queued At</th><th>Description</th>
             </tr></thead>
             <tbody>${cves.map(c => `
-              <tr>
+              <tr data-cve="${escHtml(c.cve_id)}" data-severity="${escHtml(c.severity||'')}"
+                  data-cvss="${escHtml(String(c.cvss_score||''))}" data-kev="${c.kev?'1':'0'}"
+                  data-desc="${escHtml((c.description||'').slice(0,120))}">
                 <td><code>${escHtml(c.cve_id)}</code></td>
                 <td>${sevBadge(c.severity)}</td>
                 <td class="num">${scoreStr(c.cvss_score)}</td>
@@ -1739,6 +1741,15 @@ async function _origRenderBrowse() {
   });
   _animateRows(tbody);
   document.getElementById("browse-status").textContent = `${rows.length} result(s) — click a row for detail`;
+}
+
+function renderBrowseRows(rows) {
+  // Re-render browse table with a given (possibly re-sorted) row set.
+  // Temporarily swap _browseRows, render, then restore.
+  const prev = _browseRows;
+  _browseRows = rows;
+  _origRenderBrowse();
+  _browseRows = prev;
 }
 
 function _triageLabel(status) {
@@ -3353,8 +3364,200 @@ openDetail = async function(row) {
     _loadExposurePanel(row),
     _loadComments(row),
     _loadRemediationPanel(row),
+    _loadLlmSummary(row),
+    _loadTriageSuggestion(row),
   ]);
 };
+
+// ── LLM: Natural-language CVE search ─────────────────────────────────────────
+
+document.getElementById("btn-nl-search").addEventListener("click", _doNlSearch);
+document.getElementById("nl-search-input").addEventListener("keydown", e => {
+  if (e.key === "Enter") _doNlSearch();
+});
+
+async function _doNlSearch() {
+  const query = document.getElementById("nl-search-input").value.trim();
+  if (!query) return;
+  const msg = document.getElementById("nl-search-msg");
+  const btn = document.getElementById("btn-nl-search");
+  btn.disabled = true;
+  msg.textContent = "Thinking…"; msg.className = "form-msg";
+  try {
+    const r = await fetch(`${API}/api/llm/nl-search`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query }),
+    });
+    const d = await r.json();
+    if (!r.ok || !d.ok) throw new Error(d.error || "Failed");
+    const f = d.filters || {};
+    // Apply filters to Browse CVEs
+    if (f.search   !== undefined) document.getElementById("br-search").value    = f.search;
+    if (f.severity !== undefined) document.getElementById("br-severity").value  = f.severity;
+    if (f.date_from!== undefined) document.getElementById("br-date-from").value = f.date_from || "";
+    if (f.date_to  !== undefined) document.getElementById("br-date-to").value   = f.date_to   || "";
+    msg.textContent = "Filters applied ↓"; msg.className = "form-msg ok";
+    doBrowseSearchPaged(0);
+  } catch(e) {
+    msg.textContent = e.message || "Error"; msg.className = "form-msg err";
+  }
+  btn.disabled = false;
+  setTimeout(() => { msg.textContent = ""; }, 4000);
+}
+
+// ── LLM: CVE executive summary (injected into detail overlay) ─────────────────
+
+async function _loadLlmSummary(row) {
+  // Injected below the CVE title in detail-content — only if LLM is configured
+  const params = new URLSearchParams({ table: row._table || row.keyword || "" });
+  try {
+    const r = await fetch(`${API}/api/llm/summarize/${encodeURIComponent(row.cve_id)}?${params}`);
+    if (!r.ok) return;
+    const d = await r.json();
+    if (!d.ok || !d.summary) return;
+    const container = document.getElementById("llm-summary-block");
+    if (!container) return;
+    container.style.display = "";
+    container.querySelector(".llm-summary-text").textContent = d.summary;
+  } catch { /* silent — LLM may not be configured */ }
+}
+
+// ── LLM: Triage suggestions (injected into detail overlay) ───────────────────
+
+async function _loadTriageSuggestion(row) {
+  const el = document.getElementById("llm-triage-suggest");
+  if (!el) return;
+  const params = new URLSearchParams({ table: row._table || row.keyword || "" });
+  try {
+    const r = await fetch(`${API}/api/llm/triage-suggest/${encodeURIComponent(row.cve_id)}?${params}`);
+    if (!r.ok) return;
+    const d = await r.json();
+    if (!d.ok || !d.suggestion) return;
+    const s = d.suggestion;
+    el.style.display = "";
+    el.querySelector(".suggest-status").textContent  = s.status || "";
+    el.querySelector(".suggest-due").textContent     = s.due_days != null ? `Due in ${s.due_days} day(s)` : "";
+    el.querySelector(".suggest-rationale").textContent = s.rationale || "";
+    el.querySelector(".btn-apply-suggestion").onclick = () => {
+      if (s.status)    document.getElementById("detail-triage-status").value = s.status;
+      if (s.due_days != null) {
+        const d = new Date(); d.setDate(d.getDate() + parseInt(s.due_days));
+        document.getElementById("detail-triage-due").value = d.toISOString().slice(0, 10);
+      }
+      el.style.display = "none";
+    };
+  } catch { /* silent */ }
+}
+
+// ── LLM: Noise ranking ────────────────────────────────────────────────────────
+
+document.getElementById("btn-noise-rank").addEventListener("click", async () => {
+  if (!_browseRows || !_browseRows.length) return;
+  const btn = document.getElementById("btn-noise-rank");
+  btn.disabled = true; btn.textContent = "Ranking…";
+  try {
+    const tableEl = document.getElementById("br-table");
+    const table   = tableEl.value || (_browseRows[0] && (_browseRows[0]._table || _browseRows[0].keyword)) || "";
+    const cve_ids = _browseRows.slice(0, 30).map(r => r.cve_id);
+    const r = await fetch(`${API}/api/llm/noise-rank`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ cve_ids, table }),
+    });
+    const d = await r.json();
+    if (!r.ok || !d.ok) throw new Error(d.error || "Ranking failed");
+    // Re-sort _browseRows to match ranked order
+    const rankMap = {};
+    d.ranked.forEach((id, i) => { rankMap[id] = i; });
+    _browseRows.sort((a, b) =>
+      (rankMap[a.cve_id] ?? 999) - (rankMap[b.cve_id] ?? 999)
+    );
+    renderBrowseRows(_browseRows);
+    document.getElementById("browse-status").textContent =
+      `AI-ranked ${d.ranked.length} CVE(s) by relevance to your environment`;
+  } catch(e) {
+    document.getElementById("browse-status").textContent = `AI rank failed: ${e.message}`;
+  }
+  btn.disabled = false; btn.textContent = "AI Rank";
+});
+
+// ── LLM: Digest narrative ─────────────────────────────────────────────────────
+
+document.getElementById("btn-digest-narrative").addEventListener("click", async () => {
+  const btn = document.getElementById("btn-digest-narrative");
+  const msg = document.getElementById("digest-narrative-msg");
+  const content = document.getElementById("digest-narrative-content");
+  btn.disabled = true;
+  msg.textContent = "Generating…"; msg.className = "form-msg";
+  try {
+    // Collect all pending digest CVEs from rendered groups
+    const rows = Array.from(document.querySelectorAll("#digest-groups tr[data-cve]"))
+      .map(tr => ({
+        cve_id: tr.dataset.cve,
+        severity: tr.dataset.severity || "",
+        cvss_score: parseFloat(tr.dataset.cvss) || null,
+        description: tr.dataset.desc || "",
+        kev: tr.dataset.kev === "1",
+      }));
+    if (!rows.length) { msg.textContent = "No CVEs in queue."; msg.className = "form-msg"; btn.disabled = false; return; }
+    const r = await fetch(`${API}/api/llm/digest-narrative`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ cves: rows, period: "this digest batch" }),
+    });
+    const d = await r.json();
+    if (!r.ok || !d.ok) throw new Error(d.error || "Failed");
+    content.textContent = d.narrative;
+    content.style.display = "";
+    msg.textContent = "Done."; msg.className = "form-msg ok";
+  } catch(e) {
+    msg.textContent = e.message || "Error"; msg.className = "form-msg err";
+  }
+  btn.disabled = false;
+  setTimeout(() => { msg.textContent = ""; }, 5000);
+});
+
+// ── LLM: Keyword expansion ────────────────────────────────────────────────────
+
+document.getElementById("btn-keyword-expand").addEventListener("click", async () => {
+  const btn = document.getElementById("btn-keyword-expand");
+  const msg = document.getElementById("keyword-expand-msg");
+  const box = document.getElementById("keyword-suggestions");
+  const chips = document.getElementById("keyword-suggestion-chips");
+  btn.disabled = true;
+  msg.textContent = "Thinking…"; msg.className = "form-msg";
+  try {
+    const raw = document.getElementById("cfg-DEFAULT__keywords").value;
+    const keywords = raw.split("\n").map(k => k.trim()).filter(Boolean);
+    const r = await fetch(`${API}/api/llm/keyword-expand`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ keywords }),
+    });
+    const d = await r.json();
+    if (!r.ok || !d.ok) throw new Error(d.error || "Failed");
+    if (!d.suggestions.length) { msg.textContent = "No new suggestions."; msg.className = "form-msg"; btn.disabled = false; return; }
+    chips.innerHTML = d.suggestions.map(s =>
+      `<button class="qf-chip" data-kw="${escHtml(s)}" style="cursor:pointer">${escHtml(s)} +</button>`
+    ).join("");
+    chips.querySelectorAll(".qf-chip").forEach(chip => {
+      chip.addEventListener("click", () => {
+        const ta = document.getElementById("cfg-DEFAULT__keywords");
+        const current = ta.value.trimEnd();
+        ta.value = current + (current ? "\n" : "") + chip.dataset.kw;
+        chip.remove();
+        if (!chips.children.length) box.style.display = "none";
+      });
+    });
+    box.style.display = "";
+    msg.textContent = `${d.suggestions.length} suggestion(s)`; msg.className = "form-msg ok";
+  } catch(e) {
+    msg.textContent = e.message || "Error"; msg.className = "form-msg err";
+  }
+  btn.disabled = false;
+  setTimeout(() => { msg.textContent = ""; }, 5000);
+});
 
 // ── MTTR panel ────────────────────────────────────────────────────────────────
 

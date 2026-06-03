@@ -544,6 +544,20 @@ input:disabled, .textarea-sm:disabled {
 .filter-bar input[type="text"],
 .filter-bar input:not([type]) { flex: 1; min-width: 200px; }
 
+/* ── NL search bar ────────────────────────────────────────────────────────── */
+.nl-search-bar {
+  display: flex;
+  align-items: center;
+  gap: .5rem;
+  margin-bottom: .75rem;
+  background: var(--surface2);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius);
+  padding: .4rem .6rem;
+}
+.nl-search-bar input { flex: 1; background: transparent; border: none; outline: none; color: var(--text); font-size: 13px; }
+.nl-search-bar input::placeholder { color: var(--subtle); }
+
 /* ── Quick filter chips ───────────────────────────────────────────────────── */
 .quick-filters {
   display: flex;
