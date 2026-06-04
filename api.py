@@ -17,6 +17,7 @@ import argparse
 import configparser
 import hashlib
 import hmac
+import html as _html
 import json
 import logging
 import os
@@ -238,7 +239,8 @@ def health():
         database.list_cve_tables()
         return jsonify({"status": "ok", "ts": datetime.now(timezone.utc).isoformat()})
     except Exception as exc:
-        return jsonify({"status": "error", "error": str(exc)}), 500
+        _log.error("Health check failed: %s", exc, exc_info=True)
+        return jsonify({"status": "error"}), 500
 
 
 @app.route("/metrics")
@@ -1479,6 +1481,11 @@ def _template_commands(cve_row: dict) -> str:
     return _CPE_PATCH_TEMPLATES[-1][2].replace("{product}", product or keyword)
 
 
+def _llm_strip_json(raw: str) -> str:
+    """Strip markdown code fences from an LLM response and return clean JSON text."""
+    return re.sub(r"```[a-z]*", "", raw).strip().strip("`").strip()
+
+
 def _llm_config() -> dict:
     """Read LLM provider config from env vars then config.ini."""
     cfg = _read_config()
@@ -1502,9 +1509,10 @@ def _llm_config() -> dict:
     return {"provider": provider, "api_key": api_key, "base_url": base_url, "model": model}
 
 
-def _llm_generate(cve_id: str, cve_row: dict, template_cmds: str) -> str:
+def _llm_generate(cve_id: str, cve_row: dict, template_cmds: str, platform: str = "both") -> str:
     """
     Call the configured LLM to generate platform-specific patch/remediation commands.
+    platform: "windows" | "linux" | "both"
     Uses the OpenAI-compatible chat completions API (works with OpenAI, DeepSeek,
     Anthropic-compatible proxies, Ollama, and any custom endpoint).
     """
@@ -1517,28 +1525,82 @@ def _llm_generate(cve_id: str, cve_row: dict, template_cmds: str) -> str:
         raise ValueError("LLM base URL not configured.")
 
     cpe = cve_row.get("cpe") or ""
-    desc = (cve_row.get("description") or "")[:600]
+    desc = (cve_row.get("description") or "")[:300]
     severity = cve_row.get("severity") or ""
     cvss = cve_row.get("cvss_score") or ""
 
+    if platform == "windows":
+        lang_instruction = (
+            "Generate ONLY Windows PowerShell commands. "
+            "ABSOLUTELY NO bash, sh, or Linux commands anywhere in the output. "
+            "Do not add a Linux section, bash fallback, or any non-PowerShell code."
+        )
+        not_found_emit = 'Write-Host "CVE_RESULT:<CVE-ID>:NOT_FOUND"'
+        exit_cmd = "return"
+    elif platform == "linux":
+        lang_instruction = (
+            "Generate ONLY bash/Linux shell commands. "
+            "ABSOLUTELY NO PowerShell commands anywhere in the output. "
+            "Do not add a Windows section or any non-bash code."
+        )
+        not_found_emit = 'echo "CVE_RESULT:<CVE-ID>:NOT_FOUND"'
+        exit_cmd = "exit 0"
+    else:
+        lang_instruction = (
+            "Include a Windows PowerShell section clearly labelled '# Windows (PowerShell)' "
+            "and a Linux bash section clearly labelled '# Linux (bash)'."
+        )
+        not_found_emit = 'Write-Host "CVE_RESULT:<CVE-ID>:NOT_FOUND" (PowerShell) or echo "CVE_RESULT:<CVE-ID>:NOT_FOUND" (bash)'
+        exit_cmd = "return / exit 0"
+
+    system = f"""You are a security patch script generator. Your output is pasted directly into a terminal and executed — it must be complete, syntactically valid code with no extra text.
+
+PLATFORM: {lang_instruction}
+
+STRICT OUTPUT RULES:
+1. Output ONLY valid {("PowerShell" if platform == "windows" else "bash" if platform == "linux" else "PowerShell or bash")} code. No mixed languages.
+2. Every line must be a command, control-flow keyword, or a # comment. No prose sentences ever.
+3. No markdown fences (no ``` anywhere). No decorative headers.
+4. ALL strings and brackets MUST be properly closed. Never leave an unterminated string, unclosed brace, or incomplete statement — the script must be syntactically complete and immediately runnable.
+
+RESULT MARKER FORMAT (exact, no variations):
+- Software not installed:  {not_found_emit.replace("<CVE-ID>", cve_id)}
+- Fix applied:             {'Write-Host "CVE_RESULT:' + cve_id + ':PATCHED"' if platform != "linux" else 'echo "CVE_RESULT:' + cve_id + ':PATCHED"'}
+- Fix failed:              {'Write-Host "CVE_RESULT:' + cve_id + ':FAILED"' if platform != "linux" else 'echo "CVE_RESULT:' + cve_id + ':FAILED"'}
+The prefix CVE_RESULT: is required. Never abbreviate or omit it.
+
+SCRIPT STRUCTURE (follow this order):
+1. PRESENCE CHECK — verify the software is installed before doing anything.
+   PowerShell: Get-Command / Test-Path / Get-Service / registry (HKLM:\\...)
+   Bash: command -v / dpkg -l / rpm -q / systemctl list-units
+   If absent → emit NOT_FOUND marker then {exit_cmd}. Do not attempt remediation.
+2. VERSION CHECK (if version info is available) — skip remediation if already on a safe version.
+3. REMEDIATION — apply fix using this priority:
+   a. Package manager upgrade with exact safe version pin — BUT first check the package manager itself exists:
+      PowerShell: only use winget if (Get-Command winget -ErrorAction SilentlyContinue); only use choco if (Get-Command choco -ErrorAction SilentlyContinue); prefer winget over choco. If no package manager is available, fall through to (b).
+      Bash: only use apt-get if (command -v apt-get); only use yum/dnf if available. If no package manager, fall through to (b).
+   b. Configuration change (disable vulnerable feature/setting)
+   c. Firewall rule blocking the vulnerable port
+   d. Stop + disable the vulnerable service
+   e. If none possible: # comment with vendor advisory URL only
+4. RESULT MARKER — always the last executed line. Wrap remediation in try/catch so FAILED fires on any exception."""
+
     prompt = (
-        f"You are a security engineer. Generate concise, copy-paste-ready remediation commands "
-        f"for the following CVE. Include commands for multiple platforms where applicable "
-        f"(Linux apt/yum, Windows winget/PowerShell, pip, npm, etc.). "
-        f"Be specific — include exact package names and version pins where known. "
-        f"Do not include explanatory prose, only the commands with brief inline comments.\n\n"
         f"CVE: {cve_id}\n"
         f"Severity: {severity} (CVSS {cvss})\n"
         f"Affected CPE: {cpe}\n"
         f"Description: {desc}\n\n"
-        f"Template commands already generated (improve/expand on these):\n{template_cmds}"
+        f"Generate a complete, syntactically valid {('PowerShell' if platform == 'windows' else 'bash' if platform == 'linux' else 'PowerShell + bash')} script.\n"
+        f"All strings and control blocks must be fully closed. Do not truncate.\n"
+        f"Use exact version pins where known.\n\n"
+        f"Reference template (verify and correct — may be outdated):\n{template_cmds}"
     )
 
     payload = json.dumps({
         "model": cfg["model"],
-        "messages": [{"role": "user", "content": prompt}],
-        "max_tokens": 600,
-        "temperature": 0.2,
+        "messages": [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
+        "max_tokens": 10000,
+        "temperature": 0.1,
     }).encode()
 
     headers = {
@@ -1556,10 +1618,21 @@ def _llm_generate(cve_id: str, cve_row: dict, template_cmds: str) -> str:
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
             data = json.loads(resp.read())
-            return data["choices"][0]["message"]["content"].strip()
+            try:
+                msg = data["choices"][0]["message"]
+                content = msg.get("content") or msg.get("reasoning_content") or ""
+                if not content.strip():
+                    finish = data["choices"][0].get("finish_reason", "unknown")
+                    _log.warning("LLM empty content: finish=%s data=%s", finish, str(data)[:400])
+                    raise RuntimeError(f"LLM returned empty content (finish_reason={finish})")
+                return content.strip()
+            except (KeyError, IndexError) as exc:
+                raise RuntimeError(f"Unexpected LLM response shape: {str(data)[:200]}") from exc
     except urllib.error.HTTPError as exc:
-        body = exc.read().decode(errors="replace")[:200]
+        body = exc.read().decode(errors="replace")[:300]
         raise RuntimeError(f"LLM API error {exc.code}: {body}") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"LLM unreachable: {exc.reason}") from exc
 
 
 @app.route("/api/remediation/<string:cve_id>")
@@ -1604,15 +1677,25 @@ def api_remediation_generate(cve_id: str):
     if not row:
         return _err("CVE not found", 404)
     template_cmds = _template_commands(row)
+    matched_assets = database.assets_match_cve(row.get("cpe") or "")
+    sources = {(a.get("scan_source") or "").lower() for a in matched_assets}
+    has_win = any("ps1" in s or "powershell" in s or "windows" in s for s in sources)
+    has_lin = any(s.endswith(".sh") or "linux" in s or "bash" in s for s in sources)
+    if has_win and not has_lin:
+        platform = "windows"
+    elif has_lin and not has_win:
+        platform = "linux"
+    else:
+        platform = "both"
     try:
-        ai_cmds = _llm_generate(cve_id, row, template_cmds)
+        ai_cmds = _llm_generate(cve_id, row, template_cmds, platform=platform)
     except ValueError as exc:
         return _err(str(exc), 400)
     except RuntimeError as exc:
         return _err(str(exc), 502)
     except Exception as exc:
         _log.error("LLM generate error: %s", exc, exc_info=True)
-        return _err(str(exc), 500)
+        return _err("Script generation failed. Check server logs for details.", 500)
     database.remediation_save(table, cve_id,
                               notes=database.remediation_get(table, cve_id).get("remediation_notes", ""),
                               cmds=ai_cmds)
@@ -1634,6 +1717,175 @@ def api_remediation_notes(cve_id: str):
     database.audit_log_insert("remediation_notes", cve_id, f"notes updated ({len(notes)} chars)",
                                actor=user["username"] if user else "")
     return jsonify({"ok": True})
+
+
+# ── Bulk remediation ─────────────────────────────────────────────────────────
+
+@app.route("/api/remediation/bulk-generate", methods=["POST"])
+@_require_auth
+def api_remediation_bulk_generate():
+    """Generate a combined remediation script for multiple CVEs.
+    Each CVE gets a clearly labelled section. The script emits
+    CVE_RESULT:<cve_id>:<status> markers so the output can be parsed back.
+    Statuses: PATCHED, NOT_FOUND, FAILED, SKIPPED.
+    """
+    data = request.get_json(force=True) or {}
+    items = data.get("cves", [])  # [{cve_id, table}, ...]
+    platform_override = data.get("platform", "")  # "windows" | "linux" | "both" | "" (auto-detect)
+    if platform_override not in ("windows", "linux", "both", ""):
+        platform_override = ""
+    if not items:
+        return _err("cves required", 400)
+    items = items[:50]
+
+    valid_tables = set(database.list_cve_tables())
+    rows = []
+    for item in items:
+        cve_id = item.get("cve_id", "")
+        table  = item.get("table", "")
+        try:
+            _assert_cve_id(cve_id)
+        except Exception:
+            continue
+        if table not in valid_tables:
+            continue
+        row = database.get_cve(table, cve_id)
+        if row:
+            rows.append(row)
+
+    if not rows:
+        return _err("no valid CVEs found", 404)
+
+    # Detect platform from matched assets' scan_source
+    all_assets = database.assets_get_all()
+    def _detect_platform(cpe_str: str) -> str:
+        """Return 'windows', 'linux', or 'both' based on scan_source of matching assets."""
+        if not cpe_str:
+            return "both"
+        matched = database.assets_match_cve(cpe_str)
+        if not matched:
+            return "both"
+        sources = {(a.get("scan_source") or "").lower() for a in matched}
+        has_win = any("ps1" in s or "powershell" in s or "windows" in s for s in sources)
+        has_lin = any(s.endswith(".sh") or "linux" in s or "bash" in s for s in sources)
+        if has_win and not has_lin:
+            return "windows"
+        if has_lin and not has_win:
+            return "linux"
+        return "both"
+
+    # Build script sections — AI-generated per CVE, fallback to template
+    sections = []
+    for row in rows:
+        cve_id   = row["cve_id"]
+        tmpl     = _template_commands(row)
+        desc     = (row.get("description") or "")[:120]
+        platform = platform_override or _detect_platform(row.get("cpe") or "")
+        try:
+            cmds = _llm_generate(cve_id, row, tmpl, platform=platform)
+        except Exception:
+            cmds = tmpl
+        # Strip markdown fences; keep all command/control-flow lines, drop bare prose
+        cmds = re.sub(r"```[a-z]*", "", cmds).strip().strip("`").strip()
+        _PROSE_RE = re.compile(r'^[A-Z][a-z].*[a-z]\.$')  # sentences like "This updates the package."
+        clean_lines = []
+        for ln in cmds.splitlines():
+            s = ln.strip()
+            if not s:
+                clean_lines.append("")
+            elif _PROSE_RE.match(s) and not s.startswith("#"):
+                pass  # drop bare prose sentences
+            else:
+                clean_lines.append(ln)
+        cmds = "\n".join(clean_lines).strip()
+        sections.append(
+            f"# {'='*60}\n"
+            f"# {cve_id}  |  {row.get('severity','')}  |  CVSS {row.get('cvss_score','N/A')}\n"
+            f"# {desc}\n"
+            f"# {'='*60}\n"
+            f"{cmds}\n"
+        )
+
+    ts = __import__("datetime").datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+
+    if platform_override in ("windows", "both", ""):
+        log_file = f"$env:TEMP\\cve_remediation_{ts}.txt"
+        header = (
+            "# CVE Emailer — Bulk Remediation Script\n"
+            "# Generated: " + __import__("datetime").datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC") + "\n"
+            "# Results are saved automatically — paste the log file contents into the dashboard.\n"
+            "# Each section checks for the software first:\n"
+            "#   CVE_RESULT:<id>:NOT_FOUND  — software not installed, no action needed\n"
+            "#   CVE_RESULT:<id>:PATCHED    — fix applied successfully\n"
+            "#   CVE_RESULT:<id>:FAILED     — fix attempted but failed\n\n"
+            f'$_logFile = "{log_file}"\n'
+            'Start-Transcript -Path $_logFile -Append | Out-Null\n'
+            'Write-Host "Logging to: $_logFile"\n\n'
+        )
+        footer = (
+            '\nStop-Transcript | Out-Null\n'
+            'Write-Host ""\n'
+            'Write-Host "Results saved to: $_logFile" -ForegroundColor Cyan\n'
+            'Write-Host "Open that file, copy its contents, and paste into the dashboard." -ForegroundColor Cyan\n'
+            'Write-Host ""\n'
+            'Write-Host "Press any key to close..." -ForegroundColor DarkGray\n'
+            'try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Read-Host "Press Enter to close" }\n'
+        )
+    else:
+        log_file = f"/tmp/cve_remediation_{ts}.txt"
+        header = (
+            "# CVE Emailer — Bulk Remediation Script\n"
+            "# Generated: " + __import__("datetime").datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC") + "\n"
+            "# Results are saved automatically — paste the log file contents into the dashboard.\n"
+            "# Each section checks for the software first:\n"
+            "#   CVE_RESULT:<id>:NOT_FOUND  — software not installed, no action needed\n"
+            "#   CVE_RESULT:<id>:PATCHED    — fix applied successfully\n"
+            "#   CVE_RESULT:<id>:FAILED     — fix attempted but failed\n\n"
+            f'_logFile="{log_file}"\n'
+            'exec > >(tee -a "$_logFile") 2>&1\n'
+            'echo "Logging to: $_logFile"\n\n'
+        )
+        footer = (
+            '\necho ""\n'
+            'echo "Results saved to: $_logFile"\n'
+            'echo "Open that file, copy its contents, and paste into the dashboard."\n'
+        )
+
+    script = header + "\n".join(sections) + footer
+    return jsonify({"ok": True, "script": script, "cve_count": len(rows)})
+
+
+@app.route("/api/remediation/bulk-apply", methods=["POST"])
+@_require_auth
+def api_remediation_bulk_apply():
+    """Parse pasted script output and update triage status for each CVE.
+    Looks for CVE_RESULT:<cve_id>:<status> lines.
+    PATCHED → triage status 'patched', NOT_FOUND → 'wont_fix', FAILED/SKIPPED → 'open'.
+    """
+    data = request.get_json(force=True) or {}
+    output = str(data.get("output", ""))[:50000]
+
+    status_map = {
+        "PATCHED":   "patched",
+        "NOT_FOUND": "wont_fix",
+        "FAILED":    "open",
+        "SKIPPED":   "open",
+    }
+
+    results = []
+    for line in output.splitlines():
+        m = re.search(r"CVE_RESULT:(CVE-\d{4}-\d{4,}):([A-Z_]+)", line)
+        if not m:
+            continue
+        cve_id     = m.group(1)
+        raw_status = m.group(2)
+        new_status = status_map.get(raw_status, "open")
+        database.triage_set(cve_id, status=new_status, assignee="", due_date="", severity="")
+        database.audit_log_insert("bulk_remediation", cve_id,
+                                   f"script result={raw_status} → status={new_status}", actor="")
+        results.append({"cve_id": cve_id, "script_result": raw_status, "new_status": new_status})
+
+    return jsonify({"ok": True, "results": results})
 
 
 # ── LLM intelligence endpoints ───────────────────────────────────────────────
@@ -1673,7 +1925,16 @@ def _llm_chat(prompt: str, max_tokens: int = 600, system: str = "") -> str:
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
             data = json.loads(resp.read())
-            return data["choices"][0]["message"]["content"].strip()
+            try:
+                msg = data["choices"][0]["message"]
+                content = msg.get("content") or msg.get("reasoning_content") or ""
+                if not content.strip():
+                    finish = data["choices"][0].get("finish_reason", "unknown")
+                    _log.warning("LLM empty content: finish=%s data=%s", finish, str(data)[:400])
+                    raise RuntimeError(f"LLM returned empty content (finish_reason={finish})")
+                return content.strip()
+            except (KeyError, IndexError) as exc:
+                raise RuntimeError(f"Unexpected LLM response shape: {str(data)[:200]}") from exc
     except urllib.error.HTTPError as exc:
         body = exc.read().decode(errors="replace")[:300]
         raise RuntimeError(f"LLM API error {exc.code}: {body}") from exc
@@ -1699,10 +1960,7 @@ def api_llm_nl_search():
     )
     try:
         raw = _llm_chat(query, max_tokens=200, system=system)
-        # Strip markdown fences if present
-        raw = re.sub(r"^```[a-z]*\n?", "", raw.strip())
-        raw = re.sub(r"\n?```$", "", raw.strip())
-        filters = json.loads(raw)
+        filters = json.loads(_llm_strip_json(raw))
         # Validate keys
         allowed = {"search", "severity", "date_from", "date_to", "kev"}
         filters = {k: v for k, v in filters.items() if k in allowed}
@@ -1727,7 +1985,7 @@ def api_llm_summarize(cve_id: str):
     if not row:
         return _err("CVE not found", 404)
 
-    assets = database.assets_match_cpe(row.get("cpe") or "")
+    assets = database.assets_match_cve(row.get("cpe") or "")
     asset_names = ", ".join(a["name"] for a in assets[:5]) if assets else "none identified"
     triage = database.triage_get(cve_id)
     status = (triage or {}).get("status", "untriaged")
@@ -1772,7 +2030,7 @@ def api_llm_triage_suggest(cve_id: str):
         f"{t['cve_id']}→{t['status']}" for t in recent[:10]
     ) if recent else "none"
 
-    assets = database.assets_match_cpe(row.get("cpe") or "")
+    assets = database.assets_match_cve(row.get("cpe") or "")
     asset_env = ", ".join(set(a.get("environment", "") for a in assets if a.get("environment"))) or "unknown"
 
     system = (
@@ -1793,10 +2051,16 @@ def api_llm_triage_suggest(cve_id: str):
         f"Recent triage history: {recent_summary}"
     )
     try:
-        raw = _llm_chat(prompt, max_tokens=200, system=system)
-        raw = re.sub(r"^```[a-z]*\n?", "", raw.strip())
-        raw = re.sub(r"\n?```$", "", raw.strip())
-        suggestion = json.loads(raw)
+        raw = _llm_chat(prompt, max_tokens=500, system=system)
+        cleaned = _llm_strip_json(raw)
+        try:
+            suggestion = json.loads(cleaned)
+        except json.JSONDecodeError:
+            m = re.search(r"\{.*\}", cleaned, re.DOTALL)
+            if not m:
+                _log.warning("triage-suggest non-JSON response: %r", raw[:300])
+                raise ValueError(f"LLM returned non-JSON: {raw[:200]}")
+            suggestion = json.loads(m.group())
         allowed = {"status", "due_days", "rationale"}
         suggestion = {k: v for k, v in suggestion.items() if k in allowed}
         return jsonify({"ok": True, "suggestion": suggestion})
@@ -1858,9 +2122,7 @@ def api_llm_noise_rank():
     )
     try:
         raw = _llm_chat(prompt, max_tokens=400, system=system)
-        raw = re.sub(r"^```[a-z]*\n?", "", raw.strip())
-        raw = re.sub(r"\n?```$", "", raw.strip())
-        ranked = json.loads(raw)
+        ranked = json.loads(_llm_strip_json(raw))
         if not isinstance(ranked, list):
             raise ValueError("Expected JSON array")
         # Only return IDs that were in the input
@@ -1901,9 +2163,7 @@ def api_llm_keyword_expand():
     )
     try:
         raw = _llm_chat(prompt, max_tokens=300, system=system)
-        raw = re.sub(r"^```[a-z]*\n?", "", raw.strip())
-        raw = re.sub(r"\n?```$", "", raw.strip())
-        suggestions = json.loads(raw)
+        suggestions = json.loads(_llm_strip_json(raw))
         if not isinstance(suggestions, list):
             raise ValueError("Expected JSON array")
         # Strip any that already exist (case-insensitive)
@@ -2600,28 +2860,29 @@ def api_report_html():
         return {"CRITICAL": "#dc2626", "HIGH": "#ea580c", "MEDIUM": "#d97706",
                 "LOW": "#65a30d"}.get((sev or "").upper(), "#6b7280")
 
+    _e = _html.escape
     top_rows = "".join(
         "<tr><td><code>{}</code></td>"
         "<td style='color:{};font-weight:700'>{}</td>"
         "<td>{}</td><td>{}%</td><td>{}</td><td>{}…</td></tr>".format(
-            r["cve_id"],
+            _e(r["cve_id"]),
             _sev_color(r.get("severity", "")),
-            r.get("severity", "—"),
-            r.get("cvss_score") or "—",
+            _e(r.get("severity", "—")),
+            _e(str(r.get("cvss_score") or "—")),
             round((r.get("epss_score") or 0) * 100, 2),
             "✓ KEV" if r.get("kev") else "—",
-            (r.get("description") or "")[:80],
+            _e((r.get("description") or "")[:80]),
         )
         for r in top
     )
     breach_rows = "".join(
-        f"<tr><td><code>{r['cve_id']}</code></td><td>{r.get('assignee','—')}</td>"
-        f"<td style='color:#dc2626'>{r.get('due_date','—')}</td></tr>"
+        f"<tr><td><code>{_e(r['cve_id'])}</code></td><td>{_e(r.get('assignee','—'))}</td>"
+        f"<td style='color:#dc2626'>{_e(r.get('due_date','—'))}</td></tr>"
         for r in breached
     )
     kw_rows = "".join(
-        f"<tr><td>{k['keyword']}</td><td>{k['total']}</td>"
-        f"<td>{k['avg_cvss'] or '—'}</td><td>{k['kev_count']}</td></tr>"
+        f"<tr><td>{_e(k['keyword'])}</td><td>{_e(str(k['total']))}</td>"
+        f"<td>{_e(str(k['avg_cvss'] or '—'))}</td><td>{_e(str(k['kev_count']))}</td></tr>"
         for k in kw_perf
     )
 

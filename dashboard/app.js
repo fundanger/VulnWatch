@@ -297,6 +297,7 @@ async function _loadTriageMap() {
 async function renderBrowseResults() { await _origRenderBrowse(); }
 
 document.getElementById("br-reviewed").addEventListener("change", renderBrowseResults);
+document.getElementById("br-triage-status").addEventListener("change", renderBrowseResults);
 
 document.getElementById("btn-browse-search").addEventListener("click", () => doBrowseSearchPaged(0));
 document.getElementById("br-search").addEventListener("keydown", e => { if (e.key === "Enter") doBrowseSearchPaged(0); });
@@ -1633,6 +1634,116 @@ document.getElementById("btn-bulk-compare").addEventListener("click", () => {
   openCompare(selected);
 });
 
+// ── Bulk remediation ─────────────────────────────────────────────────────────
+
+let _remediationSelected = [];
+
+async function _generateRemediationScript() {
+  const scriptEl = document.getElementById("remediation-script");
+  const platform = document.getElementById("remediation-platform").value;
+  const regenBtn = document.getElementById("btn-remediation-regenerate");
+
+  scriptEl.textContent = "Generating…";
+  regenBtn.disabled = true;
+
+  try {
+    const r = await fetch(`${API}/api/remediation/bulk-generate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": _csrfToken() },
+      body: JSON.stringify({
+        cves: _remediationSelected.map(r => ({ cve_id: r.cve_id, table: r._table })),
+        platform,
+      }),
+    });
+    const j = await r.json();
+    scriptEl.textContent = j.ok ? j.script : "Error: " + (j.error || "unknown");
+  } catch (e) {
+    scriptEl.textContent = "Request failed: " + e;
+  } finally {
+    regenBtn.disabled = false;
+  }
+}
+
+document.getElementById("btn-bulk-remediate").addEventListener("click", async () => {
+  _remediationSelected = _browseRows.filter(r => _selectedCves.has(r.cve_id));
+  if (!_remediationSelected.length) return;
+
+  const overlay = document.getElementById("remediation-overlay");
+  const regenBtn = document.getElementById("btn-remediation-regenerate");
+
+  document.getElementById("remediation-cve-count").textContent = _remediationSelected.length;
+  document.getElementById("remediation-output").value = "";
+  document.getElementById("remediation-msg").textContent = "";
+  document.getElementById("remediation-results").style.display = "none";
+  regenBtn.style.display = "";
+  overlay.classList.remove("hidden");
+
+  await _generateRemediationScript();
+});
+
+document.getElementById("btn-remediation-regenerate").addEventListener("click", _generateRemediationScript);
+document.getElementById("remediation-platform").addEventListener("change", _generateRemediationScript);
+
+document.getElementById("btn-remediation-close").addEventListener("click", () => {
+  document.getElementById("remediation-overlay").classList.add("hidden");
+});
+
+document.getElementById("remediation-overlay").addEventListener("click", e => {
+  if (e.target === document.getElementById("remediation-overlay"))
+    document.getElementById("remediation-overlay").classList.add("hidden");
+});
+
+document.getElementById("btn-remediation-copy").addEventListener("click", () => {
+  const text = document.getElementById("remediation-script").textContent;
+  navigator.clipboard.writeText(text).then(() => {
+    const btn = document.getElementById("btn-remediation-copy");
+    btn.textContent = "Copied!";
+    setTimeout(() => btn.textContent = "Copy", 1500);
+  });
+});
+
+document.getElementById("btn-remediation-apply").addEventListener("click", async () => {
+  const output = document.getElementById("remediation-output").value.trim();
+  const msgEl  = document.getElementById("remediation-msg");
+  if (!output) { msgEl.textContent = "Paste the script output first."; msgEl.className = "form-msg err"; return; }
+
+  msgEl.textContent = "Applying…"; msgEl.className = "form-msg";
+  try {
+    const r = await fetch(`${API}/api/remediation/bulk-apply`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": _csrfToken() },
+      body: JSON.stringify({ output }),
+    });
+    const j = await r.json();
+    if (!j.ok) { msgEl.textContent = j.error || "Failed"; msgEl.className = "form-msg err"; return; }
+
+    const results = j.results || [];
+    if (!results.length) {
+      msgEl.textContent = "No CVE_RESULT markers found in output. Make sure you pasted the full script output.";
+      msgEl.className = "form-msg err";
+      return;
+    }
+
+    msgEl.textContent = `Applied ${results.length} result(s).`; msgEl.className = "form-msg ok";
+
+    const tbody = document.getElementById("remediation-results-tbody");
+    tbody.innerHTML = "";
+    for (const res of results) {
+      const tr = document.createElement("tr");
+      tr.innerHTML = `<td>${escHtml(res.cve_id)}</td><td>${escHtml(res.script_result)}</td><td><span class="triage-badge triage-${res.new_status}">${_triageLabel(res.new_status)}</span></td>`;
+      tbody.appendChild(tr);
+    }
+    document.getElementById("remediation-results").style.display = "block";
+
+    // Refresh triage map so browse table reflects new statuses
+    _triageMap = {};
+    await _loadTriageMap();
+    renderBrowseResults();
+  } catch (e) {
+    msgEl.textContent = "Request failed: " + e; msgEl.className = "form-msg err";
+  }
+});
+
 // ── CVE comparison view ───────────────────────────────────────────────────────
 
 function openCompare(rows) {
@@ -1696,9 +1807,12 @@ async function _origRenderBrowse() {
   await Promise.all([_loadReviewedMap(_browseRows), _loadTriageMap()]);
 
   const reviewFilter = document.getElementById("br-reviewed").value;
+  const triageFilter = document.getElementById("br-triage-status").value;
   let rows = _browseRows;
   if (reviewFilter === "reviewed")   rows = rows.filter(r => _reviewedMap[r.cve_id]);
   if (reviewFilter === "unreviewed") rows = rows.filter(r => !_reviewedMap[r.cve_id]);
+  if (triageFilter === "__none__")   rows = rows.filter(r => !_triageMap[r.cve_id]);
+  else if (triageFilter)             rows = rows.filter(r => _triageMap[r.cve_id]?.status === triageFilter);
   if (_qfEpssMin != null) rows = rows.filter(r => (r.epss_score || 0) >= _qfEpssMin);
 
   const today = new Date().toISOString().slice(0, 10);
@@ -3380,9 +3494,8 @@ openDetail = async function(row) {
     _loadExposurePanel(row),
     _loadComments(row),
     _loadRemediationPanel(row),
-    _loadLlmSummary(row),
-    _loadTriageSuggestion(row),
   ]);
+  _setupLlmButtons(row);
 };
 
 // ── LLM: Natural-language CVE search ─────────────────────────────────────────
@@ -3424,19 +3537,71 @@ async function _doNlSearch() {
 
 // ── LLM: CVE executive summary (injected into detail overlay) ─────────────────
 
+function _setupLlmButtons(row) {
+  // Summary — show a Generate button, fetch only on click
+  const summaryBlock = document.getElementById("llm-summary-block");
+  if (summaryBlock) {
+    summaryBlock.style.display = "";
+    const textEl = summaryBlock.querySelector(".llm-summary-text");
+    textEl.textContent = "";
+    let genBtn = summaryBlock.querySelector(".btn-llm-generate-summary");
+    if (!genBtn) {
+      genBtn = document.createElement("button");
+      genBtn.className = "btn-sm btn-llm-generate-summary";
+      genBtn.style.marginTop = "6px";
+      genBtn.textContent = "Generate Summary";
+      summaryBlock.appendChild(genBtn);
+    }
+    genBtn.style.display = "";
+    genBtn.onclick = async () => {
+      genBtn.textContent = "Generating…"; genBtn.disabled = true;
+      await _loadLlmSummary(row);
+      genBtn.style.display = "none";
+    };
+  }
+
+  // Triage suggestion — show a Generate button, fetch only on click
+  const triageEl = document.getElementById("llm-triage-suggest");
+  if (triageEl) {
+    triageEl.style.display = "";
+    triageEl.querySelector(".suggest-status").textContent  = "";
+    triageEl.querySelector(".suggest-due").textContent     = "";
+    triageEl.querySelector(".suggest-rationale").textContent = "";
+    let tsBtn = triageEl.querySelector(".btn-llm-generate-triage");
+    if (!tsBtn) {
+      tsBtn = document.createElement("button");
+      tsBtn.className = "btn-sm btn-llm-generate-triage";
+      tsBtn.style.marginLeft = "8px";
+      tsBtn.textContent = "Suggest";
+      triageEl.querySelector(".btn-apply-suggestion")?.parentNode?.appendChild(tsBtn);
+    }
+    tsBtn.style.display = "";
+    tsBtn.disabled = false;
+    tsBtn.onclick = async () => {
+      tsBtn.textContent = "Thinking…"; tsBtn.disabled = true;
+      await _loadTriageSuggestion(row);
+      tsBtn.style.display = "none";
+    };
+  }
+}
+
 async function _loadLlmSummary(row) {
-  // Injected below the CVE title in detail-content — only if LLM is configured
+  const container = document.getElementById("llm-summary-block");
+  if (!container) return;
   const params = new URLSearchParams({ table: row._table || row.keyword || "" });
   try {
     const r = await fetch(`${API}/api/llm/summarize/${encodeURIComponent(row.cve_id)}?${params}`);
-    if (!r.ok) return;
     const d = await r.json();
-    if (!d.ok || !d.summary) return;
-    const container = document.getElementById("llm-summary-block");
-    if (!container) return;
-    container.style.display = "";
+    if (!r.ok || !d.ok || !d.summary) {
+      const btn = container.querySelector(".btn-llm-generate-summary");
+      if (btn) { btn.textContent = "Retry"; btn.disabled = false; btn.style.display = ""; }
+      return;
+    }
     container.querySelector(".llm-summary-text").textContent = d.summary;
-  } catch { /* silent — LLM may not be configured */ }
+  } catch {
+    const btn = container.querySelector(".btn-llm-generate-summary");
+    if (btn) { btn.textContent = "Retry"; btn.disabled = false; btn.style.display = ""; }
+  }
 }
 
 // ── LLM: Triage suggestions (injected into detail overlay) ───────────────────

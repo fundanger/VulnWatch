@@ -1530,23 +1530,33 @@ echo "CVE Emailer -- Environment Scanner" >&2
 echo "Scanning $(hostname) ..." >&2
 echo "" >&2
 
-collect_os
-collect_runtimes
-collect_web_servers
-collect_databases
-collect_containers
-collect_network
-collect_standalone_tools
-collect_pip_packages
-collect_npm_packages
-collect_java_jars
-collect_patch_staleness
-collect_credential_tools
-collect_packages
-collect_brew
-collect_ports
-collect_systemd_services
-collect_snap_packages
+_step=0
+_total=17
+_run_collector() {
+    local name="$1"; shift
+    _step=$((_step + 1))
+    printf "  [%d/%d] %s ..." "$_step" "$_total" "$name" >&2
+    "$@"
+    printf " done\n" >&2
+}
+
+_run_collector "OS / kernel"        collect_os
+_run_collector "Runtimes"           collect_runtimes
+_run_collector "Web servers"        collect_web_servers
+_run_collector "Databases"          collect_databases
+_run_collector "Containers"         collect_containers
+_run_collector "Network tools"      collect_network
+_run_collector "Standalone tools"   collect_standalone_tools
+_run_collector "pip packages"       collect_pip_packages
+_run_collector "npm packages"       collect_npm_packages
+_run_collector "Java JARs"          collect_java_jars
+_run_collector "Patch staleness"    collect_patch_staleness
+_run_collector "Credential tools"   collect_credential_tools
+_run_collector "OS packages"        collect_packages
+_run_collector "Homebrew"           collect_brew
+_run_collector "Listening ports"    collect_ports
+_run_collector "Systemd services"   collect_systemd_services
+_run_collector "Snap packages"      collect_snap_packages
 
 dedup_items
 

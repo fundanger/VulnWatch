@@ -675,6 +675,8 @@ input:disabled, .textarea-sm:disabled {
   margin-top: .75rem;
 }
 .bulk-count { font-size: 13px; font-weight: 600; color: var(--accent); margin-right: .25rem; }
+.btn-remediate { background: rgba(234,179,8,.15); color: #eab308; border-color: rgba(234,179,8,.4); }
+.btn-remediate:hover { background: rgba(234,179,8,.25); }
 
 /* ── Detail overlay ───────────────────────────────────────────────────────── */
 .detail-overlay {

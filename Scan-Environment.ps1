@@ -931,25 +931,23 @@ function Get-WslItems {
 function Get-DefenderItems {
     $items = [System.Collections.Generic.List[Software]]::new()
 
-    $status = Get-MpComputerStatus -ErrorAction SilentlyContinue
-    if (-not $status) { return $items }
+    # Get-MpComputerStatus can hang indefinitely on some machines regardless of
+    # service state. Read the engine version from the registry instead — instant,
+    # no WMI involved.
+    $regPath = "HKLM:\SOFTWARE\Microsoft\Windows Defender\Signature Updates"
+    $engineVer = (Get-ItemProperty -Path $regPath -Name "EngineVersion" `
+        -ErrorAction SilentlyContinue).EngineVersion
+    if (-not $engineVer) {
+        # Fallback: try the engine DLL directly
+        $dll = "$env:ProgramFiles\Windows Defender\MpEngine.dll"
+        if (Test-Path $dll) {
+            $engineVer = (Get-Item $dll -ErrorAction SilentlyContinue).VersionInfo.ProductVersion
+        }
+    }
 
-    # Defender engine version as a software item (CVEs exist for specific engine versions)
-    $engineVer = $status.AMEngineVersion
     if ($engineVer) {
         $items.Add((New-Software "Windows Defender" $engineVer "tool" "HIGH" `
-            "cpe:2.3:a:microsoft:windows_defender:*:*:*:*:*:*:*:*" "Get-MpComputerStatus"))
-    }
-
-    # Flag stale signatures as a HIGH severity posture signal
-    $sigAge = (Get-Date) - $status.AntivirusSignatureLastUpdated
-    if ($sigAge.TotalDays -gt 7) {
-        Write-Host "  [WARN] Defender signatures are $([int]$sigAge.TotalDays) days old" -ForegroundColor Yellow
-    }
-
-    # Real-time protection disabled is a direct exposure signal
-    if (-not $status.RealTimeProtectionEnabled) {
-        Write-Host "  [WARN] Windows Defender real-time protection is DISABLED" -ForegroundColor Red
+            "cpe:2.3:a:microsoft:windows_defender:*:*:*:*:*:*:*:*" "registry"))
     }
 
     return $items
@@ -1591,32 +1589,39 @@ Write-Host ""
 
 $all = [System.Collections.Generic.List[Software]]::new()
 
-$collectors = @(
-    { Get-OsItems },
-    { Get-RuntimeItems },
-    { Get-WebServerItems },
-    { Get-DatabaseItems },
-    { Get-ContainerItems },
-    { Get-NetworkItems },
-    { Get-StandaloneToolItems },
-    { Get-InstalledProgramItems },
-    { Get-ListeningPortItems },
-    { Get-WindowsFeatureItems },
-    { Get-NuGetItems },
-    { Get-WslItems },
-    { Get-DefenderItems },
-    { Get-PipItems },
-    { Get-NpmItems },
-    { Get-JavaJarItems },
-    { Get-PatchStalenessItems },
-    { Get-CredentialToolItems }
-)
+$collectors = [ordered]@{
+    "OS / kernel"           = { Get-OsItems }
+    "Runtimes"              = { Get-RuntimeItems }
+    "Web servers"           = { Get-WebServerItems }
+    "Databases"             = { Get-DatabaseItems }
+    "Containers"            = { Get-ContainerItems }
+    "Network tools"         = { Get-NetworkItems }
+    "Standalone tools"      = { Get-StandaloneToolItems }
+    "Installed programs"    = { Get-InstalledProgramItems }
+    "Listening ports"       = { Get-ListeningPortItems }
+    "Windows features"      = { Get-WindowsFeatureItems }
+    "NuGet packages"        = { Get-NuGetItems }
+    "WSL distros"           = { Get-WslItems }
+    "Windows Defender"      = { Get-DefenderItems }
+    "pip packages"          = { Get-PipItems }
+    "npm packages"          = { Get-NpmItems }
+    "Java JARs"             = { Get-JavaJarItems }
+    "Patch staleness"       = { Get-PatchStalenessItems }
+    "Credential tools"      = { Get-CredentialToolItems }
+}
 
-foreach ($c in $collectors) {
+$step = 0
+foreach ($entry in $collectors.GetEnumerator()) {
+    $step++
+    Write-Host ("  [{0}/{1}] {2} ..." -f $step, $collectors.Count, $entry.Key) `
+        -ForegroundColor DarkGray -NoNewline
     try {
-        $results = & $c
+        $results = & $entry.Value
         foreach ($r in $results) { $all.Add($r) }
-    } catch { }
+        Write-Host " done" -ForegroundColor DarkGray
+    } catch {
+        Write-Host " skipped" -ForegroundColor DarkGray
+    }
 }
 
 $all      = Merge-Software -Items $all

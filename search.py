@@ -791,8 +791,11 @@ def _dispatch(
         if not sender or not password:
             log("[yellow]Email skipped — sender email or password not configured.[/yellow]")
         else:
-            mail.send_email(sender=sender, password=password, recipients=rcpts, subject=subject, body=body)
-            log(f"Email sent to {', '.join(rcpts)}.")
+            try:
+                mail.send_email(sender=sender, password=password, recipients=rcpts, subject=subject, body=body)
+                log(f"Email sent to {', '.join(rcpts)}.")
+            except Exception as exc:
+                log(f"[red]Email failed: {exc}[/red]")
 
     if webhook_url:
         notify.send_webhook(webhook_url, cves, subject)

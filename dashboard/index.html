@@ -442,6 +442,17 @@
               <option value="unreviewed">Unreviewed only</option>
               <option value="reviewed">Reviewed only</option>
             </select>
+            <select id="br-triage-status" class="input-sm">
+              <option value="">Any triage status</option>
+              <option value="open">Open</option>
+              <option value="in_progress">In Progress</option>
+              <option value="patched">Patched</option>
+              <option value="mitigated">Mitigated</option>
+              <option value="wont_fix">Won't Fix</option>
+              <option value="false_positive">False Positive</option>
+              <option value="closed">Closed</option>
+              <option value="__none__">No triage</option>
+            </select>
             <button class="btn-primary" id="btn-browse-search">Search</button>
             <button class="btn-sm" id="btn-browse-export">⬇ CSV</button>
             <button class="btn-sm" id="btn-noise-rank" title="AI: rank current results by relevance to your environment">AI Rank</button>
@@ -474,6 +485,7 @@
             <button class="btn-sm" id="btn-bulk-watchlist">⭐ Watchlist</button>
             <button class="btn-sm" id="btn-bulk-export">⬇ Export</button>
             <button class="btn-sm" id="btn-bulk-compare" title="Compare up to 3">⇄ Compare</button>
+            <button class="btn-sm btn-remediate" id="btn-bulk-remediate" title="Generate combined remediation script for selected CVEs">⚡ Remediate</button>
             <button class="btn-sm" id="btn-bulk-clear">✕ Clear</button>
           </div>
 
@@ -1583,6 +1595,51 @@
             <tr><td><kbd>/</kbd></td><td>Focus search box (Browse section)</td></tr>
           </tbody>
         </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Bulk Remediation overlay ─────────────────────────────────────────────── -->
+  <div id="remediation-overlay" class="detail-overlay hidden">
+    <div class="detail-panel" style="max-width:780px">
+      <div class="detail-panel-header">
+        <h2>Bulk Remediation Script</h2>
+        <button class="btn-icon" id="btn-remediation-close">✕</button>
+      </div>
+      <div class="detail-panel-body">
+        <p class="muted" style="margin-bottom:12px">Generated script for <strong id="remediation-cve-count">0</strong> CVE(s). Run it on the target machine — it saves output to a log file in <code>%TEMP%</code> (Windows) or <code>/tmp</code> (Linux). Open that log file, copy its contents, and paste below.</p>
+
+        <div style="display:flex;gap:12px;align-items:center;margin-bottom:14px">
+          <label style="font-size:13px;font-weight:600">Target Platform:</label>
+          <select id="remediation-platform" class="input-sm" style="width:auto">
+            <option value="windows">Windows (PowerShell)</option>
+            <option value="linux">Linux (bash)</option>
+            <option value="both">Both</option>
+          </select>
+          <button class="btn-sm" id="btn-remediation-regenerate" style="display:none">Regenerate</button>
+        </div>
+
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+          <strong>Script</strong>
+          <button class="btn-sm" id="btn-remediation-copy">Copy</button>
+        </div>
+        <pre id="remediation-script" style="background:var(--bg-card);border:1px solid var(--border);border-radius:6px;padding:12px;max-height:280px;overflow-y:auto;font-size:12px;white-space:pre-wrap;word-break:break-all"></pre>
+
+        <div style="margin-top:18px;margin-bottom:6px"><strong>Paste Script Output</strong></div>
+        <textarea id="remediation-output" class="input-sm" rows="8" style="width:100%;font-family:monospace;font-size:12px;resize:vertical" placeholder="Paste the script output here…"></textarea>
+
+        <div style="margin-top:12px;display:flex;gap:8px;align-items:center">
+          <button class="btn-primary" id="btn-remediation-apply">Apply Results</button>
+          <span id="remediation-msg" class="form-msg"></span>
+        </div>
+
+        <div id="remediation-results" style="margin-top:16px;display:none">
+          <strong>Results</strong>
+          <table class="data-table" style="margin-top:8px">
+            <thead><tr><th>CVE</th><th>Result</th><th>New Status</th></tr></thead>
+            <tbody id="remediation-results-tbody"></tbody>
+          </table>
+        </div>
       </div>
     </div>
   </div>

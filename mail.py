@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html as _html
 import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -150,7 +151,7 @@ def _format_line(line: str) -> str:
     if line.startswith("References:"):
         _, _, rest = line.partition(":")
         links = " &nbsp;|&nbsp; ".join(
-            f'<a href="{u.strip()}" style="color:#89b4fa">{u.strip()}</a>'
+            f'<a href="{_html.escape(u.strip())}" style="color:#89b4fa">{_html.escape(u.strip())}</a>'
             for u in rest.split("|")
         )
         return f'<span style="color:#a6adc8">References:</span> {links}'

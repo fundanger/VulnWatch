@@ -164,6 +164,22 @@ def bootstrap() -> None:
         _add_column_if_missing(conn, "notification_profiles",  "digest_mode",    "INTEGER DEFAULT 0")
         _add_column_if_missing(conn, "notification_profiles",  "digest_schedule","TEXT DEFAULT 'daily'")
         _add_column_if_missing(conn, "digest_queue",           "sent_at",        "TEXT")
+
+        # Migrate all existing CVE tables to have the latest columns
+        _cve_extra_cols = [
+            ("alerted_severity", "TEXT"),
+            ("alerted_score",    "REAL"),
+            ("epss_score",       "REAL"),
+            ("epss_percentile",  "REAL"),
+            ("kev",              "INTEGER DEFAULT 0"),
+            ("scan_source",      "TEXT DEFAULT 'keyword'"),
+            ("remediation_notes","TEXT DEFAULT ''"),
+            ("remediation_cmds", "TEXT DEFAULT ''"),
+        ]
+        for tbl in list_cve_tables():
+            for col, typedef in _cve_extra_cols:
+                _add_column_if_missing(conn, f'"{tbl}"', col, typedef)
+
         trans.commit()
 
 
