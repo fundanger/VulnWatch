@@ -1,4 +1,4 @@
-# CVE Emailer v2
+# VulnWatch (CVE Emailer v2)
 
 A self-hosted CVE monitoring platform that tracks the [NIST NVD API](https://nvd.nist.gov/developers/vulnerabilities) for vulnerabilities matching your tech stack and delivers alerts across email, Slack, Microsoft Teams, PagerDuty, Opsgenie, Jira, and ServiceNow.
 
